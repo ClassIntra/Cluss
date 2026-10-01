@@ -35,6 +35,15 @@ var ATTACHMENT_GUARD = [
   '- 若附件只截取了题目的一部分（缺条件、缺图、缺选项），明确指出缺什么，请用户补充。'
 ].join('\n');
 
+// ---- 错题结构化数据的包裹标记 ----
+// 为什么用自定义标记而不是 ```json 代码块：
+//   代码块在流式渲染时会先显示成一段代码，学生看到一半 JSON 才变成表格；
+//   自定义标记可以在前端直接截断掉，读者永远看不到它。
+// 为什么不用 Markdown 表格本身去解析：
+//   模型表格格式一变（多一列、换个分隔符）就抓不到，太脆。
+var WRONG_ITEMS_OPEN = '<wrong-items>';
+var WRONG_ITEMS_CLOSE = '</wrong-items>';
+
 // ---- 学习：引导式 ----
 var STUDY_GUIDED = [
   '',
@@ -157,7 +166,102 @@ var GRADE = [
   '第三步：最后给一段小结，包含：',
   '- 对 X 题 / 共 Y 题（无法判读的题不计入分母，单独说明）',
   '- 错题集中在哪个知识点',
-  '- 一到两条针对性的改进建议（具体到该练什么，不要写「继续努力」这类空话）'
+  '- 一到两条针对性的改进建议（具体到该练什么，不要写「继续努力」这类空话）',
+  '',
+  '第四步：输出错题结构化数据，供系统收录进学生的错题本。',
+  '用下面这对标记包裹，**不要放进代码块**，标记内除了 JSON 不要有任何其它文字：',
+  '',
+  WRONG_ITEMS_OPEN,
+  '[{"subject":"数学","question":"题干","student_answer":"学生答案","correct_answer":"正确解法要点","reason":"错因","tag":"✗"}]',
+  WRONG_ITEMS_CLOSE,
+  '',
+  '规则：',
+  '- 只收录判定为 ✗ 或 △ 的题；全部正确时输出 ' + WRONG_ITEMS_OPEN + '[]' + WRONG_ITEMS_CLOSE,
+  '- tag 只能是 ✗ 或 △',
+  '- subject 从题目内容判断（如 数学 / 物理 / 英语 / 化学），判断不了就留空字符串',
+  '- JSON 必须合法：字符串内换行写 \\n，双引号用 \\" 转义',
+  '- 这一段是给学生看的表格之外的**机器可读**副本，内容要和表格一致，不要额外发挥'
+].join('\n');
+
+// ---- 作文：生成范文（中文） ----
+var WRITING_GEN_ZH = [
+  '',
+  '【任务：写一篇作文】',
+  '',
+  '硬性要求：',
+  '1. 严格贴合用户给的题目与要求，不跑题、不换题。',
+  '2. 结构完整：开头、主体（有层次、有推进）、结尾。不写"总分总"空壳。',
+  '3. 字数控制在要求的 ±10% 以内；**最后另起一行用「（本文共约 N 字）」标注实际字数**。',
+  '4. 内容要具体：用具体的细节、场景、例子支撑观点，不写空洞的抒情与口号。',
+  '5. 标题单独一行放最前面（题目已给出时沿用原题）。',
+  '6. 不要在正文前后加"以下是我的作文""希望你喜欢"这类话。',
+  '7. 写完作文后，另起一段用一句话说明这篇的立意与结构安排（供学生参考），标为「写作思路：」。'
+].join('\n');
+
+// ---- 作文：生成范文（英文） ----
+var WRITING_GEN_EN = [
+  '',
+  '[Task: Write an essay in English]',
+  '',
+  'Requirements:',
+  '1. Follow the given topic and instructions strictly. Do not change the topic.',
+  '2. Complete structure: introduction, body (with clear progression), conclusion.',
+  '3. Stay within ±10% of the requested word count. On a separate final line, state the actual count as "(Word count: N)".',
+  '4. Be specific — use concrete details, scenes, and examples instead of generic statements and empty rhetoric.',
+  '5. Put the title on its own line at the top.',
+  '6. Write at native-speaker level. Avoid Chinglish, overly long sentences, and mechanical connectives like "Firstly... Secondly... Last but not least".',
+  '7. Vary sentence structure; do not start every sentence the same way.',
+  '8. Do not add any framing text such as "Here is my essay".',
+  '9. After the essay, add one short paragraph labelled "Approach:" explaining the thesis and structure you used.'
+].join('\n');
+
+// ---- 作文：批改润色 ----
+var WRITING_GRADE = [
+  '',
+  '【任务：批改作文】用户提交了自己的作文（文字粘贴或手写稿照片），请批改。',
+  '',
+  '按以下结构输出：',
+  '',
+  '### 逐段点评',
+  '用表格，列为：| 段落 | 写得好的地方 | 存在的问题 | 具体建议 |',
+  '每段一行。「存在的问题」必须具体（如"第三段的转折突然，缺少过渡句"），',
+  '禁止只写"语言不够生动""可以再充实"这类没有信息量的评语。',
+  '',
+  '### 三个维度',
+  '只做**定性**评价，每项给「优 / 良 / 待改进」并说明理由：',
+  '- 内容与立意',
+  '- 结构与逻辑',
+  '- 语言表达',
+  '不要臆造百分制分数或等级分数（没有评分标准时打分是编的）。',
+  '',
+  '### 润色示例',
+  '挑 2~3 处最有代表性的问题，对照展示：',
+  '- 原文：……',
+  '- 改后：……',
+  '- 为什么这样改：……',
+  '不要整篇重写——学生需要的是知道怎么改，不是拿到一篇新文章。',
+  '',
+  '### 总评',
+  '一段话：这篇最该改的一件事是什么。要具体、可执行。'
+].join('\n');
+
+// ---- 作文：给提纲 ----
+var WRITING_OUTLINE = [
+  '',
+  '【任务：列写作提纲】学生要自己写，只需要你给提纲与素材方向。',
+  '',
+  '硬性要求：',
+  '1. **只给提纲，不要写成完整文章**。学生要自己展开。',
+  '2. 结构清单：开头 / 主体各段 / 结尾，每部分写清"这一段要做什么、写到什么程度"。',
+  '3. 每段给出**可用的素材方向**（具体的例子、场景、数据、引用方向），而不是"可以举例子"这种废话。',
+  '4. 开头给 1~2 个可选的切入方式；结尾给 1~2 个升华方向。',
+  '5. 末尾提示：按这个提纲自己写，写完可以发来批改。'
+].join('\n');
+
+// 语言约束：英文作文要覆盖掉 BASE 里"用中文回答"的通则
+var LANG_EN = [
+  '',
+  '[Language] Write the entire response in English, including headings and commentary.'
 ].join('\n');
 
 // ---- 任务指令的前缀（放在用户正文之前，明确本次任务边界）----
@@ -165,11 +269,20 @@ var TASK_HINTS = {
   chat: '',
   study: '',
   solve: '请解答下面图片中的题目。',
-  grade: '请批改下面图片中学生的作答。'
+  grade: '请批改下面图片中学生的作答。',
+  writing_generate: '请按下面的要求写一篇作文。',
+  writing_grade: '请批改下面这篇作文。',
+  writing_outline: '请按下面的要求列一份写作提纲。'
 };
 
 // 拼装最终 system prompt
-// opts: { mode:'study'|'daily', studyStyle:'guided'|'direct', taskKind:'single'|'multi'|'cross_page'|'', hasAttachment:boolean }
+// opts: {
+//   mode: 'study' | 'daily',
+//   studyStyle: 'guided' | 'direct',
+//   taskKind: 'single'|'multi'|'cross_page'|'grade'|'writing_generate'|'writing_grade'|'writing_outline',
+//   writing: { language, genre, style, wordLimit },
+//   hasAttachment: boolean
+// }
 function getSystemPrompt(opts) {
   var o = opts || {};
   var parts = [BASE];
@@ -178,20 +291,71 @@ function getSystemPrompt(opts) {
   if (o.mode === 'daily') {
     parts.push(DAILY);
   } else {
-    // 学习大类：先按子模式定基调
-    parts.push(o.studyStyle === 'direct' ? STUDY_DIRECT : STUDY_GUIDED);
+    var taskKind = o.taskKind;
 
-    // 拍题任务在「学习」基础上再叠任务段
-    if (o.taskKind === 'single') parts.push(SOLVE_SINGLE);
-    else if (o.taskKind === 'multi') parts.push(SOLVE_MULTI);
-    else if (o.taskKind === 'cross_page') parts.push(SOLVE_CROSS_PAGE);
-    else if (o.taskKind === 'grade') parts.push(GRADE);
+    // ---- 作文：自成一套，不叠学习模式 ----
+    // 作文要的是"写出一篇东西"或"按结构点评"，与"分层引导解题"是两套逻辑，
+    // 叠在一起会让模型在批改作文时冒出"你先自己想想"这种不合时宜的话。
+    if (taskKind === 'writing_generate' || taskKind === 'writing_grade' || taskKind === 'writing_outline') {
+      var lang = o.writing && o.writing.language === 'en' ? 'en' : 'zh';
+
+      if (taskKind === 'writing_generate') {
+        parts.push(lang === 'en' ? WRITING_GEN_EN : WRITING_GEN_ZH);
+      } else if (taskKind === 'writing_grade') {
+        parts.push(WRITING_GRADE);
+      } else {
+        parts.push(WRITING_OUTLINE);
+      }
+
+      // 参数要求拼成一段明确指令
+      parts.push(buildWritingParams(o.writing, lang));
+
+      if (lang === 'en') parts.push(LANG_EN);
+    } else {
+      // ---- 解题链路 ----
+      parts.push(o.studyStyle === 'direct' ? STUDY_DIRECT : STUDY_GUIDED);
+
+      if (taskKind === 'single') parts.push(SOLVE_SINGLE);
+      else if (taskKind === 'multi') parts.push(SOLVE_MULTI);
+      else if (taskKind === 'cross_page') parts.push(SOLVE_CROSS_PAGE);
+      else if (taskKind === 'grade') parts.push(GRADE);
+    }
   }
 
   // 附件段落只在真有附件时加，避免无附件对话被无关规则干扰
   if (o.hasAttachment) parts.push(ATTACHMENT_GUARD);
 
   return parts.join('\n');
+}
+
+// 把作文参数拼成一段明确的指令
+// 空值不写进提示词——写"类型：（不限）"只会让模型困惑
+function buildWritingParams(w, lang) {
+  var p = w || {};
+  var isEn = lang === 'en';
+  var lines = [isEn ? '' : '', isEn ? '[Requirements]' : '【本次要求】'];
+
+  var genre = String(p.genre || '').trim();
+  var style = String(p.style || '').trim();
+  var limit = Number(p.wordLimit || 0);
+  var topic = String(p.topic || '').trim();
+
+  if (topic) lines.push((isEn ? '- Topic: ' : '- 题目/要求：') + topic);
+  if (genre) lines.push((isEn ? '- Genre: ' : '- 文体：') + genre);
+  if (style) lines.push((isEn ? '- Style: ' : '- 风格：') + style);
+
+  if (limit > 0) {
+    lines.push(isEn
+      ? ('- Length: about ' + limit + ' words')
+      : ('- 字数：约 ' + limit + ' 字'));
+  }
+
+  if (lines.length === 1) {
+    // 没有任何参数时也要给一句，否则模型不知道按什么写
+    lines.push(isEn ? '- No specific requirements; use your judgement.' : '- 未指定具体要求，请你自行把握。');
+  }
+
+  return lines.join('\n');
 }
 
 // 任务指令前缀：拼接在用户输入之前
@@ -228,6 +392,8 @@ var VISION_RELAY_PROMPT = [
 module.exports = {
   BASE: BASE,
   VISION_RELAY_PROMPT: VISION_RELAY_PROMPT,
+  WRONG_ITEMS_OPEN: WRONG_ITEMS_OPEN,
+  WRONG_ITEMS_CLOSE: WRONG_ITEMS_CLOSE,
   getSystemPrompt: getSystemPrompt,
   getTaskHint: getTaskHint,
   buildCrossPageHint: buildCrossPageHint

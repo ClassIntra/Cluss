@@ -89,8 +89,13 @@ function flattenForEstimate(messages) {
 //   modelId           string
 //   conversation      { id?, mode?, study_style? }
 //   attachmentHashes  [string] 云盘文件 hash（图片与文本混排）
-//   task              { kind: '' | 'solve' | 'grade', paperMode?: 'single'|'multi'|'cross_page' }
-//   source            'chat' | 'study' | 'solve' | 'grade'
+//   task              { kind, requiresImage?, paperMode?, writing? }
+//     kind: '' | 'solve' | 'grade' | 'writing_generate' | 'writing_grade' | 'writing_outline'
+//     requiresImage: 显式声明「没有图就不许提交」。
+//       为什么不用 kind 推断：作文也有图片（看图作文 / 手写稿批改）但图是可选的，
+//       靠 kind 前缀判断迟早会误伤新任务类型。
+//     writing: { language, genre, style, wordLimit }
+//   source            'chat' | 'study' | 'solve' | 'grade' | 'writing'
 // ------------------------------------------------------------
 function runStreamTurn(ctx) {
   var userId = String(ctx.userId);
@@ -100,9 +105,10 @@ function runStreamTurn(ctx) {
   var source = String(ctx.source || 'chat');
   var attachmentHashes = Array.isArray(ctx.attachmentHashes) ? ctx.attachmentHashes.filter(Boolean) : [];
   var hasImages = attachmentHashes.length > 0;
+  var requiresImage = !!task.requiresImage;
 
-  // 拍题/批改必须带图，否则没有意义
-  if (task.kind && !hasImages) {
+  // 需要图的任务没带图，直接拦（拍题/批改属于这类）
+  if (requiresImage && !hasImages) {
     return fail(res, 400, '请先选择题目图片');
   }
   if (!task.kind && !content && !hasImages) {
@@ -194,10 +200,9 @@ function runStreamTurn(ctx) {
       textItems = vision.loadTextItems(userId, textHashes).texts;
     }
 
-    // 拍题/批改只认图片：用户可能错把文本文件当题目传上来，
-    // 此时 imageHashes 为空，若放行会得到一段「没有题目可解」的胡说。
-    // 明确拒绝并指出问题，比让模型硬答更有用。
-    if (task.kind && !imageHashes.length) {
+    // 需要图的任务如果所选附件里一张图都没有，明确拒绝并指出问题。
+    // 用户可能错把文本文件当题目传上来，此时放行会得到一段「没有题目可解」的胡说。
+    if (requiresImage && !imageHashes.length) {
       return fail(res, 400, '所选附件中没有图片。拍题与批改需要图片，请从云盘选择题目照片');
     }
   }
@@ -268,6 +273,7 @@ function runStreamTurn(ctx) {
         mode: convRow.mode || 'study',
         studyStyle: convRow.study_style || 'guided',
         taskKind: task.kind === 'solve' ? task.paperMode : task.kind,
+        writing: task.writing || null,
         hasAttachment: attachmentMeta.length > 0
       });
 
@@ -314,15 +320,42 @@ function runStreamTurn(ctx) {
       });
 
       return handle.promise.then(function(result) {
-        // ---- 11) 存档助手消息 ----
-        if (result.text) {
-          conv.appendMessage(convRow.id, 'assistant', result.text, effectiveModelId, {
+        // ---- 11) 错题提取（仅批改）----
+        // 模型在批改结果末尾额外输出了一段 <wrong-items>JSON</wrong-items>。
+        // 这里把它解出来入错题本，并从正文里剥掉——否则学生会在回复末尾看到一坨 JSON。
+        // 解析失败只记日志：拿不到错题是可以接受的降级，不该让整次批改失败。
+        var finalText = result.text || '';
+        var wrongAdded = 0;
+        if (source === 'grade' && finalText) {
+          try {
+            var wrongBook = require('./wrong-book');
+            var extracted = wrongBook.extractAndStrip(finalText);
+            finalText = extracted.text;
+            if (extracted.items.length) {
+              wrongAdded = wrongBook.saveExtracted(extracted.items, {
+                userId: userId,
+                conversationId: convRow.id,
+                // 用第一张题图作为错题的来源图，复习时能原图回看
+                imageHash: imageHashes.length ? imageHashes[0] : ''
+              });
+              if (wrongAdded) {
+                console.log('[Turn] 批改提取错题 %d 道（用户 %s）', wrongAdded, userId);
+              }
+            }
+          } catch (e) {
+            console.warn('[Turn] 错题提取失败（不影响批改）:', e.message);
+          }
+        }
+
+        // ---- 12) 存档助手消息（存的是剥离后的正文）----
+        if (finalText) {
+          conv.appendMessage(convRow.id, 'assistant', finalText, effectiveModelId, {
             attachments: [],
             source: source
           });
         }
 
-        // ---- 12) 记账 ----
+        // ---- 13) 记账 ----
         var usage = extractUsage(result.usage, promptText, result.text);
         var costMicro = pricing.calcCostMicro(model, usage);
         credit.recordUsage({
@@ -355,6 +388,8 @@ function runStreamTurn(ctx) {
           estimated: usage.estimated === 1,
           image_count: imageHashes.length,
           vision_mode: visionPlan.mode,
+          // 批改时有意义：本次自动收录了几道错题到错题本
+          wrong_added: wrongAdded,
           context: built.stats
         });
         sse.close();
@@ -378,19 +413,29 @@ function runStreamTurn(ctx) {
   });
 }
 
-// 拍题/批改时若用户只发图不给文字，给一个默认的任务性提示
+// 用户只发图/只给参数、没写正文时，给一个兜底的任务性提示
 function tasksDefaultText(task) {
   if (!task || !task.kind) return '';
+
   if (task.kind === 'grade') return '请批改图里学生的作答。';
-  if (task.paperMode === 'multi') return '请解答图里的所有题目。';
-  if (task.paperMode === 'cross_page') return '这几张图是同一道题的连续部分，请拼接后解答。';
-  return '请解答图里的题目。';
+  if (task.kind === 'solve') {
+    if (task.paperMode === 'multi') return '请解答图里的所有题目。';
+    if (task.paperMode === 'cross_page') return '这几张图是同一道题的连续部分，请拼接后解答。';
+    return '请解答图里的题目。';
+  }
+  if (task.kind === 'writing_generate') return '请按上面的要求写一篇作文。';
+  if (task.kind === 'writing_grade') return '请批改上面的作文。';
+  if (task.kind === 'writing_outline') return '请按上面的要求列一份写作提纲。';
+  return '';
 }
 
 // 任务前缀：让模型明确本次任务边界，尤其在会话内切换过模式之后
 function buildTaskHint(task, imageCount) {
   if (!task || !task.kind) return '';
-  var base = prompts.getTaskHint(task.kind === 'grade' ? 'grade' : 'solve');
+
+  var writingKind = task.kind.indexOf('writing_') === 0;
+  var base = prompts.getTaskHint(task.kind);
+
   if (task.kind === 'solve' && task.paperMode === 'cross_page') {
     base += prompts.buildCrossPageHint(imageCount);
   }
@@ -399,6 +444,16 @@ function buildTaskHint(task, imageCount) {
     if (task.paperMode === 'single') base += '（本次为单题模式：图片中是一道完整的题）';
     else if (task.paperMode === 'multi') base += '（本次为多题模式：图片中包含多道题，请逐题作答）';
   }
+
+  // 看图作文：明确告诉模型图是什么用途，否则它会自行猜测该描述还是该批改
+  if (writingKind && imageCount > 0) {
+    if (task.kind === 'writing_grade') {
+      base += '（附带的 ' + imageCount + ' 张图是学生手写的作文稿，请识别后批改）';
+    } else {
+      base += '（附带的 ' + imageCount + ' 张图是题目素材，请据此写作）';
+    }
+  }
+
   return base;
 }
 

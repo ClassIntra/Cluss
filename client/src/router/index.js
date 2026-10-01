@@ -36,6 +36,24 @@ var routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/writing',
+    name: 'Writing',
+    component: function() { return import('@/views/Writing.vue'); },
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/records',
+    name: 'Records',
+    component: function() { return import('@/views/Records.vue'); },
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/wrong-book',
+    name: 'WrongBook',
+    component: function() { return import('@/views/WrongBook.vue'); },
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/usage',
     name: 'Usage',
     component: function() { return import('@/views/Usage.vue'); },

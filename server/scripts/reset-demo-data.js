@@ -12,6 +12,8 @@ var tables = [
   { name: 'cluss_usage_log', label: '用量明细' },
   { name: 'cluss_credit_log', label: '额度流水' },
   { name: 'cluss_credit', label: '额度分配' },
+  { name: 'wrong_questions', label: '错题本' },
+  { name: 'writing_pieces', label: '作文记录' },
   { name: 'ai_messages', label: '对话消息' },
   { name: 'ai_conversations', label: '会话' }
 ];

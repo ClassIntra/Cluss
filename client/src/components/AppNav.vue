@@ -83,16 +83,17 @@ export default {
       return String(this.user.real_name || this.user.net_name || '?').slice(0, 1);
     },
     navItems: function() {
-      var items = [
+      // 「消耗」不放在顶栏：它是低频页，留着会把导航挤成 7 项
+      // （窄屏平板上一行放不下，只能横向滚动，反而更难用）。
+      // 它已挂在用户菜单里，入口不丢。
+      return [
         { id: 'chat', label: '对话', to: '/' },
         { id: 'study', label: '学习', to: '/study' },
-        { id: 'cloud', label: '云盘', to: '/cloud' },
-        { id: 'usage', label: '消耗', to: '/usage' }
+        { id: 'writing', label: '作文', to: '/writing' },
+        { id: 'records', label: '记录', to: '/records' },
+        { id: 'wrong-book', label: '错题本', to: '/wrong-book' },
+        { id: 'cloud', label: '云盘', to: '/cloud' }
       ];
-      if (this.isAdmin) {
-        items.push({ id: 'admin', label: '管理台', to: '/admin' });
-      }
-      return items;
     }
   },
   methods: {

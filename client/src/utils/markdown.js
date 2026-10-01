@@ -106,11 +106,29 @@ marked.setOptions({
   mangle: false
 });
 
+// 剥离结构化数据块
+//
+// 批改结果末尾，模型会额外输出一段 <wrong-items>JSON</wrong-items>
+// 供后端收录进错题本。学生不该看到这坨 JSON。
+//
+// 关键：这里用**截断**而不是"用正则删除整块"。
+// 理由：流式输出时，后半个标记（</wrong-items>）还没到达，
+// 正则匹配不上整块，JSON 就会短暂地显示在学生眼前。
+// 截断到起始标记之前则从第一帧起就不会露出。
+var WRONG_ITEMS_MARK = '<wrong-items';
+
+function stripStructured(text) {
+  var s = String(text || '');
+  var idx = s.indexOf(WRONG_ITEMS_MARK);
+  if (idx === -1) return s;
+  return s.slice(0, idx).replace(/\n+$/, '');
+}
+
 // 主入口：把一条 AI 回复渲染为可直接 v-html 的安全 HTML
 export function renderMarkdown(text) {
   mathStore = [];
 
-  var source = extractMath(text);
+  var source = extractMath(stripStructured(text));
   var html = marked.parse(source || '');
   html = restoreMath(html);
 
@@ -122,7 +140,7 @@ export function renderMarkdown(text) {
 
 // 纯文本摘要（会话列表标题等场景）
 export function stripMarkdown(text) {
-  return String(text || '')
+  return stripStructured(text)
     .replace(/\$\$[\s\S]+?\$\$/g, ' [公式] ')
     .replace(/\$[^\n$]+?\$/g, ' [公式] ')
     .replace(/```[\s\S]*?```/g, ' [代码] ')
@@ -130,3 +148,5 @@ export function stripMarkdown(text) {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+export { stripStructured };

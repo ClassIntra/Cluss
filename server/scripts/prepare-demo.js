@@ -44,7 +44,8 @@ function login(account, password) {
 }
 
 function reset() {
-  ['cluss_usage_log', 'cluss_credit_log', 'cluss_credit', 'ai_messages', 'ai_conversations']
+  ['cluss_usage_log', 'cluss_credit_log', 'cluss_credit', 'ai_messages', 'ai_conversations',
+   'wrong_questions', 'writing_pieces']
     .forEach(function(t) { db.prepare('DELETE FROM ' + t).run(); });
   db.prepare('DELETE FROM cloud_user_files').run();
   db.prepare('DELETE FROM cloud_files').run();

@@ -250,6 +250,10 @@ export default {
     this.loadCapability();
     this.loadModels();
     this.loadConversations();
+
+    // 从记录页跳过来时带 ?conversation=xxx，直接打开那条记录
+    var target = this.$route.query.conversation;
+    if (target) this.openConversation(String(target));
   },
   beforeDestroy: function() {
     window.removeEventListener('resize', this.checkOrientation);
@@ -465,10 +469,18 @@ export default {
             self.answer += text;
             self.scrollAnswer();
           },
-          onDone: function() {
+          onDone: function(done) {
             self.visionStatus = '';
             self.$store.dispatch('auth/fetchWallet').catch(function() {});
             self.loadConversations();
+
+            // 批改时后端会把错题自动收进错题本，这里告诉学生收了几道
+            if (done && done.wrong_added > 0) {
+              self.$store.dispatch('toast', {
+                message: '已收录 ' + done.wrong_added + ' 道错题到错题本',
+                type: 'success'
+              });
+            }
           },
           onError: function(message) {
             self.visionStatus = '';

@@ -33,7 +33,72 @@ var REPLY_GRADE = '## 批改结果\n\n' +
   '| 2 | $x=5$ | ✗ | 混淆了位移与路程，第二步用了 $s=vt$ 而非 $s=\\frac{1}{2}at^2$ | 先求加速度再回代 |\n' +
   '| 3 | □(看不清) | 无法判读 | 第 3 题字迹被涂改遮挡 | — |\n\n' +
   '**小结**：对 1 题 / 共 2 题（1 题无法判读）。错题集中在运动学公式的选择上，' +
-  '建议专项练「已知初速度与时间求位移」这一类题。';
+  '建议专项练「已知初速度与时间求位移」这一类题。\n\n' +
+  // 这段是给后端解析用的：模拟真实模型对 <wrong-items> 约定的遵守情况
+  '<wrong-items>\n' +
+  '[{"subject":"物理","question":"一物体以 2 m/s 初速度匀加速运动，加速度 1 m/s²，求 3 秒内位移。",' +
+  '"student_answer":"x = 5","correct_answer":"s = v₀t + ½at² = 2×3 + ½×1×9 = 10.5 m",' +
+  '"reason":"混淆了位移与路程，第二步用了 s=vt 而非 s=v₀t+½at²","tag":"✗"},' +
+  '{"subject":"物理","question":"求 3 秒末速度。","student_answer":"未作答",' +
+  '"correct_answer":"v = v₀ + at = 2 + 1×3 = 5 m/s","reason":"漏做该小问","tag":"△"}]\n' +
+  '</wrong-items>';
+
+var REPLY_WRITING_GEN = '# 那一刻我长大了\n\n' +
+  '那天傍晚，我站在厨房门口，看着母亲弯着腰在案板前切菜。\n\n' +
+  '刀落下的声音一下一下，很轻，像怕吵到谁。我忽然注意到她右手的虎口有一道浅浅的疤——' +
+  '那是去年冬天我发烧的那个夜里，她削苹果时划的。当时我烧得昏沉，第二天醒来只看见床头摆着一盘切好的苹果。\n\n' +
+  '我走过去，从她手里接过刀。她愣了一下，说"你去写作业"。我没松手，只说了一句"今天我来"。\n\n' +
+  '菜切得歪歪扭扭，但那天饭桌上的菜是热的。\n\n' +
+  '（本文共约 480 字）\n\n' +
+  '写作思路：用"切菜时看到虎口的疤"这个具体细节切入，把"长大"落在"接过刀"这个动作上，' +
+  '而不是空洞地抒情。';
+
+// 英文请求要回英文范文。
+// 这个区分本身也是测试点：如果 Cluss 没把 language 传进提示词，
+// mock 就收不到英文任务标记，测试会立刻发现。
+var REPLY_WRITING_GEN_EN = '# A Memorable Trip\n\n' +
+  'We left before dawn, when the streets were still empty and the air smelled of rain.\n\n' +
+  'My father drove without speaking. I watched the fields slide past and thought about how little ' +
+  'I knew of the road he had taken every week for twenty years.\n\n' +
+  'At a small station we stopped for noodles. He ordered for both of us without asking, and I realized ' +
+  'he had been doing this my whole life.\n\n' +
+  'We reached the coast by noon. The sea was louder than I expected.\n\n' +
+  '(Word count: 96)\n\n' +
+  'Approach: The essay avoids stating "this trip was meaningful". Instead it builds meaning through ' +
+  'three small concrete details, letting the reader draw the conclusion.';
+
+
+var REPLY_WRITING_GRADE = '### 逐段点评\n\n' +
+  '| 段落 | 写得好的地方 | 存在的问题 | 具体建议 |\n' +
+  '| --- | --- | --- | --- |\n' +
+  '| 第 1 段 | 开头用场景切入，画面感强 | 转折突然，缺少过渡 | 补一句交代"我"当时的心境 |\n' +
+  '| 第 2 段 | 细节真实 | 段落过长，一个自然段塞了三件事 | 拆成两段 |\n\n' +
+  '### 三个维度\n\n' +
+  '- 内容与立意：**良**，主题清晰，但立意停留在表层\n' +
+  '- 结构与逻辑：**待改进**，第 2 段信息过载\n' +
+  '- 语言表达：**优**，用词准确，句式有变化\n\n' +
+  '### 润色示例\n\n' +
+  '- 原文：我很感动。\n' +
+  '- 改后：喉咙像被什么堵住，我别过头去。\n' +
+  '- 为什么这样改：直接说"感动"是结论，读者感受不到；用生理反应替代判断，画面才立得住。\n\n' +
+  '### 总评\n\n' +
+  '最该改的是第 2 段——把它拆成两段，让"看到疤"和"接过刀"各自成一节，节奏会好很多。';
+
+var REPLY_WRITING_OUTLINE = '## 写作提纲\n\n' +
+  '### 开头（约 100 字）\n' +
+  '- 要做的事：用一个具体场景切入，不要先讲道理\n' +
+  '- 素材方向：一个动作、一个物件、一个声音（如"刀落在案板上的声音"）\n' +
+  '- 可选切入：① 从声音写起 ② 从一个物件写起\n\n' +
+  '### 主体一（约 200 字）\n' +
+  '- 要做的事：交代"我"原本的状态与那个细节的相遇\n' +
+  '- 素材方向：写自己当时的走神、漠然，与后来注意到细节形成对照\n\n' +
+  '### 主体二（约 200 字）\n' +
+  '- 要做的事：写出转变的那个动作\n' +
+  '- 素材方向：一个具体的动作（接过刀 / 倒了杯水 / 说了某句话），不要写"我突然懂了"这类心理独白\n\n' +
+  '### 结尾（约 100 字）\n' +
+  '- 要做的事：收在具体的画面上\n' +
+  '- 升华方向：① 回到开头的意象 ② 用一个日常细节收束\n\n' +
+  '写的时候按这个提纲自己展开，写完可以发来批改。';
 
 var REPLY_DESCRIBE = '这是一张数学题目照片。\n' +
   '1) 题目内容：已知函数 $f(x)=x^2-2ax+3$，求其在区间 $[0,2]$ 上的最小值。\n' +
@@ -44,10 +109,19 @@ function detectKind(messages, rawBody) {
   var hasImage = false;
   var texts = [];
   var systemText = '';
+  var userText = '';
 
   for (var i = 0; i < messages.length; i++) {
     var m = messages[i];
     if (m.role === 'system') systemText += ' ' + String(m.content || '');
+    if (m.role === 'user') {
+      if (typeof m.content === 'string') userText += ' ' + m.content;
+      else if (Array.isArray(m.content)) {
+        for (var u = 0; u < m.content.length; u++) {
+          if (m.content[u].type === 'text') userText += ' ' + (m.content[u].text || '');
+        }
+      }
+    }
     if (typeof m.content === 'string') {
       texts.push(m.content);
     } else if (Array.isArray(m.content)) {
@@ -58,21 +132,47 @@ function detectKind(messages, rawBody) {
     }
   }
 
-  // 判定优先级很重要：先看 system 提示词（决定任务类型），再看有没有图。
-  // 反过来的话，「带图批改」会被误判成「看图解题」——
+  // 判定优先级：先看 system 提示词（决定任务类型），再看有没有图。
+  // 反过来的话，「带图批改」「看图作文」都会被误判成「看图解题」——
   // 真实模型是按提示词走的，mock 必须复现这个行为，否则测试会给出假阴性。
-  if (/转述器/.test(systemText)) return { kind: 'describe', hasImage: hasImage, systemText: systemText };
-  if (/批改/.test(systemText)) return { kind: 'grade', hasImage: hasImage, systemText: systemText };
-  if (hasImage) return { kind: 'native_vision', hasImage: true, systemText: systemText };
-  return { kind: 'text', hasImage: false, systemText: systemText };
+  //
+  // 作文要在「批改」之前判：写作批改的提示词里也含「批改」二字。
+  if (/列写作提纲/.test(systemText)) {
+    return { kind: 'writing_outline', hasImage: hasImage, systemText: systemText, userText: userText };
+  }
+  if (/批改作文/.test(systemText)) {
+    return { kind: 'writing_grade', hasImage: hasImage, systemText: systemText, userText: userText };
+  }
+  if (/写一篇作文|Write an essay/.test(systemText)) {
+    // 用是否带英文任务标记来区分中英文——这同时验证了 Cluss 把 language 传进了提示词
+    var isEnglish = /Write an essay in English|Write the entire response in English/.test(systemText);
+    return {
+      kind: isEnglish ? 'writing_generate_en' : 'writing_generate',
+      hasImage: hasImage, systemText: systemText, userText: userText
+    };
+  }
+  if (/转述器/.test(systemText)) {
+    return { kind: 'describe', hasImage: hasImage, systemText: systemText, userText: userText };
+  }
+  if (/批改下面图片|任务：作业批改/.test(systemText)) {
+    return { kind: 'grade', hasImage: hasImage, systemText: systemText, userText: userText };
+  }
+  if (hasImage) {
+    return { kind: 'native_vision', hasImage: true, systemText: systemText, userText: userText };
+  }
+  return { kind: 'text', hasImage: false, systemText: systemText, userText: userText };
 }
 
 function pickReply(info) {
   if (info.kind === 'native_vision') {
-    return '【已收到图片】本次共收到 ' + '1 张图' + '。\n\n' + REPLY_TEXT;
+    return '【已收到图片】本次共收到 1 张图。\n\n' + REPLY_TEXT;
   }
   if (info.kind === 'describe') return REPLY_DESCRIBE;
   if (info.kind === 'grade') return REPLY_GRADE;
+  if (info.kind === 'writing_generate') return REPLY_WRITING_GEN;
+  if (info.kind === 'writing_generate_en') return REPLY_WRITING_GEN_EN;
+  if (info.kind === 'writing_grade') return REPLY_WRITING_GRADE;
+  if (info.kind === 'writing_outline') return REPLY_WRITING_OUTLINE;
   return REPLY_TEXT;
 }
 
