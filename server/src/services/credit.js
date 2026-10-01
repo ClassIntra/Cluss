@@ -28,13 +28,12 @@ function getAssignment(userId) {
 
 // 本班范围内的消耗合计（可按窗口天数限制）
 function sumLocalUsage(userId, days) {
-  var params = [String(userId)];
   var sql = 'SELECT SUM(cost_micro) AS used FROM cluss_usage_log WHERE user_id = ?';
-  if (days) {
-    sql += ' AND created_at >= ?';
-    params.push(time.utcBeforeDays(days));
-  }
-  var row = db.prepare(sql).get(params[0], params[1]);
+  // 注意：better-sqlite3 对「多传参数」会直接抛 RangeError，
+  // 所以必须按占位符数量精确传参，不能图省事把参数写全
+  var row = days
+    ? db.prepare(sql + ' AND created_at >= ?').get(String(userId), time.utcBeforeDays(days))
+    : db.prepare(sql).get(String(userId));
   return (row && row.used) || 0;
 }
 

@@ -229,7 +229,7 @@ export default {
       return this.$store.state.auth.wallet;
     },
     isAdmin: function() {
-      return this.$store.getters.isAdmin;
+      return this.$store.getters['auth/isAdmin'];
     },
     displayName: function() {
       return this.user.real_name || this.user.net_name || '同学';

@@ -215,14 +215,17 @@ router.post('/chat/stream', auth.requireAuth, function(req, res) {
   if (!model) {
     return res.status(404).json({ code: 404, message: '模型不存在，请在设置中选择其他模型' });
   }
-  if (!model.ready) {
-    return res.status(503).json({ code: 503, message: 'AI 服务未配置完成（' + model.unavailableReason + '），请联系管理员' });
-  }
 
   // 3) 额度闸门
+  //    顺序刻意放在「模型可用性」之前：额度是学生最常撞到的门，
+  //    先判它才能给出「去充值」这种可操作的提示；否则会被配置类错误盖住。
   var gateMsg = credit.checkGate(userId, model);
   if (gateMsg) {
     return res.status(402).json({ code: 402, message: gateMsg });
+  }
+
+  if (!model.ready) {
+    return res.status(503).json({ code: 503, message: 'AI 服务未配置完成（' + model.unavailableReason + '），请联系管理员' });
   }
 
   // 4) 存档用户消息并组装上下文
@@ -250,8 +253,16 @@ router.post('/chat/stream', auth.requireAuth, function(req, res) {
 
   send('meta', { conversation_id: convId, model_id: effectiveModelId });
 
+  // 客户端断开检测必须挂在 **res** 上，不能挂 req。
+  // 原因：Node 在「请求体读取完毕」时就会触发 req 的 close 事件（IncomingMessage 结束），
+  // 与「客户端真的断开」完全不是一回事。挂错地方会导致每个流式请求都被判定为
+  // 客户端已离线，从而跳过 res.end()，前端表现为「一直转圈直到超时」。
   var clientGone = false;
-  req.on('close', function() { clientGone = true; });
+  res.on('close', function() {
+    if (!res.writableEnded) {
+      clientGone = true;
+    }
+  });
 
   // 6) 流式生成
   var promptTextForEstimate = messages.map(function(m) { return m.content; }).join('\n');
@@ -297,14 +308,15 @@ router.post('/chat/stream', auth.requireAuth, function(req, res) {
         },
         estimated: usage.estimated === 1
       });
-      res.end();
     }
+    // 无论客户端是否还在，都要收尾：写已结束则跳过，避免重复 end 抛错
+    if (!res.writableEnded) res.end();
   }).catch(function(err) {
     console.error('[Chat] 流式调用失败:', err.message, err.detail || '');
     if (!clientGone) {
       send('error', { message: err.message || 'AI 服务暂时不可用，请稍后重试' });
-      res.end();
     }
+    if (!res.writableEnded) res.end();
   });
 });
 

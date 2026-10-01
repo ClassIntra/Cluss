@@ -43,16 +43,26 @@ function seedDefaultModel() {
   console.log('[init-db] 已写入默认模型:', s.modelId, s.apiUrl ? '' : '(API 地址为空，需在管理台补配)');
 }
 
-// relay 模式引导管理员：只在账号不存在时创建，绝不覆盖已有密码
+// 管理员引导：只要配置了 ADMIN_PASSWORD 且账号不存在就创建，绝不覆盖已有密码
+//
+// 为什么所有模式都做（不限于 relay）：
+//   独立部署下学生无法在别处充值，管理员本就是同一套自建流程；
+//   relay 模式则是权威账本所在处，更需要稳定的管理入口。
+//   两处都用同一段逻辑，避免「独立部署没有管理台」这种不一致。
 function bootstrapAdmin() {
-  if (config.mode !== config.MODES.RELAY) return;
   var a = config.admin;
   if (!a.password) {
-    console.warn('[init-db] relay 模式未设置 ADMIN_PASSWORD，跳过管理员引导（无法登录管理台）');
+    console.warn('[init-db] 未设置 ADMIN_PASSWORD，跳过管理员引导（管理台将无法登录）');
     return;
   }
   var existing = db.prepare('SELECT user_id FROM users WHERE user_id = ?').get(a.userId);
-  if (existing) return;
+  if (existing) {
+    // 已存在只确保权限位正确，不动密码（避免重启把管理员改过的密码还原）
+    if (config.mode === config.MODES.RELAY) {
+      db.prepare('UPDATE users SET is_admin = 1 WHERE user_id = ?').run(a.userId);
+    }
+    return;
+  }
 
   var pwd = require('./password');
   var hash = pwd.hashPassword(a.password);

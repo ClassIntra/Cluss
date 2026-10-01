@@ -41,14 +41,16 @@ var router = new VueRouter({
 });
 
 router.beforeEach(function(to, from, next) {
-  var loggedIn = store.getters.isLoggedIn;
+  // auth 模块是 namespaced，getter 必须带命名空间前缀；
+  // 写成 store.getters.isLoggedIn 会恒为 undefined，导致登录后仍被弹回登录页
+  var loggedIn = store.getters['auth/isLoggedIn'];
 
   if (to.meta.requiresAuth && !loggedIn) {
     return next({ name: 'Login', query: { redirect: to.fullPath } });
   }
 
   if (to.meta.requiresAdmin && loggedIn) {
-    if (!store.getters.isAdmin) {
+    if (!store.getters['auth/isAdmin']) {
       return next({ name: 'Chat' });
     }
   }

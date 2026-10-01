@@ -98,9 +98,9 @@ export default {
   },
   mounted: function() {
     // 探测是否接入 ClassIntra（联动部署时给出提示，独立部署不显示）
-    // 注意：/api/health 不需要登录，所以这里直接用 /api 前缀而不是 $http（后者带 401 跳转逻辑）
+    // $http 的 baseURL 已是 /api，所以这里只能写 /health，写 /api/health 会拼成 /api/api/health
     var self = this;
-    this.$http.get('/api/health').then(function(resp) {
+    this.$http.get('/health').then(function(resp) {
       var data = resp.data && resp.data.data;
       self.ciHint = !!(data && data.ci_bridge_enabled);
     }).catch(function() { /* 探测失败不影响登录 */ });

@@ -80,7 +80,9 @@ router.get('/users', auth.requireAuth, auth.requireAdmin, function(req, res) {
   sql += '\nORDER BY allocated_micro DESC, used_micro DESC LIMIT ?';
   params.push(limit);
 
-  var rows = db.prepare(sql).all.apply(db.prepare(sql), params);
+  // 先编译再用展开传参：better-sqlite3 不接受参数数组（会被当具名参数对象）
+  var stmt = db.prepare(sql);
+  var rows = stmt.all.apply(stmt, params);
 
   res.json({
     code: 200,
@@ -269,7 +271,8 @@ router.get('/logs', auth.requireAuth, auth.requireAdmin, function(req, res) {
   sql += '\nORDER BY l.id DESC LIMIT ?';
   params.push(limit);
 
-  var rows = db.prepare(sql).all.apply(db.prepare(sql), params);
+  var stmt2 = db.prepare(sql);
+  var rows = stmt2.all.apply(stmt2, params);
   res.json({
     code: 200,
     message: 'ok',
