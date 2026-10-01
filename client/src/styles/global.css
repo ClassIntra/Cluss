@@ -58,6 +58,16 @@
   --gap-xl: 32px;
 
   --transition: 0.2s cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* 视口高度：dvh 会随移动端地址栏收放变化，比 vh 更贴近真实可视区。
+     不支持 dvh 的旧内核（Chrome 80 / X5）由下面的 vh 兜底 */
+  --app-height: 100vh;
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-height: 100dvh;
+  }
 }
 
 * {
@@ -343,5 +353,207 @@ body::after {
   * {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================
+   平板适配：宽度 + 方向 双维度
+   ------------------------------------------------------------
+   为什么不能只看宽度：1024×768（横屏）与 768×1024（竖屏）宽度不同但同类问题
+   不少；而横屏高度只有 768 时，垂直空间才是真正的瓶颈（顶栏+输入区吃掉一半）。
+   所以横屏矮屏的规则按 max-height 触发，竖屏按 orientation: portrait 触发。
+   ============================================================ */
+
+/* ---- 平板竖屏（768~1024）：垂直空间充足，水平紧张 ---- */
+@media (orientation: portrait) and (max-width: 1024px) {
+  :root {
+    --gap-md: 14px;
+    --gap-lg: 18px;
+  }
+
+  /* 侧栏不适合固定占位，改成可横向滚动的顶部条 */
+  .app-sidebar-drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(320px, 84vw);
+    z-index: 300;
+    padding: var(--gap-md);
+    overflow-y: auto;
+    background: var(--glass-bg-strong);
+    -webkit-backdrop-filter: blur(24px) saturate(1.4);
+    backdrop-filter: blur(24px) saturate(1.4);
+    border-right: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-float);
+    transform: translateX(-102%);
+    transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  .app-sidebar-drawer.is-open {
+    transform: translateX(0);
+  }
+
+  .app-drawer-mask {
+    position: fixed;
+    inset: 0;
+    z-index: 299;
+    background: rgba(20, 24, 38, 0.32);
+    -webkit-backdrop-filter: blur(3px);
+    backdrop-filter: blur(3px);
+  }
+
+  /* 竖屏下横向空间宝贵：对话气泡放宽 */
+  .bubble {
+    max-width: 92%;
+  }
+}
+
+/* ---- 平板横屏矮屏（高度紧张）：压缩一切垂直留白 ---- */
+@media (orientation: landscape) and (max-height: 800px) {
+  :root {
+    --gap-xs: 4px;
+    --gap-sm: 8px;
+    --gap-md: 10px;
+    --gap-lg: 14px;
+    --gap-xl: 20px;
+    --radius-xl: 18px;
+  }
+
+  .topbar-compact {
+    padding: 8px 16px;
+  }
+
+  /* 矮屏下侧栏收窄，把宽度让给内容 */
+  .app-sidebar-narrow {
+    width: 240px;
+  }
+}
+
+/* ---- 横屏且宽度足够：双栏并排（学习页、云盘页） ---- */
+@media (orientation: landscape) and (min-width: 900px) {
+  .split-pane {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+    gap: var(--gap-md);
+    min-height: 0;
+  }
+}
+
+/* ---- 竖屏或窄屏：上下堆叠 ---- */
+@media (orientation: portrait), (max-width: 899px) {
+  .split-pane {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 42%) minmax(0, 1fr);
+    gap: var(--gap-md);
+    min-height: 0;
+  }
+}
+
+/* ============================================================
+   通用组件补充
+   ============================================================ */
+
+/* 分段控件（题量模式、对话模式切换） */
+.segmented {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: var(--radius-md);
+  background: rgba(31, 41, 72, 0.06);
+  gap: 2px;
+}
+
+.segmented-item {
+  padding: 7px 14px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition), color var(--transition), box-shadow var(--transition);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.segmented-item:hover:not(.is-active) {
+  color: var(--text-primary);
+}
+
+.segmented-item.is-active {
+  background: #fff;
+  color: var(--accent);
+  box-shadow: 0 2px 8px rgba(31, 41, 72, 0.1);
+}
+
+.segmented-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 标签徽章 */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 11.5px;
+  font-weight: 500;
+  background: rgba(31, 41, 72, 0.06);
+  color: var(--text-secondary);
+}
+
+.badge-accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.badge-success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.badge-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* 空状态 */
+.empty-hint {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 13.5px;
+}
+
+/* 进度条（额度、周限额、配额通用） */
+.bar {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: rgba(31, 41, 72, 0.08);
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, #5b9bff, #2f6bdd);
+  transition: width 0.4s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* 移动端输入框聚焦时，字号小于 16px 会被 iOS 自动放大整个页面 */
+@media (max-width: 1024px) {
+  .input,
+  .select,
+  textarea {
+    font-size: 16px;
   }
 }

@@ -234,7 +234,7 @@ export default {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 100vh;
+  min-height: var(--app-height);
   padding: var(--gap-lg);
   overflow-y: auto;
 }
