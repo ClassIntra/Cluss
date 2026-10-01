@@ -46,12 +46,26 @@ api.interceptors.response.use(
     var message = (body && body.message) || '';
 
     if (!message) {
-      if (status === 403) message = '无权限执行此操作';
-      else if (status === 402) message = '额度不足';
-      else if (status === 429) message = '操作过于频繁，请稍后再试';
-      else if (status >= 500) message = '服务器暂时不可用';
-      else if (!error.response) message = '无法连接服务器，请检查网络';
-      else message = '请求失败';
+      // 超时没有 response，必须排在按状态码判断之前，否则会被误判成"网络不通"
+      if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+        message = '请求超时，请稍后重试';
+      } else if (status === 401) {
+        message = '登录状态已失效，请重新登录';
+      } else if (status === 403) {
+        message = '无权限执行此操作';
+      } else if (status === 402) {
+        message = '额度不足，请联系管理员充值';
+      } else if (status === 404) {
+        message = '请求的内容不存在';
+      } else if (status === 429) {
+        message = '操作过于频繁，请稍后再试';
+      } else if (status >= 500) {
+        message = '服务器暂时不可用，请稍后重试';
+      } else if (!error.response) {
+        message = '无法连接服务器，请检查网络';
+      } else {
+        message = '请求失败，请稍后重试';
+      }
     }
 
     error.message = message;
