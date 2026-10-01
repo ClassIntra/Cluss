@@ -18,6 +18,12 @@
   --glass-border: rgba(255, 255, 255, 0.75);
   --glass-border-soft: rgba(255, 255, 255, 0.5);
 
+  /* 漂浮层底（下拉菜单、右键菜单等「没有遮罩、直接盖在内容上」的浮层）。
+     玻璃拟态只适合铺在固定装饰背景上的卡片；盖在任意内容上时 0.7 的透明度
+     会让下层文字透出来，读不清。浮层必须近不透明，靠投影分层。 */
+  --menu-bg: rgba(255, 255, 255, 0.98);
+  --menu-border: rgba(31, 41, 72, 0.12);
+
   /* 主色 */
   --accent: #2f6bdd;
   --accent-soft: #e8effc;
@@ -146,6 +152,10 @@ html[data-theme="dark"] {
   --glass-bg-soft: rgba(38, 42, 54, 0.45);
   --glass-border: rgba(255, 255, 255, 0.1);
   --glass-border-soft: rgba(255, 255, 255, 0.06);
+
+  /* 浮层用比页面底色略亮的不透明面，靠亮度差 + 投影与内容分层 */
+  --menu-bg: rgba(46, 51, 65, 0.98);
+  --menu-border: rgba(255, 255, 255, 0.14);
 
   /* 深色底上主色要提亮，否则对比不足、按钮显得发暗 */
   --accent: #5b9bff;
@@ -288,6 +298,17 @@ body::after {
   background: var(--glass-bg-soft);
   border: 1px solid var(--glass-border-soft);
   border-radius: var(--radius-lg);
+}
+
+/* ---------- 漂浮层 ----------
+   给「没有遮罩、直接盖在页面内容上」的浮层用（下拉菜单等）。
+   和 .glass 的区别只有两点：底色近不透明、投影更重。
+   用 .glass 盖内容会让下层文字透出来，别在这类场景复用 .glass。 */
+.float-panel {
+  background: var(--menu-bg);
+  border: 1px solid var(--menu-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
 }
 
 /* ---------- 按钮 ---------- */

@@ -29,7 +29,7 @@
           <div class="user-sub">{{ user.user_id }}{{ user.class_no ? ' · ' + user.class_no + '班' : '' }}</div>
         </div>
         <transition name="fade">
-          <div v-if="menuOpen" class="user-menu glass" @click.stop>
+          <div v-if="menuOpen" class="user-menu float-panel" @click.stop>
             <div class="menu-head">
               <div class="menu-name">{{ user.real_name }}</div>
               <div class="menu-sub">用户名：{{ user.net_name }}</div>
