@@ -61,17 +61,33 @@
             <div class="pane-head">
               <span class="section-label">{{ taskKind === 'grade' ? '作答图片' : '题目图片' }}</span>
               <div class="pane-actions">
+                <!-- 拍照走独立入口：拍完直接成为题图，不必先打开选择器 -->
+                <label class="btn btn-sm btn-primary upload-btn" :class="{ disabled: uploading }">
+                  <input
+                    ref="camera"
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    class="file-input"
+                    :disabled="uploading"
+                    @change="onCamera"
+                  />
+                  {{ uploading ? '上传中…' : '拍照' }}
+                </label>
                 <button class="btn btn-sm btn-ghost" @click="pickerOpen = true">
-                  {{ attachments.length ? '重新选择' : '选择图片' }}
+                  {{ attachments.length ? '重新选择' : '从云盘选择' }}
                 </button>
               </div>
             </div>
 
             <div class="pane-body">
               <div v-if="!attachments.length" class="empty-hint">
-                <div>{{ taskKind === 'grade' ? '上传学生写好的作答照片' : '选择题目照片' }}</div>
-                <div class="tiny">从云盘选择，或直接上传新照片</div>
-                <button class="btn btn-sm btn-primary" @click="pickerOpen = true">去选择</button>
+                <div>{{ taskKind === 'grade' ? '拍下或选择学生写好的作答' : '拍下或选择题目' }}</div>
+                <div class="tiny">可直接拍照，也可从云盘选择已有的图</div>
+                <label class="btn btn-sm btn-primary upload-btn" :class="{ disabled: uploading }">
+                  <input type="file" accept="image/*" capture="environment" class="file-input" :disabled="uploading" @change="onCamera" />
+                  {{ uploading ? '上传中…' : '拍照' }}
+                </label>
               </div>
 
               <div v-else class="img-list">
@@ -176,6 +192,7 @@ export default {
       modelId: '',
       capability: { available: false, max_images: 4, vision_models: [] },
       pickerOpen: false,
+      uploading: false,
       drawerOpen: false,
       isPortrait: false
     };
@@ -333,15 +350,69 @@ export default {
           thumb_url: f.thumb_url || ('/api/cloud/files/' + f.hash + '?thumb=1')
         };
       });
-      // 换图即视为新的一次任务
+      // 换图即换题，与拍照路径保持一致
       this.answer = '';
       this.streamError = '';
+      this.conversationId = '';
       void self;
     },
 
     removeAttachment: function(hash) {
       this.attachments = this.attachments.filter(function(a) { return a.hash !== hash; });
       this.answer = '';
+    },
+
+    // 拍照：上传后直接作为题图（不进选择器，少两步点击）
+    onCamera: function(e) {
+      var self = this;
+      var file = (e.target.files || [])[0];
+      if (!file) return;
+
+      this.uploading = true;
+      this.streamError = '';
+
+      var form = new FormData();
+      form.append('file', file);
+
+      this.$http.post('/cloud/upload', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120000
+      }).then(function(r) {
+        if (r.data.code !== 200) throw new Error(r.data.message || '上传失败');
+        var f = r.data.data;
+
+        var item = {
+          hash: f.hash, name: f.name, size: f.size, kind: 'image',
+          url: f.url || ('/api/cloud/files/' + f.hash),
+          thumb_url: f.thumb_url || ('/api/cloud/files/' + f.hash + '?thumb=1')
+        };
+
+        // 跨页题常要连拍多张，所以拍照是「追加」而非「替换」；
+        // 其余模式重新拍照视为换题，直接替换掉旧的
+        if (self.paperMode === 'cross_page' && self.attachments.length) {
+          if (self.attachments.length >= (self.capability.max_images || 4)) {
+            self.$store.dispatch('toast', { message: '最多 ' + (self.capability.max_images || 4) + ' 张', type: 'error' });
+            return;
+          }
+          if (!self.attachments.some(function(a) { return a.hash === item.hash; })) {
+            self.attachments.push(item);
+          }
+        } else {
+          self.attachments = [item];
+          // 换图即换题：清掉会话，避免模型看到上一道题的解答历史而串味
+          self.conversationId = '';
+        }
+
+        self.answer = '';
+        self.$store.dispatch('toast', { message: '已拍照', type: 'success' });
+      }).catch(function(err) {
+        self.streamError = err.message || '上传失败';
+      }).then(function() {
+        self.uploading = false;
+        if (self.$refs.camera) self.$refs.camera.value = '';
+        // 上面模板里的空态 input 没有 ref，用事件目标兜底清空
+        if (e.target) e.target.value = '';
+      });
     },
 
     scrollAnswer: function() {
@@ -647,6 +718,26 @@ export default {
   font-size: 12px;
   color: var(--text-secondary);
   outline: none;
+  cursor: pointer;
+}
+
+/* 拍照按钮：把 <input type=file> 藏进 label 里，做成普通按钮的外观 */
+.upload-btn {
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  margin: 0;
+}
+
+.upload-btn.disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.upload-btn input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
   cursor: pointer;
 }
 

@@ -11,8 +11,26 @@
         <button class="icon-btn" title="关闭" @click="$emit('close')">×</button>
       </header>
 
-      <!-- 上传区：点击选择文件，或直接拖入 -->
+      <!-- 上传区：拍照 / 选文件 分开成两个入口 -->
       <div class="upload-row">
+        <!--
+          「拍照」与「选文件」刻意分成两个入口：
+          带 capture 的 input 在多数设备上只能拍一张，
+          与多选语义冲突；混用一个 input 会让 Android 上的行为不可预测。
+        -->
+        <label v-if="enableCamera" class="btn btn-sm btn-primary upload-btn" :class="{ disabled: uploading }">
+          <input
+            ref="camera"
+            type="file"
+            accept="image/*"
+            capture="environment"
+            class="file-input"
+            :disabled="uploading"
+            @change="onPick($event, true)"
+          />
+          {{ uploading ? '上传中…' : '拍照' }}
+        </label>
+
         <label class="btn btn-sm upload-btn" :class="{ disabled: uploading }">
           <input
             ref="file"
@@ -21,10 +39,11 @@
             :multiple="max > 1"
             class="file-input"
             :disabled="uploading"
-            @change="onPick"
+            @change="onPick($event, false)"
           />
-          {{ uploading ? '上传中…' : '上传新文件' }}
+          {{ uploading ? '上传中…' : '从相册或文件选择' }}
         </label>
+
         <span class="tiny muted">支持 {{ acceptHint }}，单文件最大 10MB</span>
       </div>
 
@@ -96,6 +115,8 @@ export default {
   props: {
     // 只选图片（拍题）还是任意文件（对话附件）
     imagesOnly: { type: Boolean, default: false },
+    // 是否显示「拍照」入口（拍题场景开，纯文本附件场景可关）
+    enableCamera: { type: Boolean, default: true },
     max: { type: Number, default: 4 },
     title: { type: String, default: '从云盘选择' },
     hint: { type: String, default: '' },
@@ -162,7 +183,8 @@ export default {
       }).catch(function() {});
     },
 
-    onPick: function(e) {
+    // isCamera=true 时来自拍照入口：单张、拍完自动选中并直接确定
+    onPick: function(e, isCamera) {
       var self = this;
       var files = Array.prototype.slice.call(e.target.files || []);
       if (!files.length) return;
@@ -196,10 +218,13 @@ export default {
           }
         });
         self.$store.dispatch('toast', {
-          message: '已上传 ' + uploaded.length + ' 个文件',
+          message: isCamera ? '已拍照并上传' : ('已上传 ' + uploaded.length + ' 个文件'),
           type: 'success'
         });
-        return self.load();
+        // 拍照只有一个明确意图——用它。所以刷新列表后直接带着结果确定，省掉"再点一下确定"
+        return self.load().then(function() {
+          if (isCamera && uploaded.length) self.confirm();
+        });
       }).then(function() {
         self.loadQuota();
       }).catch(function(err) {
@@ -207,6 +232,7 @@ export default {
       }).then(function() {
         self.uploading = false;
         if (self.$refs.file) self.$refs.file.value = '';
+        if (self.$refs.camera) self.$refs.camera.value = '';
       });
     },
 
