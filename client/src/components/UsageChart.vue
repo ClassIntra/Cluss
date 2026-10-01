@@ -91,14 +91,14 @@ export default {
   display: flex;
   align-items: flex-end;
   border-radius: 6px;
-  background: rgba(31, 41, 72, 0.05);
+  background: var(--ink-1);
   overflow: hidden;
 }
 
 .bar-value {
   width: 100%;
   border-radius: 6px;
-  background: linear-gradient(180deg, #7fb0ff, #2f6bdd);
+  background: linear-gradient(180deg, var(--chart-a), var(--chart-b));
   transition: height 0.4s cubic-bezier(0.32, 0.72, 0, 1);
 }
 

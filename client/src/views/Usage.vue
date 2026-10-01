@@ -312,7 +312,7 @@ export default {
 }
 
 .weekly-fill {
-  background: linear-gradient(90deg, #b9a2ff, #8b6bff);
+  background: linear-gradient(90deg, var(--purple-a), var(--purple));
 }
 
 .wallet-alert {
@@ -348,7 +348,7 @@ export default {
 }
 
 .icon-btn:hover {
-  background: rgba(31, 41, 72, 0.08);
+  background: var(--ink-2);
   color: var(--text-primary);
 }
 
@@ -390,7 +390,7 @@ export default {
   align-items: center;
   gap: 10px;
   padding: 8px 2px;
-  border-bottom: 1px solid rgba(31, 41, 72, 0.05);
+  border-bottom: 1px solid var(--ink-1);
   font-size: 13px;
 }
 
@@ -424,13 +424,13 @@ export default {
   color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  border-bottom: 1px solid rgba(31, 41, 72, 0.08);
+  border-bottom: 1px solid var(--ink-2);
   white-space: nowrap;
 }
 
 .table td {
   padding: 9px 10px;
-  border-bottom: 1px solid rgba(31, 41, 72, 0.05);
+  border-bottom: 1px solid var(--ink-1);
 }
 
 .nowrap {
@@ -448,10 +448,10 @@ export default {
 }
 
 .src-chat { background: var(--accent-soft); color: var(--accent); }
-.src-study { background: #ede8ff; color: #6b4ee6; }
+.src-study { background: var(--purple-soft); color: var(--purple-text); }
 .src-solve { background: var(--success-soft); color: var(--success); }
 .src-grade { background: var(--warning-soft); color: var(--warning); }
-.src-vision_relay { background: rgba(31, 41, 72, 0.07); color: var(--text-secondary); }
+.src-vision_relay { background: var(--ink-2); color: var(--text-secondary); }
 
 .pager {
   display: flex;

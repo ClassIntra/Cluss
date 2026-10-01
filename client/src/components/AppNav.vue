@@ -36,6 +36,12 @@
               <div v-if="user.source === 'classintra'" class="menu-badge">来自 ClassIntra</div>
             </div>
             <router-link class="menu-item" to="/usage">我的消耗</router-link>
+            <button class="menu-item" @click="toggleTheme">
+              <span class="menu-item-row">
+                <span>{{ isDark ? '浅色模式' : '深色模式' }}</span>
+                <span class="theme-swatch" :class="{ 'is-dark': isDark }" aria-hidden="true"></span>
+              </span>
+            </button>
             <router-link v-if="isAdmin" class="menu-item" to="/admin">管理台</router-link>
             <button class="menu-item menu-danger" @click="logout">退出登录</button>
           </div>
@@ -67,6 +73,9 @@ export default {
     isAdmin: function() {
       return this.$store.getters['auth/isAdmin'];
     },
+    isDark: function() {
+      return this.$store.getters['theme/isDark'];
+    },
     displayName: function() {
       return this.user.real_name || this.user.net_name || '同学';
     },
@@ -88,6 +97,11 @@ export default {
   },
   methods: {
     closeMenu: function() {
+      this.menuOpen = false;
+    },
+    toggleTheme: function() {
+      this.$store.dispatch('theme/toggleTheme');
+      // 切完即收起菜单，让学生立刻看到整体效果
       this.menuOpen = false;
     },
     logout: function() {
@@ -129,7 +143,7 @@ export default {
 }
 
 .menu-btn:hover {
-  background: rgba(31, 41, 72, 0.08);
+  background: var(--ink-2);
 }
 
 .brand-name {
@@ -196,8 +210,8 @@ export default {
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  background: linear-gradient(140deg, #5b9bff, #2f6bdd);
-  color: #fff;
+  background: linear-gradient(140deg, var(--brand-a), var(--brand-b));
+  color: var(--text-invert);
   font-size: 14px;
   font-weight: 600;
   display: flex;
@@ -231,7 +245,7 @@ export default {
 .menu-head {
   padding-bottom: 8px;
   margin-bottom: 6px;
-  border-bottom: 1px solid rgba(31, 41, 72, 0.08);
+  border-bottom: 1px solid var(--ink-2);
 }
 
 .menu-name {
@@ -270,11 +284,33 @@ export default {
 }
 
 .menu-item:hover {
-  background: rgba(31, 41, 72, 0.06);
+  background: var(--ink-2);
+}
+
+/* 主题切换项：右侧带一个小色块示意当前会切到哪一边 */
+.menu-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.theme-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--ink-4);
+  background: linear-gradient(135deg, #f5f7fc 50%, #d8deec 50%);
+  flex-shrink: 0;
+}
+
+.theme-swatch.is-dark {
+  background: linear-gradient(135deg, #2b3140 50%, #14161d 50%);
+  border-color: var(--ink-3);
 }
 
 .menu-danger:hover {
-  background: rgba(214, 69, 69, 0.1);
+  background: var(--danger-tint);
   color: var(--danger);
 }
 

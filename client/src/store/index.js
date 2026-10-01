@@ -1,12 +1,14 @@
 import Vue from 'vue';
 import Vuex from 'vuex';
 import authStore from './auth';
+import themeStore from './theme';
 
 Vue.use(Vuex);
 
 var store = new Vuex.Store({
   modules: {
-    auth: authStore
+    auth: authStore,
+    theme: themeStore
   },
   state: {
     toast: null

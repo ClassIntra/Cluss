@@ -604,7 +604,7 @@ export default {
 }
 
 .icon-btn:hover {
-  background: rgba(31, 41, 72, 0.08);
+  background: var(--ink-2);
   color: var(--text-primary);
 }
 
@@ -642,7 +642,7 @@ export default {
 .weekly {
   margin-top: 12px;
   padding-top: 10px;
-  border-top: 1px solid rgba(31, 41, 72, 0.07);
+  border-top: 1px solid var(--ink-2);
 }
 
 .weekly-head {
@@ -656,7 +656,7 @@ export default {
 }
 
 .weekly-fill {
-  background: linear-gradient(90deg, #b9a2ff, #8b6bff);
+  background: linear-gradient(90deg, var(--purple-a), var(--purple));
 }
 
 /* ---------- 会话列表 ---------- */
@@ -694,7 +694,7 @@ export default {
 }
 
 .conv-item:hover {
-  background: rgba(31, 41, 72, 0.05);
+  background: var(--ink-1);
 }
 
 .conv-item.active {
@@ -749,7 +749,7 @@ export default {
 }
 
 .conv-del:hover {
-  background: rgba(214, 69, 69, 0.12);
+  background: var(--danger-tint);
   color: var(--danger);
 }
 
@@ -870,7 +870,7 @@ export default {
 
 .bubble-user {
   background: var(--accent);
-  color: #fff;
+  color: var(--text-invert);
   border-bottom-right-radius: 6px;
   box-shadow: 0 8px 20px var(--accent-glow);
 }
@@ -897,7 +897,7 @@ export default {
   height: 56px;
   border-radius: 10px;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--surface-on-accent);
 }
 
 .mini-attach-img {
@@ -915,7 +915,7 @@ export default {
   justify-content: center;
   font-size: 10px;
   font-weight: 700;
-  color: #fff;
+  color: var(--text-invert);
 }
 
 .user-text {
@@ -954,7 +954,7 @@ export default {
 .spinner {
   width: 13px;
   height: 13px;
-  border: 2px solid rgba(47, 107, 221, 0.25);
+  border: 2px solid var(--accent-ring);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -989,9 +989,9 @@ export default {
 .attach-btn {
   width: 34px;
   height: 34px;
-  border: 1px solid rgba(31, 41, 72, 0.1);
+  border: 1px solid var(--ink-3);
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.8);
+  background: var(--surface-2);
   color: var(--text-secondary);
   font-size: 18px;
   line-height: 1;
@@ -1032,9 +1032,9 @@ export default {
 .model-select {
   max-width: 170px;
   padding: 8px 10px;
-  border: 1px solid rgba(31, 41, 72, 0.1);
+  border: 1px solid var(--ink-3);
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.8);
+  background: var(--surface-2);
   font-family: inherit;
   font-size: 12.5px;
   color: var(--text-secondary);

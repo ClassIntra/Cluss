@@ -509,7 +509,7 @@ export default {
 }
 
 .hist-item:hover {
-  background: rgba(31, 41, 72, 0.05);
+  background: var(--ink-1);
 }
 
 .hist-item.active {
@@ -566,7 +566,7 @@ export default {
 }
 
 .icon-btn:hover {
-  background: rgba(31, 41, 72, 0.08);
+  background: var(--ink-2);
   color: var(--text-primary);
 }
 
@@ -619,7 +619,7 @@ export default {
 .pane-foot {
   margin-top: 10px;
   padding-top: 10px;
-  border-top: 1px solid rgba(31, 41, 72, 0.07);
+  border-top: 1px solid var(--ink-2);
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -640,9 +640,9 @@ export default {
 .model-select-sm {
   max-width: 160px;
   padding: 6px 8px;
-  border: 1px solid rgba(31, 41, 72, 0.1);
+  border: 1px solid var(--ink-3);
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.8);
+  background: var(--surface-2);
   font-family: inherit;
   font-size: 12px;
   color: var(--text-secondary);
@@ -661,7 +661,7 @@ export default {
   position: relative;
   border-radius: var(--radius-md);
   overflow: hidden;
-  background: rgba(31, 41, 72, 0.05);
+  background: var(--ink-1);
   border: 1px solid var(--glass-border);
 }
 
@@ -670,7 +670,7 @@ export default {
   max-height: 42vh;
   object-fit: contain;
   display: block;
-  background: rgba(31, 41, 72, 0.03);
+  background: var(--ink-1);
 }
 
 .img-index {
@@ -682,7 +682,7 @@ export default {
   padding: 0 5px;
   border-radius: var(--radius-pill);
   background: var(--accent);
-  color: #fff;
+  color: var(--text-invert);
   font-size: 11px;
   display: flex;
   align-items: center;
@@ -706,8 +706,8 @@ export default {
   height: 20px;
   border: none;
   border-radius: 50%;
-  background: rgba(20, 24, 38, 0.55);
-  color: #fff;
+  background: var(--mask-strong);
+  color: var(--text-invert);
   font-size: 13px;
   line-height: 1;
   cursor: pointer;
@@ -723,9 +723,9 @@ export default {
   min-height: 38px;
   max-height: 80px;
   padding: 9px 12px;
-  border: 1px solid rgba(31, 41, 72, 0.1);
+  border: 1px solid var(--ink-3);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.8);
+  background: var(--surface-2);
   font-family: inherit;
   font-size: 13px;
   color: var(--text-primary);
@@ -756,7 +756,7 @@ export default {
 .spinner {
   width: 13px;
   height: 13px;
-  border: 2px solid rgba(47, 107, 221, 0.25);
+  border: 2px solid var(--accent-ring);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;

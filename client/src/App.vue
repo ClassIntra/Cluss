@@ -50,8 +50,8 @@ export default {
   max-width: min(520px, calc(100vw - 48px));
   padding: 12px 20px;
   border-radius: var(--radius-md);
-  background: rgba(28, 29, 33, 0.9);
-  color: #fff;
+  background: var(--toast-bg);
+  color: var(--text-invert);
   font-size: 13.5px;
   line-height: 1.5;
   box-shadow: var(--shadow-float);
@@ -61,11 +61,11 @@ export default {
 }
 
 .toast-success {
-  background: rgba(24, 128, 82, 0.94);
+  background: var(--toast-success-bg);
 }
 
 .toast-error {
-  background: rgba(190, 52, 52, 0.94);
+  background: var(--toast-error-bg);
 }
 
 .toast-enter-active,

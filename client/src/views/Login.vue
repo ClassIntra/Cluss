@@ -163,7 +163,7 @@ export default {
   flex-direction: column;
   gap: var(--gap-lg);
   padding: 44px 40px;
-  background: linear-gradient(150deg, rgba(47, 107, 221, 0.1) 0%, rgba(146, 178, 255, 0.16) 100%);
+  background: var(--brand-wash);
   border-right: 1px solid var(--glass-border-soft);
 }
 

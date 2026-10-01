@@ -263,7 +263,7 @@ export default {
   align-items: center;
   justify-content: center;
   padding: var(--gap-lg);
-  background: rgba(20, 24, 38, 0.3);
+  background: var(--mask);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
 }
@@ -356,7 +356,7 @@ export default {
 }
 
 .icon-btn:hover {
-  background: rgba(31, 41, 72, 0.08);
+  background: var(--ink-2);
   color: var(--text-primary);
 }
 
@@ -381,7 +381,7 @@ export default {
   padding: 0;
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--surface-2);
   cursor: pointer;
   overflow: hidden;
   font-family: inherit;
@@ -390,7 +390,7 @@ export default {
 }
 
 .cell:hover {
-  border-color: rgba(47, 107, 221, 0.4);
+  border-color: var(--accent-border-strong);
 }
 
 .cell.is-selected {
@@ -402,7 +402,7 @@ export default {
   width: 100%;
   height: 92px;
   object-fit: cover;
-  background: rgba(31, 41, 72, 0.05);
+  background: var(--ink-1);
   display: block;
 }
 
@@ -411,7 +411,7 @@ export default {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(31, 41, 72, 0.04);
+  background: var(--ink-1);
 }
 
 .cell-text-icon {
@@ -438,7 +438,7 @@ export default {
   height: 20px;
   border-radius: 50%;
   background: var(--accent);
-  color: #fff;
+  color: var(--text-invert);
   font-size: 12px;
   display: flex;
   align-items: center;
@@ -453,8 +453,8 @@ export default {
   height: 20px;
   border: none;
   border-radius: 50%;
-  background: rgba(20, 24, 38, 0.5);
-  color: #fff;
+  background: var(--mask-strong);
+  color: var(--text-invert);
   font-size: 13px;
   line-height: 1;
   cursor: pointer;
@@ -477,7 +477,7 @@ export default {
   gap: var(--gap-md);
   margin-top: var(--gap-sm);
   padding-top: var(--gap-sm);
-  border-top: 1px solid rgba(31, 41, 72, 0.07);
+  border-top: 1px solid var(--ink-2);
 }
 
 .foot-actions {

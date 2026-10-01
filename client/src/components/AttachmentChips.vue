@@ -53,7 +53,7 @@ export default {
   padding: 6px 8px 6px 6px;
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.72);
+  background: var(--surface-2);
 }
 
 .chip-thumb {
@@ -61,7 +61,7 @@ export default {
   height: 34px;
   border-radius: 8px;
   object-fit: cover;
-  background: rgba(31, 41, 72, 0.06);
+  background: var(--ink-2);
   flex-shrink: 0;
 }
 
@@ -110,7 +110,7 @@ export default {
 }
 
 .chip-remove:hover {
-  background: rgba(214, 69, 69, 0.12);
+  background: var(--danger-tint);
   color: var(--danger);
 }
 </style>

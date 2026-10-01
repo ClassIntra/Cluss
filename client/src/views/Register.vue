@@ -258,7 +258,7 @@ export default {
   flex-direction: column;
   gap: var(--gap-lg);
   padding: 44px 36px;
-  background: linear-gradient(150deg, rgba(47, 107, 221, 0.1) 0%, rgba(146, 178, 255, 0.16) 100%);
+  background: var(--brand-wash);
   border-right: 1px solid var(--glass-border-soft);
 }
 
@@ -355,13 +355,13 @@ export default {
   padding: 10px 14px;
   margin-bottom: var(--gap-md);
   border-radius: var(--radius-md);
-  background: rgba(31, 41, 72, 0.04);
-  border: 1px dashed rgba(31, 41, 72, 0.14);
+  background: var(--ink-1);
+  border: 1px dashed var(--ink-4);
 }
 
 .id-preview-ready {
   background: var(--accent-soft);
-  border-color: rgba(47, 107, 221, 0.3);
+  border-color: var(--accent-border);
   border-style: solid;
 }
 
@@ -433,7 +433,7 @@ export default {
   margin: var(--gap-lg) 0;
   padding: 24px;
   border-radius: var(--radius-lg);
-  background: linear-gradient(140deg, rgba(47, 107, 221, 0.1), rgba(146, 178, 255, 0.16));
+  background: var(--brand-wash);
   border: 1px solid var(--glass-border);
 }
 

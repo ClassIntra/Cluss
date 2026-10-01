@@ -59,9 +59,158 @@
 
   --transition: 0.2s cubic-bezier(0.32, 0.72, 0, 1);
 
+  /* ---------- 令牌：墨色阶 ----------
+     浅色下是「墨」的淡填充 / 分隔线 / 描边；深色下整体翻成白色系。
+     组件样式里不要再直接写墨色的 rgba 字面量，一律用下面五档，
+     否则深色主题下会残留刺眼的浅色方块。
+     改完用 scripts/scan-hardcoded-colors.js 自查。 */
+  --ink-1: rgba(31, 41, 72, 0.04);   /* 极浅填充：表单行、代码块底、表头 */
+  --ink-2: rgba(31, 41, 72, 0.07);   /* 浅填充：分段控件轨道、徽章底、悬停 */
+  --ink-3: rgba(31, 41, 72, 0.11);   /* 分隔线 / 输入框边框 */
+  --ink-4: rgba(31, 41, 72, 0.16);   /* 较强描边 / 滚动条 */
+  --ink-5: rgba(31, 41, 72, 0.26);   /* 滚动条 hover / 强调描边 */
+
+  /* ---------- 令牌：面阶 ----------
+     卡片内需要「比卡片再亮一点」的表面（输入框、次级卡片、选中态）。
+     深色下不再是白色，而是比卡片底稍亮的白色薄膜。 */
+  --surface-1: rgba(255, 255, 255, 0.6);
+  --surface-2: rgba(255, 255, 255, 0.8);
+  --surface-3: rgba(255, 255, 255, 0.9);
+  /* 彩色底（用户气泡）上的浮层：浅色下用白，深色下用黑更协调 */
+  --surface-on-accent: rgba(255, 255, 255, 0.2);
+
+  /* ---------- 令牌：遮罩 ---------- */
+  --mask: rgba(20, 24, 38, 0.3);          /* 弹窗遮罩 */
+  --mask-strong: rgba(20, 24, 38, 0.5);   /* 图上小按钮底 */
+  --mask-deep: rgba(16, 19, 30, 0.86);    /* 图片全屏预览 */
+  --toast-bg: rgba(28, 29, 33, 0.9);
+
+  /* ---------- 令牌：强调色淡化 ---------- */
+  --accent-ring: rgba(47, 107, 221, 0.25);
+  --accent-border: rgba(47, 107, 221, 0.3);
+  --accent-border-strong: rgba(47, 107, 221, 0.4);
+  --danger-tint: rgba(214, 69, 69, 0.12);
+
+  /* 品牌与图表渐变 */
+  --brand-a: #5b9bff;
+  --brand-b: #2f6bdd;
+  --chart-a: #7fb0ff;
+  --chart-b: #2f6bdd;
+  --purple: #8b6bff;
+  --purple-a: #b9a2ff;
+  --purple-soft: #ede8ff;
+  --purple-text: #6b4ee6;
+  --danger-grad-a: #f0a95c;
+  --danger-grad-b: #d64545;
+  /* 登录/注册品牌区的柔光渐变 */
+  --brand-wash: linear-gradient(150deg, rgba(47, 107, 221, 0.1) 0%, rgba(146, 178, 255, 0.16) 100%);
+  /* 背景两个光球 */
+  --glow-a: rgba(146, 178, 255, 0.4);
+  --glow-b: rgba(198, 170, 255, 0.32);
+
+  /* 提示条的正文色：浅色下是"深色文字压在淡色底上"，
+     深色下必须翻成亮色，否则深字压深底完全看不见 */
+  --accent-text: #1f4a9c;
+  --success-text: #14663f;
+  --warning-text: #8a5809;
+  --danger-text: #8f2b2b;
+
+  /* Toast：两种主题下都走深底浅字，所以不随主题变 */
+  --toast-success-bg: rgba(24, 128, 82, 0.94);
+  --toast-error-bg: rgba(190, 52, 52, 0.94);
+
   /* 视口高度：dvh 会随移动端地址栏收放变化，比 vh 更贴近真实可视区。
      不支持 dvh 的旧内核（Chrome 80 / X5）由下面的 vh 兜底 */
   --app-height: 100vh;
+
+  /* 告诉浏览器当前是浅色界面。
+     没有这一条时，原生控件（<select> 下拉、日期选择器、滚动条）
+     会按系统偏好渲染 —— 深色主题下会出现白底白字的下拉列表。 */
+  color-scheme: light;
+}
+
+/* ============================================================
+   深色主题
+   ------------------------------------------------------------
+   注意：深色玻璃拟态**不是把浅色反相**。
+   浅色靠「白卡 + 柔和阴影」分层；深色底下阴影几乎不可见，
+   必须改靠「深色卡 + 微光描边（--glass-border 用白 10%）」，
+   否则卡片会糊成一片、分不出层次。
+   ============================================================ */
+html[data-theme="dark"] {
+  --bg-base: #14161d;
+  --bg-gradient: linear-gradient(135deg, #151822 0%, #1a1626 45%, #141a24 100%);
+
+  --glass-bg: rgba(38, 42, 54, 0.68);
+  --glass-bg-strong: rgba(44, 49, 62, 0.88);
+  --glass-bg-soft: rgba(38, 42, 54, 0.45);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-border-soft: rgba(255, 255, 255, 0.06);
+
+  /* 深色底上主色要提亮，否则对比不足、按钮显得发暗 */
+  --accent: #5b9bff;
+  --accent-soft: rgba(91, 155, 255, 0.16);
+  --accent-hover: #7cb0ff;
+  --accent-glow: rgba(91, 155, 255, 0.22);
+
+  --text-primary: #eef1f7;
+  --text-secondary: #a8b0c2;
+  --text-tertiary: #737d92;
+  /* 注意：深色下主色仍是亮蓝，所以"反色文字"依旧要用白，
+     不能跟着主题翻成深色（否则蓝底黑字，按钮会糊） */
+  --text-invert: #ffffff;
+
+  --success: #4ecb8d;
+  --success-soft: rgba(78, 203, 141, 0.14);
+  --warning: #e5b268;
+  --warning-soft: rgba(229, 178, 104, 0.14);
+  --danger: #ef6b6b;
+  --danger-soft: rgba(239, 107, 107, 0.14);
+
+  --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.34);
+  --shadow-float: 0 18px 40px rgba(0, 0, 0, 0.46);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+
+  /* 墨色阶反转：深色下"淡填充"应该是白色薄膜 */
+  --ink-1: rgba(255, 255, 255, 0.045);
+  --ink-2: rgba(255, 255, 255, 0.075);
+  --ink-3: rgba(255, 255, 255, 0.12);
+  --ink-4: rgba(255, 255, 255, 0.18);
+  --ink-5: rgba(255, 255, 255, 0.3);
+
+  --surface-1: rgba(255, 255, 255, 0.05);
+  --surface-2: rgba(255, 255, 255, 0.08);
+  --surface-3: rgba(255, 255, 255, 0.12);
+  --surface-on-accent: rgba(0, 0, 0, 0.22);
+
+  --mask: rgba(0, 0, 0, 0.55);
+  --mask-strong: rgba(0, 0, 0, 0.62);
+  --mask-deep: rgba(0, 0, 0, 0.92);
+  --toast-bg: rgba(52, 57, 70, 0.96);
+
+  --accent-ring: rgba(91, 155, 255, 0.3);
+  --accent-border: rgba(91, 155, 255, 0.36);
+  --accent-border-strong: rgba(91, 155, 255, 0.5);
+  --danger-tint: rgba(239, 107, 107, 0.16);
+
+  --purple: #a58bff;
+  --purple-a: #c3b0ff;
+  --purple-soft: rgba(165, 139, 255, 0.18);
+  --purple-text: #c3b0ff;
+
+  --brand-wash: linear-gradient(150deg, rgba(91, 155, 255, 0.12) 0%, rgba(146, 178, 255, 0.07) 100%);
+  /* 深色下光球要压低透明度，否则变成脏斑 */
+  --glow-a: rgba(91, 155, 255, 0.16);
+  --glow-b: rgba(165, 139, 255, 0.13);
+
+  /* 提示条正文翻成亮色（深字压淡色底的逻辑在深色下反转） */
+  --accent-text: #a8c8ff;
+  --success-text: #a3e6c4;
+  --warning-text: #f0cf9a;
+  --danger-text: #ffb3b3;
+
+  /* 原生控件跟着走深色（否则下拉列表会是白底白字） */
+  color-scheme: dark;
 }
 
 @supports (height: 100dvh) {
@@ -113,7 +262,7 @@ body::before {
   height: 560px;
   top: -180px;
   right: -120px;
-  background: radial-gradient(circle, rgba(146, 178, 255, 0.4) 0%, rgba(146, 178, 255, 0) 70%);
+  background: radial-gradient(circle, var(--glow-a) 0%, rgba(0, 0, 0, 0) 70%);
 }
 
 body::after {
@@ -121,7 +270,7 @@ body::after {
   height: 620px;
   bottom: -240px;
   left: -160px;
-  background: radial-gradient(circle, rgba(198, 170, 255, 0.32) 0%, rgba(198, 170, 255, 0) 70%);
+  background: radial-gradient(circle, var(--glow-b) 0%, rgba(0, 0, 0, 0) 70%);
 }
 
 /* ---------- 卡片 ---------- */
@@ -163,7 +312,7 @@ body::after {
 
 .btn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 8px 20px rgba(31, 41, 72, 0.1);
+  box-shadow: 0 8px 20px var(--ink-3);
 }
 
 .btn:active {
@@ -190,7 +339,7 @@ body::after {
 
 .btn-ghost {
   background: transparent;
-  border-color: rgba(31, 41, 72, 0.12);
+  border-color: var(--ink-3);
   color: var(--text-secondary);
 }
 
@@ -223,9 +372,9 @@ body::after {
 .select {
   width: 100%;
   padding: 12px 14px;
-  border: 1px solid rgba(31, 41, 72, 0.1);
+  border: 1px solid var(--ink-3);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.82);
+  background: var(--surface-2);
   font-size: 14px;
   font-family: inherit;
   color: var(--text-primary);
@@ -240,7 +389,7 @@ body::after {
 .input:focus,
 .select:focus {
   border-color: var(--accent);
-  background: #fff;
+  background: var(--surface-3);
   box-shadow: 0 0 0 4px var(--accent-soft);
 }
 
@@ -286,26 +435,177 @@ body::after {
 
 .alert-danger {
   background: var(--danger-soft);
-  color: #8f2b2b;
-  border: 1px solid rgba(214, 69, 69, 0.18);
+  color: var(--danger-text);
+  border: 1px solid var(--danger-tint);
 }
 
 .alert-info {
   background: var(--accent-soft);
-  color: #1f4a9c;
-  border: 1px solid rgba(47, 107, 221, 0.18);
+  color: var(--accent-text);
+  border: 1px solid var(--accent-ring);
 }
 
 .alert-success {
   background: var(--success-soft);
-  color: #14663f;
-  border: 1px solid rgba(31, 157, 99, 0.18);
+  color: var(--success-text);
+  border: 1px solid var(--success-soft);
 }
 
 .alert-warning {
   background: var(--warning-soft);
-  color: #8a5809;
-  border: 1px solid rgba(196, 126, 18, 0.18);
+  color: var(--warning-text);
+  border: 1px solid var(--warning-soft);
+}
+
+/* ============================================================
+   Markdown 正文样式（.md-body）
+   ------------------------------------------------------------
+   这些规则必须是**全局**的：内容由 v-html 注入，
+   组件里的 scoped 样式（带 data-v 属性选择器）够不到它。
+   之前漏了这段，导致批改表格一直是浏览器默认的无边框表格。
+   ============================================================ */
+.md-body {
+  font-size: 14px;
+  line-height: 1.75;
+  word-break: break-word;
+}
+
+.md-body > *:first-child { margin-top: 0; }
+.md-body > *:last-child { margin-bottom: 0; }
+
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4 {
+  margin: 1.1em 0 0.5em;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.md-body h1 { font-size: 1.35em; }
+.md-body h2 { font-size: 1.2em; }
+.md-body h3 { font-size: 1.08em; }
+.md-body h4 { font-size: 1em; }
+
+.md-body p { margin: 0.6em 0; }
+
+.md-body ul,
+.md-body ol {
+  margin: 0.6em 0;
+  padding-left: 1.4em;
+}
+
+.md-body li { margin: 0.25em 0; }
+
+.md-body a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent-ring);
+}
+
+.md-body a:hover { border-bottom-color: var(--accent); }
+
+.md-body strong { font-weight: 600; }
+
+.md-body blockquote {
+  margin: 0.7em 0;
+  padding: 0.4em 0.9em;
+  border-left: 3px solid var(--accent-ring);
+  background: var(--ink-1);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--text-secondary);
+}
+
+.md-body hr {
+  margin: 1.1em 0;
+  border: none;
+  border-top: 1px solid var(--ink-3);
+}
+
+/* 行内代码 */
+.md-body code {
+  padding: 0.15em 0.4em;
+  border-radius: 5px;
+  background: var(--ink-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+/* 代码块（含语言标签） */
+.md-body .code-block {
+  position: relative;
+  margin: 0.7em 0;
+  border-radius: var(--radius-md);
+  background: var(--ink-1);
+  border: 1px solid var(--ink-2);
+  overflow: hidden;
+}
+
+.md-body .code-lang {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: var(--ink-1);
+  border-bottom: 1px solid var(--ink-2);
+  text-transform: lowercase;
+}
+
+.md-body .code-block pre {
+  margin: 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+}
+
+.md-body .code-block code {
+  padding: 0;
+  background: transparent;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-primary);
+}
+
+/* 表格：批改结果的核心呈现形式，必须清晰可读 */
+.md-body table {
+  width: 100%;
+  margin: 0.8em 0;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.md-body th,
+.md-body td {
+  padding: 8px 10px;
+  border: 1px solid var(--ink-3);
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-body th {
+  background: var(--ink-2);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.md-body tbody tr:nth-child(even) {
+  background: var(--ink-1);
+}
+
+.md-body img {
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+}
+
+/* KaTeX：默认是黑色，深色下会看不见；跟随正文色即可 */
+.md-body .katex {
+  color: inherit;
+  font-size: 1.02em;
+}
+
+/* 公式太长时允许横向滚动，而不是把气泡撑破 */
+.md-body .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
 }
 
 /* ---------- 滚动条 ---------- */
@@ -315,12 +615,12 @@ body::after {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(31, 41, 72, 0.16);
+  background: var(--ink-4);
   border-radius: var(--radius-pill);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(31, 41, 72, 0.26);
+  background: var(--ink-5);
 }
 
 ::-webkit-scrollbar-track {
@@ -398,7 +698,7 @@ body::after {
     position: fixed;
     inset: 0;
     z-index: 299;
-    background: rgba(20, 24, 38, 0.32);
+    background: var(--mask);
     -webkit-backdrop-filter: blur(3px);
     backdrop-filter: blur(3px);
   }
@@ -460,7 +760,7 @@ body::after {
   display: inline-flex;
   padding: 3px;
   border-radius: var(--radius-md);
-  background: rgba(31, 41, 72, 0.06);
+  background: var(--ink-2);
   gap: 2px;
 }
 
@@ -484,9 +784,9 @@ body::after {
 }
 
 .segmented-item.is-active {
-  background: #fff;
+  background: var(--surface-3);
   color: var(--accent);
-  box-shadow: 0 2px 8px rgba(31, 41, 72, 0.1);
+  box-shadow: 0 2px 8px var(--ink-3);
 }
 
 .segmented-item:disabled {
@@ -502,7 +802,7 @@ body::after {
   border-radius: var(--radius-pill);
   font-size: 11.5px;
   font-weight: 500;
-  background: rgba(31, 41, 72, 0.06);
+  background: var(--ink-2);
   color: var(--text-secondary);
 }
 
@@ -538,14 +838,14 @@ body::after {
 .bar {
   height: 6px;
   border-radius: var(--radius-pill);
-  background: rgba(31, 41, 72, 0.08);
+  background: var(--ink-2);
   overflow: hidden;
 }
 
 .bar-fill {
   height: 100%;
   border-radius: var(--radius-pill);
-  background: linear-gradient(90deg, #5b9bff, #2f6bdd);
+  background: linear-gradient(90deg, var(--chart-a), var(--chart-b));
   transition: width 0.4s cubic-bezier(0.32, 0.72, 0, 1);
 }
 

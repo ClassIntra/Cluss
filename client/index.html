@@ -5,15 +5,45 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#eef1f8" />
   <title>Cluss · 引导式 AI 解题</title>
+  <script>
+    /* 主题必须在 Vue 挂载前就定好。
+       否则深色用户每次刷新都会先渲染一帧浅色再切过去（白屏闪烁）。
+       这里刻意写成最原始的形式：不进打包、不做任何依赖，越早执行越好。
+       约定与 src/store/theme.js 保持一致：localStorage.cluss_theme + data-theme 属性。 */
+    (function () {
+      try {
+        var t = localStorage.getItem('cluss_theme');
+        if (t !== 'dark') t = 'light';
+        document.documentElement.setAttribute('data-theme', t);
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', t === 'dark' ? '#14161d' : '#eef1f8');
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'light');
+      }
+    })();
+  </script>
   <style>
-    /* 首屏背景与 Vue 挂载后的视觉一致，避免加载时闪白 */
-    html, body {
+    /* 首屏背景：与 Vue 挂载后的视觉一致，避免加载时闪白。
+       注意只设在 html 上、不设在 body 上——
+       body 的背景（渐变）由 global.css 用变量提供，
+       若这里也写 body，本段选择器特异性更高，会把深色渐变覆盖掉。 */
+    html {
       margin: 0;
       padding: 0;
       height: 100%;
-      background: linear-gradient(135deg, #e8ecf7 0%, #f3eefb 45%, #eaf0fb 100%);
+      background: #eef1f8;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
         'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+    }
+
+    html[data-theme="dark"] {
+      background: #14161d;
     }
   </style>
 </head>

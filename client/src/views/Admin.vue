@@ -912,7 +912,7 @@ export default {
 }
 
 .icon-btn:hover {
-  background: rgba(31, 41, 72, 0.08);
+  background: var(--ink-2);
   color: var(--text-primary);
 }
 
@@ -936,18 +936,18 @@ export default {
   color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  border-bottom: 1px solid rgba(31, 41, 72, 0.08);
+  border-bottom: 1px solid var(--ink-2);
   white-space: nowrap;
 }
 
 .table td {
   padding: 10px 11px;
-  border-bottom: 1px solid rgba(31, 41, 72, 0.05);
+  border-bottom: 1px solid var(--ink-1);
   white-space: nowrap;
 }
 
 .table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.5);
+  background: var(--surface-1);
 }
 
 .num {
@@ -992,7 +992,7 @@ export default {
 
 .danger-text:hover {
   color: var(--danger);
-  background: rgba(214, 69, 69, 0.1);
+  background: var(--danger-tint);
 }
 
 .model-cell {
@@ -1030,7 +1030,7 @@ export default {
   align-items: center;
   gap: 12px;
   padding: 9px 2px;
-  border-bottom: 1px solid rgba(31, 41, 72, 0.05);
+  border-bottom: 1px solid var(--ink-1);
   font-size: 13px;
 }
 
@@ -1048,7 +1048,7 @@ export default {
 
 .log-row {
   padding: 9px 2px;
-  border-bottom: 1px solid rgba(31, 41, 72, 0.05);
+  border-bottom: 1px solid var(--ink-1);
 }
 
 .log-main {
@@ -1080,7 +1080,7 @@ export default {
   margin-bottom: var(--gap-md);
   padding: 12px;
   border-radius: var(--radius-md);
-  background: rgba(31, 41, 72, 0.035);
+  background: var(--ink-1);
 }
 
 .switch-row {
@@ -1111,7 +1111,7 @@ export default {
 .panel code {
   padding: 1px 5px;
   border-radius: 4px;
-  background: rgba(31, 41, 72, 0.07);
+  background: var(--ink-2);
   font-size: 11.5px;
 }
 
@@ -1124,7 +1124,7 @@ export default {
   align-items: center;
   justify-content: center;
   padding: var(--gap-lg);
-  background: rgba(20, 24, 38, 0.3);
+  background: var(--mask);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
 }
@@ -1150,7 +1150,7 @@ export default {
   margin: 4px 0 var(--gap-md);
   padding: 10px 12px;
   border-radius: var(--radius-sm);
-  background: rgba(31, 41, 72, 0.04);
+  background: var(--ink-1);
 }
 
 .modal-actions {

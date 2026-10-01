@@ -227,7 +227,7 @@ export default {
   align-items: center;
   justify-content: center;
   padding: var(--gap-lg);
-  background: rgba(20, 24, 38, 0.3);
+  background: var(--mask);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
 }
@@ -256,7 +256,7 @@ export default {
 .modal-sub code {
   padding: 1px 5px;
   border-radius: 4px;
-  background: rgba(31, 41, 72, 0.07);
+  background: var(--ink-2);
   font-size: 11.5px;
 }
 
@@ -286,7 +286,7 @@ export default {
   margin-bottom: var(--gap-md);
   padding: 12px;
   border-radius: var(--radius-md);
-  background: rgba(31, 41, 72, 0.035);
+  background: var(--ink-1);
 }
 
 .switch-row {
@@ -309,7 +309,7 @@ export default {
   gap: 10px;
   margin-top: var(--gap-md);
   padding-top: var(--gap-md);
-  border-top: 1px solid rgba(31, 41, 72, 0.07);
+  border-top: 1px solid var(--ink-2);
 }
 
 .spacer {

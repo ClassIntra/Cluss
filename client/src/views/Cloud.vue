@@ -288,7 +288,7 @@ export default {
 }
 
 .quota-warn .bar-fill {
-  background: linear-gradient(90deg, #f0a95c, #d64545);
+  background: linear-gradient(90deg, var(--danger-grad-a), var(--danger-grad-b));
 }
 
 .list-wrap {
@@ -310,7 +310,7 @@ export default {
   flex-direction: column;
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.66);
+  background: var(--surface-1);
   overflow: hidden;
 }
 
@@ -327,7 +327,7 @@ export default {
   height: 130px;
   object-fit: cover;
   display: block;
-  background: rgba(31, 41, 72, 0.05);
+  background: var(--ink-1);
 }
 
 .card-text {
@@ -338,7 +338,7 @@ export default {
   justify-content: center;
   gap: 8px;
   padding: 10px;
-  background: rgba(31, 41, 72, 0.03);
+  background: var(--ink-1);
 }
 
 .card-text-icon {
@@ -400,12 +400,12 @@ export default {
 }
 
 .icon-btn:hover {
-  background: rgba(31, 41, 72, 0.08);
+  background: var(--ink-2);
   color: var(--text-primary);
 }
 
 .icon-danger:hover {
-  background: rgba(214, 69, 69, 0.12);
+  background: var(--danger-tint);
   color: var(--danger);
 }
 
@@ -420,7 +420,7 @@ export default {
   justify-content: center;
   gap: var(--gap-md);
   padding: var(--gap-lg);
-  background: rgba(16, 19, 30, 0.86);
+  background: var(--mask-deep);
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
@@ -439,7 +439,7 @@ export default {
 }
 
 .preview-name {
-  color: rgba(255, 255, 255, 0.86);
+  color: var(--surface-3);
   font-size: 13px;
 }
 </style>
