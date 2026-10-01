@@ -1,0 +1,347 @@
+/* ============================================================
+   Cluss 设计系统
+   视觉基调：浅色渐变底 + 玻璃拟态卡片 + 大圆角 + 柔和阴影
+   参考实现要点（来自设计稿）：
+     - 卡片是半透明白 + 强模糊，边界靠 1px 高光描边而不是深阴影
+     - 圆角给足（20~24px），小元素用 12~14px，避免出现小尖角
+     - 主色是低饱和蓝，强调色只用于当前状态与关键动作
+     - 文字用近黑 #1c1d21，辅助文字降到 #6b7280 但不低于对比度要求
+   ============================================================ */
+
+:root {
+  /* 底色与卡片 */
+  --bg-base: #eef1f8;
+  --bg-gradient: linear-gradient(135deg, #e8ecf7 0%, #f3eefb 45%, #eaf0fb 100%);
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-bg-strong: rgba(255, 255, 255, 0.9);
+  --glass-bg-soft: rgba(255, 255, 255, 0.5);
+  --glass-border: rgba(255, 255, 255, 0.75);
+  --glass-border-soft: rgba(255, 255, 255, 0.5);
+
+  /* 主色 */
+  --accent: #2f6bdd;
+  --accent-soft: #e8effc;
+  --accent-hover: #2457bb;
+  --accent-glow: rgba(47, 107, 221, 0.28);
+
+  /* 文字 */
+  --text-primary: #1c1d21;
+  --text-secondary: #5a6273;
+  --text-tertiary: #8b93a5;
+  --text-invert: #ffffff;
+
+  /* 语义色 */
+  --success: #1f9d63;
+  --success-soft: #e6f5ec;
+  --warning: #c47e12;
+  --warning-soft: #fdf3e0;
+  --danger: #d64545;
+  --danger-soft: #fdecec;
+
+  /* 圆角 */
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 24px;
+  --radius-pill: 999px;
+
+  /* 阴影：只用一层柔和扩散，不用重投影 */
+  --shadow-card: 0 10px 30px rgba(31, 41, 72, 0.08);
+  --shadow-float: 0 18px 40px rgba(31, 41, 72, 0.14);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+
+  /* 间距节奏 */
+  --gap-xs: 6px;
+  --gap-sm: 10px;
+  --gap-md: 16px;
+  --gap-lg: 24px;
+  --gap-xl: 32px;
+
+  --transition: 0.2s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg-base);
+  background-image: var(--bg-gradient);
+  background-attachment: fixed;
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#app {
+  height: 100%;
+}
+
+/* 背景柔光：两个大范围渐变球，营造设计稿里的过渡感 */
+body::before,
+body::after {
+  content: '';
+  position: fixed;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+}
+
+body::before {
+  width: 560px;
+  height: 560px;
+  top: -180px;
+  right: -120px;
+  background: radial-gradient(circle, rgba(146, 178, 255, 0.4) 0%, rgba(146, 178, 255, 0) 70%);
+}
+
+body::after {
+  width: 620px;
+  height: 620px;
+  bottom: -240px;
+  left: -160px;
+  background: radial-gradient(circle, rgba(198, 170, 255, 0.32) 0%, rgba(198, 170, 255, 0) 70%);
+}
+
+/* ---------- 卡片 ---------- */
+.glass {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-card), var(--shadow-inset);
+  /* 强模糊是关键：它让卡片透出底色渐变，才有玻璃感 */
+  -webkit-backdrop-filter: blur(22px) saturate(1.4);
+  backdrop-filter: blur(22px) saturate(1.4);
+}
+
+.glass-soft {
+  background: var(--glass-bg-soft);
+  border: 1px solid var(--glass-border-soft);
+  border-radius: var(--radius-lg);
+}
+
+/* ---------- 按钮 ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 20px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--glass-bg-strong);
+  cursor: pointer;
+  transition: transform var(--transition), box-shadow var(--transition),
+    background var(--transition), color var(--transition);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(31, 41, 72, 0.1);
+}
+
+.btn:active {
+  transform: translateY(0) scale(0.985);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--text-invert);
+  box-shadow: 0 8px 22px var(--accent-glow);
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 12px 28px var(--accent-glow);
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: rgba(31, 41, 72, 0.12);
+  color: var(--text-secondary);
+}
+
+.btn-ghost:hover {
+  background: var(--glass-bg-strong);
+  color: var(--text-primary);
+}
+
+.btn-sm {
+  padding: 7px 14px;
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+}
+
+/* ---------- 表单 ---------- */
+.field {
+  display: block;
+  margin-bottom: var(--gap-md);
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.input,
+.select {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid rgba(31, 41, 72, 0.1);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.82);
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--text-primary);
+  transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
+  outline: none;
+}
+
+.input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.input:focus,
+.select:focus {
+  border-color: var(--accent);
+  background: #fff;
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.input-error {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 4px var(--danger-soft);
+}
+
+/* ---------- 通用排版 ---------- */
+.page-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.section-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.muted {
+  color: var(--text-secondary);
+}
+
+.tiny {
+  font-size: 12px;
+}
+
+/* ---------- 状态提示 ---------- */
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.alert-danger {
+  background: var(--danger-soft);
+  color: #8f2b2b;
+  border: 1px solid rgba(214, 69, 69, 0.18);
+}
+
+.alert-info {
+  background: var(--accent-soft);
+  color: #1f4a9c;
+  border: 1px solid rgba(47, 107, 221, 0.18);
+}
+
+.alert-success {
+  background: var(--success-soft);
+  color: #14663f;
+  border: 1px solid rgba(31, 157, 99, 0.18);
+}
+
+.alert-warning {
+  background: var(--warning-soft);
+  color: #8a5809;
+  border: 1px solid rgba(196, 126, 18, 0.18);
+}
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(31, 41, 72, 0.16);
+  border-radius: var(--radius-pill);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(31, 41, 72, 0.26);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------- 动效 ---------- */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.22s ease;
+}
+
+.fade-enter,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* 触屏设备：不依赖 hover 反馈 */
+@media (hover: none) {
+  .btn:hover {
+    transform: none;
+    box-shadow: none;
+  }
+  .btn-primary:hover {
+    background: var(--accent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
