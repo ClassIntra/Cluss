@@ -71,7 +71,7 @@
               <span class="tiny muted">{{ item.calls }} 次</span>
               <span class="group-cost">¥{{ item.cost_yuan }}</span>
             </div>
-            <div v-if="!items.length" class="empty-hint tiny">暂无数据</div>
+            <div v-if="!items.length" class="empty-hint tiny">{{ loading ? '读取中…' : '暂无数据' }}</div>
           </div>
         </section>
       </div>
@@ -107,7 +107,7 @@
                 <td class="num">{{ r.estimated ? '~' : '' }}¥{{ r.cost_yuan }}</td>
               </tr>
               <tr v-if="!records.length">
-                <td colspan="7" class="empty-cell muted">暂无记录</td>
+                <td colspan="7" class="empty-cell muted">{{ loading ? '读取中…' : '暂无记录' }}</td>
               </tr>
             </tbody>
           </table>
@@ -149,7 +149,10 @@ export default {
       recordTotal: 0,
       recordPages: 1,
       page: 1,
-      error: ''
+      error: '',
+      // 首次加载中：没有它的话，请求回来之前会先闪一下「暂无数据」，
+      // 学生会以为自己的用量丢了
+      loading: true
     };
   },
   computed: {
@@ -186,10 +189,14 @@ export default {
   },
   methods: {
     loadAll: function() {
+      var self = this;
       this.$store.dispatch('auth/fetchWallet').catch(function() {});
-      this.loadSummary();
       this.page = 1;
-      this.loadRecords();
+      this.loading = true;
+      // 两个请求各自已 catch，不会 reject；都收尾后再关掉加载态
+      return Promise.all([this.loadSummary(), this.loadRecords()]).then(function() {
+        self.loading = false;
+      });
     },
 
     loadSummary: function() {

@@ -517,7 +517,7 @@ export default {
 
 .body {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   gap: var(--gap-md);
   flex: 1;
   min-height: 0;

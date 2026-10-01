@@ -94,7 +94,7 @@
                   </td>
                 </tr>
                 <tr v-if="!filteredUsers.length">
-                  <td colspan="9" class="empty-cell muted">没有匹配的学生</td>
+                  <td colspan="9" class="empty-cell muted">{{ loading ? '读取中…' : '没有匹配的学生' }}</td>
                 </tr>
               </tbody>
             </table>
@@ -110,7 +110,7 @@
                 <span class="tiny muted">{{ c.students }} 人</span>
                 <span class="line-amount">¥{{ c.allocated_yuan }}</span>
               </div>
-              <div v-if="!classes.length" class="empty-cell muted tiny">暂无数据</div>
+              <div v-if="!classes.length" class="empty-cell muted tiny">{{ loading ? '读取中…' : '暂无数据' }}</div>
             </div>
           </section>
 
@@ -128,7 +128,7 @@
                   {{ l.kind }} · {{ l.reason || '无备注' }} · {{ (l.created_at || '').replace('T', ' ').slice(0, 16) }}
                 </div>
               </div>
-              <div v-if="!logs.length" class="empty-cell muted tiny">暂无流水</div>
+              <div v-if="!logs.length" class="empty-cell muted tiny">{{ loading ? '读取中…' : '暂无流水' }}</div>
             </div>
           </section>
         </div>
@@ -304,7 +304,7 @@
                 <span class="tiny muted">{{ item.calls }} 次</span>
                 <span class="line-amount">¥{{ item.cost_yuan }}</span>
               </div>
-              <div v-if="!usageItems.length" class="empty-cell muted tiny">暂无数据</div>
+              <div v-if="!usageItems.length" class="empty-cell muted tiny">{{ usageLoading ? '读取中…' : '暂无数据' }}</div>
             </div>
           </section>
         </div>
@@ -340,7 +340,7 @@
                   <td class="num">{{ r.estimated ? '~' : '' }}¥{{ r.cost_yuan }}</td>
                 </tr>
                 <tr v-if="!usageRecords.length">
-                  <td colspan="8" class="empty-cell muted">暂无记录</td>
+                  <td colspan="8" class="empty-cell muted">{{ usageLoading ? '读取中…' : '暂无记录' }}</td>
                 </tr>
               </tbody>
             </table>
@@ -420,6 +420,10 @@ export default {
     return {
       tab: 'quota',
       error: '',
+
+      // 加载态：请求回来之前不要先摆出「没有匹配的学生 / 暂无流水」这种空态文案
+      loading: true,
+      usageLoading: true,
 
       // ---- 额度 ----
       dashboard: null,
@@ -525,10 +529,16 @@ export default {
 
     // ---------- 额度 ----------
     loadQuotaTab: function() {
+      var self = this;
       this.error = '';
-      this.loadDashboard();
-      this.loadUsers();
-      this.loadLogs();
+      this.loading = true;
+      // 三个请求各自已 catch，不会 reject；都收尾后再关掉加载态，
+      // 否则请求回来前会先闪一句「没有匹配的学生」
+      return Promise.all([
+        this.loadDashboard(), this.loadUsers(), this.loadLogs()
+      ]).then(function() {
+        self.loading = false;
+      });
     },
 
     loadDashboard: function() {
@@ -713,8 +723,13 @@ export default {
 
     // ---------- 用量 ----------
     loadUsage: function() {
-      this.loadUsageSummary();
-      this.loadUsageRecords();
+      var self = this;
+      this.usageLoading = true;
+      return Promise.all([
+        this.loadUsageSummary(), this.loadUsageRecords()
+      ]).then(function() {
+        self.usageLoading = false;
+      });
     },
 
     loadUsageSummary: function() {
