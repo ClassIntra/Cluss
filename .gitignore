@@ -17,6 +17,9 @@ server/logs/
 client/dist/
 *.log
 
+# 云盘文件（用户上传的内容，体积大且属于运行时数据）
+server/Resources/
+
 # 编辑器
 .vscode/
 .idea/
