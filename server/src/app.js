@@ -53,6 +53,9 @@ if (config.corsOrigins.length) {
 // 4) API 路由
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api', require('./routes/chat'));
+app.use('/api/study', require('./routes/study'));
+app.use('/api/cloud', require('./routes/cloud'));
+app.use('/api/usage', require('./routes/usage'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/sync', require('./routes/sync'));
 

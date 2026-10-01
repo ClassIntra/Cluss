@@ -92,17 +92,27 @@ router.post('/usage', function(req, res) {
   if (!instanceId) return res.status(400).json({ code: 400, message: '缺少 instance_id' });
   if (records.length > 500) return res.status(400).json({ code: 400, message: '单次上报最多 500 条' });
 
+  // 列名显式列出：凡旧版节点上报里没有的字段（source/trace_id/image_count），
+  // 走本表默认值，保证跨版本混跑时不会因为缺字段而插入失败
   var insert = db.prepare([
     'INSERT INTO cluss_usage_log (user_id, conversation_id, model_id, prompt_tokens, completion_tokens,',
-    '  cache_hit_tokens, cache_miss_tokens, total_tokens, cost_micro, estimated, origin_instance, synced, created_at)',
-    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)'
+    '  cache_hit_tokens, cache_miss_tokens, total_tokens, cost_micro, estimated, origin_instance,',
+    '  source, trace_id, image_count, synced, created_at)',
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)'
   ].join('\n'));
+
+  // 只接受已知来源，防止节点上报任意字符串污染统计口径
+  var ALLOWED_SOURCES = ['chat', 'study', 'solve', 'grade', 'vision_relay'];
 
   var accepted = 0;
   var tx = db.transaction(function() {
     for (var i = 0; i < records.length; i++) {
       var r = records[i] || {};
       if (!r.user_id) continue;
+
+      var src = String(r.source || 'chat');
+      if (ALLOWED_SOURCES.indexOf(src) < 0) src = 'chat';
+
       insert.run(
         String(r.user_id),
         String(r.conversation_id || ''),
@@ -115,6 +125,9 @@ router.post('/usage', function(req, res) {
         Number(r.cost_micro || 0),
         r.estimated ? 1 : 0,
         instanceId,
+        src,
+        String(r.trace_id || ''),
+        Number(r.image_count || 0),
         String(r.created_at || time.nowUtc())
       );
       accepted++;

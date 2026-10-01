@@ -110,11 +110,14 @@ function checkGate(userId, model) {
 }
 
 // 记录一笔用量（本地即时扣减：余额由聚合推导，这里只落明细）
+// p 可含：source（chat/study/solve/grade/vision_relay）、trace_id、image_count
+// 三个新字段都带默认值，旧调用点不传也不受影响
 function recordUsage(p) {
   var stmt = db.prepare([
     'INSERT INTO cluss_usage_log (user_id, conversation_id, model_id, prompt_tokens, completion_tokens,',
-    '  cache_hit_tokens, cache_miss_tokens, total_tokens, cost_micro, estimated, origin_instance, synced, created_at)',
-    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)'
+    '  cache_hit_tokens, cache_miss_tokens, total_tokens, cost_micro, estimated, origin_instance,',
+    '  source, trace_id, image_count, synced, created_at)',
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)'
   ].join('\n'));
 
   var info = stmt.run(
@@ -129,6 +132,9 @@ function recordUsage(p) {
     Number(p.cost_micro || 0),
     p.estimated ? 1 : 0,
     config.instanceId,
+    String(p.source || 'chat'),
+    String(p.trace_id || ''),
+    Number(p.image_count || 0),
     time.nowUtc()
   );
 

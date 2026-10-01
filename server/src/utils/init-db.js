@@ -82,6 +82,13 @@ function initDatabase() {
 
   seedDefaultModel();
   bootstrapAdmin();
+
+  // 云盘目录（shared / thumbs）提前建好，避免首次上传时才开始建
+  try {
+    require('../services/cloud-store').ensureDirs();
+  } catch (e) {
+    console.warn('[init-db] 云盘目录初始化失败:', e.message);
+  }
 }
 
 module.exports = {

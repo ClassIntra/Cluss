@@ -39,6 +39,9 @@ function rowToModel(row) {
     modelName: row.model_name || row.id,
     apiStyle: row.api_style === 'deepseek' ? 'deepseek' : 'openai',
     supportsStream: row.supports_stream !== 0,
+    // 视觉能力（迁移 003）：能否直接收图片内容块；visionMaxImages=0 表示跟随全局默认
+    supportsVision: row.supports_vision === 1,
+    visionMaxImages: row.vision_max_images || 0,
     price_in: row.price_in || 0,
     price_out: row.price_out || 0,
     price_cache_hit: row.price_cache_hit || 0,
@@ -79,18 +82,39 @@ function resolveModel(modelId) {
 
 // 对外暴露给前端的模型列表（不泄露 apiKey）
 function listModelsForClient() {
+  var vision = null;
+  try { vision = require('./vision').getVisionConfig(); } catch (e) { vision = null; }
+
   var rows = getEnabledModels();
   var list = [];
   for (var i = 0; i < rows.length; i++) {
     var m = rowToModel(rows[i]);
     var ready = !!(m.apiUrl && m.apiKey);
+
+    // 能否用于看图：模型自身支持视觉，或配置了可用的转述模型
+    var visionCapable = m.supportsVision;
+    var visionViaRelay = false;
+    if (!visionCapable && vision && vision.enabled && vision.relayModelId) {
+      if (vision.relayModelId !== m.id) {
+        var relay = resolveModel(vision.relayModelId);
+        if (relay && relay.ready && relay.supportsVision) {
+          visionCapable = true;
+          visionViaRelay = true;
+        }
+      }
+    }
+
     list.push({
       id: m.id,
       label: m.label,
       is_free: m.is_free ? 1 : 0,
       is_default: m.is_default ? 1 : 0,
       available: ready,
-      unavailable_reason: ready ? '' : (m.apiUrl ? '未配置 Key' : '未配置地址')
+      unavailable_reason: ready ? '' : (m.apiUrl ? '未配置 Key' : '未配置地址'),
+      // 视觉能力透出给前端，用于决定「拍题」入口是否可用
+      supports_vision: m.supportsVision ? 1 : 0,
+      vision_via_relay: visionViaRelay ? 1 : 0,
+      vision_available: visionCapable && ready ? 1 : 0
     });
   }
   return list;

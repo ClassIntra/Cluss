@@ -427,5 +427,463 @@ router.get('/snapshot', auth.requireAuth, auth.requireAdmin, function(req, res) 
   res.send('\ufeff' + lines.join('\n'));   // BOM 让 Excel 正确识别 UTF-8
 });
 
+// ============================================================
+// 模型管理
+//
+// 设计原则：改完即时生效，不做缓存 —— 每次对话都重新 resolveModel，
+// 所以改单价/换 Key 不需要重启服务，也不需要清缓存。
+// ============================================================
+
+// API Key 掩码：管理台要能看出「配了没配」，但不该把完整 Key 回传到浏览器
+function maskKey(key) {
+  var k = String(key || '');
+  if (!k) return '';
+  if (k.length <= 8) return '••••';
+  return k.slice(0, 4) + '••••' + k.slice(-4);
+}
+
+function serializeModelForAdmin(r) {
+  return {
+    id: r.id,
+    label: r.label,
+    api_url: r.api_url || '',
+    api_key_masked: maskKey(r.api_key),
+    has_api_key: !!r.api_key,
+    model_name: r.model_name || '',
+    api_style: r.api_style || 'openai',
+    supports_stream: r.supports_stream !== 0 ? 1 : 0,
+    supports_vision: r.supports_vision === 1 ? 1 : 0,
+    vision_max_images: r.vision_max_images || 0,
+    price_in: r.price_in || 0,
+    price_out: r.price_out || 0,
+    price_cache_hit: r.price_cache_hit || 0,
+    is_free: r.is_free === 1 ? 1 : 0,
+    enabled: r.enabled === 1 ? 1 : 0,
+    is_default: r.is_default === 1 ? 1 : 0,
+    sort_order: r.sort_order || 0,
+    created_at: time.toISO(r.created_at)
+  };
+}
+
+router.get('/models', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var rows = db.prepare('SELECT * FROM ai_models ORDER BY sort_order ASC, id ASC').all();
+  var vision = require('../services/vision').getVisionConfig();
+
+  res.json({
+    code: 200,
+    message: 'ok',
+    data: {
+      models: rows.map(serializeModelForAdmin),
+      default_model: (function() {
+        var d = db.prepare('SELECT id FROM ai_models WHERE is_default = 1 LIMIT 1').get();
+        return d ? d.id : '';
+      })(),
+      vision_relay_model_id: vision.relayModelId,
+      // 单价提示：单位是「微元/千 token」，管理员更习惯「元/百万 token」，两者数值相同（×1000 再 ÷1e6）
+      price_unit_note: '填入的数值单位是「元 / 百万 token」（如 2 表示 2 元/百万）'
+    }
+  });
+});
+
+// 价格换算：管理台填「元/百万 token」，库里存「微元/千 token」
+// 两者数值恰好相同（1 元/1M = 1e6 微元 / 1000 千 = 1000 微元/千），
+// 所以这里只需整数化，不做乘除 —— 这个巧合让输入与存储可以同值，少一个出错点
+function parsePrice(v, label) {
+  var n = Number(v);
+  if (!isFinite(n) || n < 0) return { ok: false, message: label + '必须是不小于 0 的数字' };
+  if (n > 100000) return { ok: false, message: label + '过大（上限 100000）' };
+  return { ok: true, value: Math.round(n) };
+}
+
+function validateModelInput(body, isCreate) {
+  var b = body || {};
+  var out = {};
+
+  if (isCreate) {
+    var id = String(b.id || '').trim();
+    if (!id) return { ok: false, message: '模型 ID 不能为空' };
+    if (!/^[A-Za-z0-9._-]{1,60}$/.test(id)) {
+      return { ok: false, message: '模型 ID 只能用字母、数字、点、下划线、短横线' };
+    }
+    out.id = id;
+  }
+
+  if (b.label !== undefined) out.label = String(b.label || '').trim().slice(0, 60) || 'unnamed';
+  if (b.api_url !== undefined) out.api_url = String(b.api_url || '').trim().slice(0, 300);
+  if (b.api_key !== undefined) out.api_key = String(b.api_key || '').trim().slice(0, 400);
+  if (b.model_name !== undefined) out.model_name = String(b.model_name || '').trim().slice(0, 120);
+  if (b.api_style !== undefined) out.api_style = b.api_style === 'deepseek' ? 'deepseek' : 'openai';
+
+  if (b.supports_stream !== undefined) out.supports_stream = b.supports_stream ? 1 : 0;
+  if (b.supports_vision !== undefined) out.supports_vision = b.supports_vision ? 1 : 0;
+  if (b.vision_max_images !== undefined) {
+    var vm = parseInt(b.vision_max_images, 10);
+    out.vision_max_images = isFinite(vm) && vm > 0 ? Math.min(vm, 6) : 0;
+  }
+  if (b.is_free !== undefined) out.is_free = b.is_free ? 1 : 0;
+  if (b.enabled !== undefined) out.enabled = b.enabled ? 1 : 0;
+  if (b.sort_order !== undefined) out.sort_order = parseInt(b.sort_order, 10) || 0;
+
+  var fields = [
+    ['price_in', '输入单价'],
+    ['price_out', '输出单价'],
+    ['price_cache_hit', '缓存命中单价']
+  ];
+  for (var i = 0; i < fields.length; i++) {
+    var key = fields[i][0];
+    if (b[key] !== undefined && b[key] !== '') {
+      var p = parsePrice(b[key], fields[i][1]);
+      if (!p.ok) return p;
+      out[key] = p.value;
+    }
+  }
+
+  return { ok: true, data: out };
+}
+
+router.post('/models', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var v = validateModelInput(req.body, true);
+  if (!v.ok) return res.status(400).json({ code: 400, message: v.message });
+
+  var d = v.data;
+  var exists = db.prepare('SELECT id FROM ai_models WHERE id = ?').get(d.id);
+  if (exists) return res.status(409).json({ code: 409, message: '该模型 ID 已存在' });
+
+  db.prepare([
+    'INSERT INTO ai_models (id, label, api_url, api_key, model_name, api_style,',
+    '  supports_thinking, supports_stream, supports_vision, vision_max_images,',
+    '  price_in, price_out, price_cache_hit, is_free, enabled, is_default, sort_order, created_at)',
+    'VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)'
+  ].join('\n')).run(
+    d.id, d.label || d.id, d.api_url || '', d.api_key || '', d.model_name || d.id, d.api_style || 'openai',
+    d.supports_stream === undefined ? 1 : d.supports_stream,
+    d.supports_vision || 0, d.vision_max_images || 0,
+    d.price_in || 0, d.price_out || 0, d.price_cache_hit || 0,
+    d.is_free || 0, d.enabled === undefined ? 1 : d.enabled,
+    d.sort_order || 0, time.nowUtc()
+  );
+
+  console.log('[Admin] 新增模型: %s by %s', d.id, req.user.user_id);
+  var row = db.prepare('SELECT * FROM ai_models WHERE id = ?').get(d.id);
+  res.json({ code: 200, message: '已添加', data: serializeModelForAdmin(row) });
+});
+
+router.put('/models/:id', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var id = String(req.params.id || '');
+  var row = db.prepare('SELECT * FROM ai_models WHERE id = ?').get(id);
+  if (!row) return res.status(404).json({ code: 404, message: '模型不存在' });
+
+  var v = validateModelInput(req.body, false);
+  if (!v.ok) return res.status(400).json({ code: 400, message: v.message });
+
+  var d = v.data;
+  // api_key 留空表示「不修改」：否则管理员只改单价时会把 Key 清掉
+  if (d.api_key !== undefined && !d.api_key) delete d.api_key;
+
+  var keys = Object.keys(d);
+  if (!keys.length) return res.status(400).json({ code: 400, message: '没有要修改的内容' });
+
+  var sets = [];
+  var params = [];
+  for (var i = 0; i < keys.length; i++) {
+    sets.push(keys[i] + ' = ?');
+    params.push(d[keys[i]]);
+  }
+  params.push(id);
+
+  var stmt = db.prepare('UPDATE ai_models SET ' + sets.join(', ') + ' WHERE id = ?');
+  stmt.run.apply(stmt, params);
+
+  console.log('[Admin] 更新模型: %s by %s', id, req.user.user_id);
+  res.json({
+    code: 200,
+    message: '已更新',
+    data: serializeModelForAdmin(db.prepare('SELECT * FROM ai_models WHERE id = ?').get(id))
+  });
+});
+
+// 删除：若已被会话引用则改为软禁用
+// 硬删会让历史会话的 model_id 指向不存在的模型，管理台的用量统计就 JOIN 不出名字了
+router.delete('/models/:id', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var id = String(req.params.id || '');
+  var row = db.prepare('SELECT * FROM ai_models WHERE id = ?').get(id);
+  if (!row) return res.status(404).json({ code: 404, message: '模型不存在' });
+
+  var total = db.prepare('SELECT COUNT(*) AS c FROM ai_models').get().c;
+  if (total <= 1) {
+    return res.status(400).json({ code: 400, message: '至少要保留一个模型' });
+  }
+
+  var used = db.prepare(
+    'SELECT COUNT(*) AS c FROM ai_conversations WHERE model_id = ?'
+  ).get(id).c;
+
+  if (used > 0) {
+    db.prepare('UPDATE ai_models SET enabled = 0, is_default = 0 WHERE id = ?').run(id);
+    console.log('[Admin] 模型已被 %d 个会话引用，改为禁用: %s', used, id);
+    return res.json({
+      code: 200,
+      message: '该模型已被 ' + used + ' 个会话使用，已改为「禁用」而非删除（保留历史记录可追溯）',
+      data: { soft_disabled: true }
+    });
+  }
+
+  db.prepare('DELETE FROM ai_models WHERE id = ?').run(id);
+  console.log('[Admin] 删除模型: %s by %s', id, req.user.user_id);
+  res.json({ code: 200, message: '已删除', data: { soft_disabled: false } });
+});
+
+router.post('/models/:id/set-default', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var id = String(req.params.id || '');
+  var row = db.prepare('SELECT * FROM ai_models WHERE id = ?').get(id);
+  if (!row) return res.status(404).json({ code: 404, message: '模型不存在' });
+  if (row.enabled !== 1) return res.status(400).json({ code: 400, message: '禁用的模型不能设为默认' });
+
+  var tx = db.transaction(function() {
+    db.prepare('UPDATE ai_models SET is_default = 0').run();
+    db.prepare('UPDATE ai_models SET is_default = 1 WHERE id = ?').run(id);
+  });
+  tx();
+
+  console.log('[Admin] 默认模型改为: %s by %s', id, req.user.user_id);
+  res.json({ code: 200, message: '已设为默认模型', data: { default_model: id } });
+});
+
+// 连通性测试：发一条最小请求，验证地址与 Key 是否可用
+router.post('/models/:id/test', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var id = String(req.params.id || '');
+  var ai = require('../services/ai');
+  var mc = ai.resolveModel(id);
+  if (!mc) return res.status(404).json({ code: 404, message: '模型不存在' });
+  if (!mc.ready) {
+    return res.status(400).json({ code: 400, message: '模型未配置完成：' + mc.unavailableReason });
+  }
+
+  var started = Date.now();
+  ai.chatOnce(mc, [
+    { role: 'system', content: '你是连通性测试助手。' },
+    { role: 'user', content: '请只回复两个字：正常' }
+  ], { timeout: 30000, temperature: 0 }).then(function(data) {
+    var text = data && data.choices && data.choices[0] &&
+      data.choices[0].message && data.choices[0].message.content;
+    res.json({
+      code: 200,
+      message: '连通正常',
+      data: {
+        ok: true,
+        reply: String(text || '').slice(0, 100),
+        elapsed_ms: Date.now() - started,
+        usage: data && data.usage ? {
+          prompt_tokens: data.usage.prompt_tokens || 0,
+          completion_tokens: data.usage.completion_tokens || 0
+        } : null
+      }
+    });
+  }).catch(function(err) {
+    res.json({
+      code: 200,
+      message: '测试失败',
+      data: {
+        ok: false,
+        error: err.message || '调用失败',
+        detail: err.detail || '',
+        elapsed_ms: Date.now() - started
+      }
+    });
+  });
+});
+
+// ============================================================
+// 视觉配置
+// ============================================================
+router.get('/vision', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var vision = require('../services/vision');
+  var cfg = vision.getVisionConfig();
+  var rows = db.prepare('SELECT id, label, supports_vision, enabled, api_key, api_url FROM ai_models ORDER BY sort_order ASC').all();
+
+  res.json({
+    code: 200,
+    message: 'ok',
+    data: {
+      enabled: cfg.enabled,
+      relay_model_id: cfg.relayModelId,
+      max_images: cfg.maxImages,
+      image_max_edge: cfg.imageMaxEdge,
+      image_quality: cfg.imageQuality,
+      shrink_enabled: cfg.shrinkEnabled,
+      sharp_available: vision.sharpAvailable,
+      // 只有自身支持视觉且可用的模型才能当转述模型
+      relay_candidates: rows.filter(function(r) {
+        return r.supports_vision === 1 && r.enabled === 1 && r.api_key && r.api_url;
+      }).map(function(r) {
+        return { id: r.id, label: r.label };
+      })
+    }
+  });
+});
+
+router.put('/vision', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var vision = require('../services/vision');
+  var b = req.body || {};
+  var patch = {};
+
+  if (b.enabled !== undefined) patch.vision_enabled = b.enabled ? '1' : '0';
+  if (b.shrink_enabled !== undefined) patch.image_shrink_enabled = b.shrink_enabled ? '1' : '0';
+
+  if (b.relay_model_id !== undefined) {
+    var relayId = String(b.relay_model_id || '').trim();
+    if (relayId) {
+      // 转述模型必须自己支持视觉，否则转述本身就无法工作
+      var row = db.prepare('SELECT * FROM ai_models WHERE id = ?').get(relayId);
+      if (!row) return res.status(404).json({ code: 404, message: '转述模型不存在' });
+      if (row.supports_vision !== 1) {
+        return res.status(400).json({ code: 400, message: '转述模型必须自身支持视觉，请先在该模型上勾选「支持视觉」' });
+      }
+    }
+    patch.vision_relay_model_id = relayId;
+  }
+
+  if (b.max_images !== undefined) {
+    var n = parseInt(b.max_images, 10);
+    if (!isFinite(n) || n < 1) return res.status(400).json({ code: 400, message: '最多图片数必须大于 0' });
+    patch.vision_max_images = String(Math.min(n, 6));
+  }
+  if (b.image_max_edge !== undefined) {
+    var e = parseInt(b.image_max_edge, 10);
+    if (!isFinite(e) || e < 200) return res.status(400).json({ code: 400, message: '长边上限至少 200' });
+    patch.image_max_edge = String(Math.min(e, 4096));
+  }
+  if (b.image_quality !== undefined) {
+    var q = parseInt(b.image_quality, 10);
+    if (!isFinite(q) || q < 1) return res.status(400).json({ code: 400, message: '压缩质量必须在 1~100' });
+    patch.image_quality = String(Math.min(q, 100));
+  }
+
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ code: 400, message: '没有要修改的配置' });
+  }
+
+  var stmt = db.prepare(
+    'INSERT INTO cluss_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+  );
+  var tx = db.transaction(function() {
+    var keys = Object.keys(patch);
+    for (var i = 0; i < keys.length; i++) stmt.run(keys[i], patch[keys[i]]);
+  });
+  tx();
+
+  console.log('[Admin] 视觉配置更新 by %s: %j', req.user.user_id, patch);
+  var cfg = vision.getVisionConfig();
+  res.json({
+    code: 200,
+    message: '已保存',
+    data: {
+      enabled: cfg.enabled,
+      relay_model_id: cfg.relayModelId,
+      max_images: cfg.maxImages,
+      image_max_edge: cfg.imageMaxEdge,
+      image_quality: cfg.imageQuality,
+      shrink_enabled: cfg.shrinkEnabled
+    }
+  });
+});
+
+// 单图转述测试：验证转述链路是否通（排障用，学生看不到）
+router.post('/vision/test', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var vision = require('../services/vision');
+  var cfg = vision.getVisionConfig();
+
+  if (!cfg.relayModelId) {
+    return res.status(400).json({ code: 400, message: '尚未配置转述模型' });
+  }
+  var hash = String(req.body.hash || '').trim();
+  if (!hash) return res.status(400).json({ code: 400, message: '请提供要测试的图片 hash' });
+
+  var relay = require('../services/ai').resolveModel(cfg.relayModelId);
+  if (!relay || !relay.ready) {
+    return res.status(400).json({ code: 400, message: '转述模型不可用（未启用或缺 API Key）' });
+  }
+
+  var loaded = vision.loadImageItems(req.user.user_id, [hash], {});
+  if (loaded.error) return res.status(400).json({ code: 400, message: loaded.error });
+
+  var started = Date.now();
+  vision.shrinkAll(loaded.items, null).then(function(items) {
+    return vision.describeImages(relay, items, null);
+  }).then(function(r) {
+    res.json({
+      code: 200,
+      message: '转述完成',
+      data: {
+        ok: true,
+        model: cfg.relayModelId,
+        elapsed_ms: Date.now() - started,
+        text: r.text,
+        failed: r.failed.length
+      }
+    });
+  }).catch(function(err) {
+    res.status(500).json({ code: 500, message: '转述失败：' + (err.message || '未知错误') });
+  });
+});
+
+// ============================================================
+// 全站用量统计
+// ============================================================
+router.get('/usage/summary', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var stats = require('../services/usage-stats');
+  var win = stats.resolveWindow(req.query);
+  var groupBy = String(req.query.group_by || 'user');
+  if (['user', 'model', 'day', 'source', 'instance'].indexOf(groupBy) < 0) groupBy = 'user';
+
+  var data = stats.summary({
+    userId: String(req.query.user_id || ''),
+    classNo: String(req.query.class_no || ''),
+    from: win.from,
+    to: win.to,
+    days: win.days,
+    groupBy: groupBy
+  });
+
+  res.json({ code: 200, message: 'ok', data: data });
+});
+
+router.get('/usage/records', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var stats = require('../services/usage-stats');
+  var win = stats.resolveWindow(req.query);
+
+  var data = stats.records({
+    userId: String(req.query.user_id || ''),
+    from: win.from,
+    to: win.to,
+    modelId: String(req.query.model_id || ''),
+    source: String(req.query.source || ''),
+    page: req.query.page,
+    limit: req.query.limit
+  });
+
+  data.window = { from: win.from, to: win.to, days: win.days };
+  res.json({ code: 200, message: 'ok', data: data });
+});
+
+router.get('/usage/export.csv', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var stats = require('../services/usage-stats');
+  var win = stats.resolveWindow(req.query);
+
+  var data = stats.records({
+    userId: String(req.query.user_id || ''),
+    from: win.from,
+    to: win.to,
+    modelId: String(req.query.model_id || ''),
+    source: String(req.query.source || ''),
+    page: 1,
+    limit: 200
+  });
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="cluss-usage-all.csv"');
+  res.send(stats.recordsToCsv(data.items));
+});
+
 module.exports = router;
 module.exports.bumpAssignVersion = bumpAssignVersion;

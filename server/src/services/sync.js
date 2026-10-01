@@ -121,6 +121,10 @@ function reportUsage() {
       total_tokens: r.total_tokens,
       cost_micro: r.cost_micro,
       estimated: r.estimated,
+      // 新增字段：中继侧按列名显式接收，旧节点缺这些字段也能正常入库
+      source: r.source || 'chat',
+      trace_id: r.trace_id || '',
+      image_count: r.image_count || 0,
       created_at: r.created_at,
       local_id: r.id
     };

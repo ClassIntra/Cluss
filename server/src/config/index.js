@@ -55,6 +55,10 @@ module.exports = {
 
   dbPath: path.resolve(process.env.DB_PATH || path.join(__dirname, '../../database/cluss.db')),
 
+  // 资源目录：云盘文件与缩略图的物理存放根
+  // 每实例独立（不做跨节点同步），所以默认放在项目自己的 Resources 下
+  resourcesDir: path.resolve(process.env.RESOURCES_DIR || path.join(__dirname, '../../Resources')),
+
   // 管理员引导（仅 relay 模式生效：首次启动创建，不覆盖已有账号）
   admin: {
     userId: String(process.env.ADMIN_USER_ID || '999999').trim(),
