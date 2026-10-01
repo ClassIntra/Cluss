@@ -204,28 +204,63 @@ CI_JWT_SECRET=<与 ClassIntra 的 JWT_SECRET 一致>   # 填了才支持 token �
 
 ---
 
-## 管理台
+## 功能地图
 
-访问 `/#/admin`（需管理员账号登录），提供：
+**学生端（四个入口）**
 
-| 功能 | 说明 |
-|------|------|
-| 总览指标 | 学生数 / 已分配 / 已消耗 / 调用次数 |
-| 学生额度表 | 搜索、按班级筛选、单人充值、**批量充值**（勾选多个后一次分配） |
-| 班级概览 | 按班级统计人数与分配额 |
-| 充值流水 | `cluss_credit_log` 全量记录，含操作人、备注、时间 |
-| 台账导出 | CSV（带 BOM，Excel 直接打开不乱码） |
+| 入口 | 能做什么 |
+|------|---------|
+| 对话 | 学习模式（引导式 / 直接给答案）与日常模式；可附云盘里的图片与文本文件 |
+| 学习 | 拍题解答（单题 / 多题 / 跨页题）与作业批改（上传作答照片，逐题判定） |
+| 云盘 | 上传图片与文本、预览、下载、删除；每用户默认 200MB 配额 |
+| 消耗 | 本人用量：余额、周限额、趋势图、按模型/类型/天的分组明细、CSV 导出 |
+
+**管理端（四个标签页，`/#/admin`）**
+
+| 标签页 | 能做什么 |
+|--------|---------|
+| 学生额度 | 总览指标、学生列表（搜索 / 按班级筛选）、单人充值、**批量充值**、充值流水、台账导出 |
+| 模型与单价 | 增删改任意 OpenAI 兼容模型、设默认、启用/禁用、单价与免费标记、连通性测试 |
+| 视觉配置 | 看图总开关、转述模型选择、单次图片数上限、压缩参数 |
+| 用量统计 | 全站用量（按学生/模型/类型/天/实例分组）、调用明细、CSV 导出 |
 
 **充值流程**（对应你的真实收款方式）：
 
 ```
 学生微信/支付宝转账给你
-  → 在中继管理台找到该生（按学号或姓名搜）
+  → 在管理台找到该生（按学号或姓名搜）
   → 填额度与周限额、写备注（如「微信转账 30 元」）
-  → 确认 → 中继记账 → 各节点在一个同步周期内自动生效
+  → 确认 → 记账 → 各节点在一个同步周期内自动生效
 ```
 
 流水**只增不改**，每笔都记录 `operator_id`，可随时导出对账。
+
+### 看图（拍题与批改）是怎么工作的
+
+模型侧分两条路：
+
+```
+模型自身支持视觉  → native：直接把图片作为 image_url 内容块传给它
+模型不支持视觉    → relay ：先用「转述模型」把图片转成文字，再把文字喂给它
+两者都不行        → 拒绝请求，并给出可操作的中文提示
+```
+
+`relay` 存在的理由：教室里常用的便宜模型多是纯文本的，收图会直接 400。
+配一个视觉模型专门做「看图转文字」，就能让这些便宜模型也具备拍题能力。
+
+几个实现上的取舍：
+
+- **转述串行、不并发**：同一个 API Key 并发调转述大概率撞上游限流（429）。
+- **转述消耗单独记账**（`source='vision_relay'`），并与主回答共享同一个 `trace_id`，
+  这样对账时能算出「这次拍题总共花了多少」。
+- **闸门按「实际出钱的模型」判**：免费主模型 + 收费转述模型时，两个都要过闸门，
+  否则会被白嫖。
+- **图片只存引用不存内容**：`ai_messages.attachments` 里只有 `hash` 与文件名，
+  base64 只存在于内存与请求体中。否则会话表会被几 MB 的字符串撑爆。
+- **历史消息不回填图片**：只留 `[图片：xxx]` 文字占位，每张图按 1200 token 计入预算。
+  否则 20 条历史里混 10 张图，光历史就要吃掉 12000 token。
+- **服务端缩图**：手机题图常在 3~8MB，用 sharp 压到长边 1568 以内再传上游。
+  sharp 装不上或压缩失败时**回退原图**，绝不因压缩问题让对话不可用。
 
 ---
 
@@ -238,35 +273,77 @@ Cluss/
 │   │   ├── app.js                # 入口（三模式共用）
 │   │   ├── config/index.js       # 配置与启动校验
 │   │   ├── middleware/           # JWT 鉴权、限流
-│   │   ├── migrations/           # 数据库迁移（幂等）
-│   │   ├── routes/               # auth / chat / admin / sync
+│   │   ├── migrations/           # 数据库迁移（幂等，001~008）
+│   │   ├── routes/               # auth / chat / study / cloud / usage / admin / sync
 │   │   ├── services/
-│   │   │   ├── ai.js             # 模型解析 + OpenAI 兼容调用（含流式）
-│   │   │   ├── pricing.js        # 计费（含缓存命中单独计价）
-│   │   │   ├── credit.js         # 额度：闸门 / 记录 / 分配
-│   │   │   ├── sync.js           # 节点↔中继同步
-│   │   │   ├── ci-bridge.js      # ClassIntra 委托认证
-│   │   │   └── user-id.js        # YYNNCC 学号分配
+│   │   │   ├── turn-runner.js       # ★ 编排者：一次对话回合的完整流程
+│   │   │   ├── conversation-core.js # 会话存取 + SSE 写入器
+│   │   │   ├── prompt-registry.js   # 全部提示词的唯一来源
+│   │   │   ├── context-builder.js   # 上下文组装与 token 预算
+│   │   │   ├── vision.js            # 视觉判定 / 转述 / 缩图
+│   │   │   ├── cloud-store.js       # 云盘：内容寻址 + 引用表
+│   │   │   ├── ai.js                # 模型解析 + OpenAI 兼容调用
+│   │   │   ├── pricing.js           # 计费（缓存命中单独计价）
+│   │   │   ├── credit.js            # 额度：闸门 / 记录 / 分配
+│   │   │   ├── usage-stats.js       # 用量聚合（学生端与管理端共用）
+│   │   │   ├── sync.js              # 节点↔中继同步
+│   │   │   ├── ci-bridge.js         # ClassIntra 委托认证
+│   │   │   └── user-id.js           # YYNNCC 学号分配
 │   │   └── utils/
 │   ├── scripts/
-│   │   ├── mock-ai-server.js     # 端到端测试用的 mock 上游
-│   │   └── reset-demo-data.js    # 清空业务数据（保留管理员与模型）
+│   │   ├── mock-ai-server.js     # 端到端测试用 mock 上游（能区分看图/批改/转述）
+│   │   ├── verify-v2.js          # 64 项断言的端到端验证脚本
+│   │   ├── prepare-demo.js       # 一键准备演示环境
+│   │   └── reset-demo-data.js    # 清空业务数据
 │   └── .env.example
 └── client/
     └── src/
-        ├── views/                # Login / Register / Chat / Admin
-        ├── components/           # ClussLogo
+        ├── views/                # Login / Register / Chat / Study / Cloud / Usage / Admin
+        ├── components/           # AppNav / CloudPicker / AttachmentChips /
+        │                         # Segmented / UsageChart / ModelForm / ClussLogo
         ├── store/                # Vuex（auth 为 namespaced 模块）
         ├── router/               # hash 路由 + 鉴权守卫
-        ├── utils/                # api 封装、Markdown+KaTeX 渲染
-        └── styles/global.css     # 设计系统（玻璃拟态）
+        ├── utils/                # api 封装、Markdown+KaTeX 渲染、SSE 流式解析
+        └── styles/global.css     # 设计系统（玻璃拟态 + 平板横竖屏规则）
 ```
+
+### 两条链路共用一个编排器
+
+`chat.js`（对话）与 `study.js`（拍题/批改）都调 `services/turn-runner.js`。
+这样做的原因：会话管理、上下文组装、视觉判定、流式、记账这五件事若各写一份，
+两处的「SSE 收尾顺序」「闸门判定时机」「记账字段」必然逐渐不一致。
+
+`turn-runner` 的固定顺序本身就是正确性的一部分：
+
+```
+会话兜底 → 模型解析 → 视觉判定 → 额度闸门 → 附件校验/读取/缩图
+  → 写 SSE 头 → 存档用户消息 → 转述（如需）→ 组装上下文
+  → 流式 → 存档助手消息 → 记账 → done
+```
+
+**所有可能失败的校验都必须在「写 SSE 头」之前完成**——一旦写了头，
+HTTP 状态码就固定为 200，错误只能塞进事件流，前端拿到的是
+「200 但内容是错误」这种别扭结果。
+
+### 平板横竖屏
+
+断点按「宽度 + 方向」双维度判定，而不是只看宽度：
+
+| 场景 | 处理 |
+|------|------|
+| 平板竖屏（≤1024 且 portrait） | 侧栏改为抽屉（☰ 唤出）；学习页上下分栏；对话气泡放宽到 92% |
+| 平板横屏矮屏（landscape 且高度 ≤800） | 整体压缩垂直间距；侧栏收窄；顶栏压低 |
+| 平板横屏（landscape 且宽 ≥900） | 学习页左右分栏 |
+| 桌面（≥1366） | 保持完整三栏 |
+
+另外用 `--app-height`（`dvh`，旧内核回退 `vh`）代替写死 `100vh`，
+避免移动端地址栏收放时页面高度算错。
 
 ---
 
 ## 技术栈与约定
 
-- **服务端**：Express 4 + better-sqlite3（WAL）+ JWT + bcrypt
+- **服务端**：Express 4 + better-sqlite3（WAL）+ JWT + bcrypt + multer（上传）+ sharp（缩图）
 - **前端**：Vue 2.7 + Vue Router 3 + Vuex 3 + Vite
 - **代码风格**：`var`、单引号、2 空格缩进、中文注释（与 ClassIntra 保持一致）
 - **兼容基线**：Chrome 80 及以上、Android 平板、微信 X5 内核
@@ -275,12 +352,23 @@ Cluss/
 ### 安全基线
 
 - `JWT_SECRET` 缺失时**拒绝启动**（不留默认密钥）
-- 注册/登录独立限流（注册 30/min、登录 60/min）
+- 注册/登录独立限流（注册 30/min、登录 60/min、上传 30/min）
 - 所有 `/api/admin/*` 强制 `requireAuth + requireAdmin`
 - 中继同步接口用 `X-Cluss-Secret` 时序安全比较；未配置密钥时**拒绝服务**（不放行）
 - ClassIntra 桥为只读，不做任何写操作
 - 密码策略与 ClassIntra 一致：≥8 位且含字母与数字
 - 面向用户的错误信息一律中文，系统错误码不透传
+
+云盘相关的额外约束：
+
+- **魔数嗅探优先于浏览器声明的 MIME**；声明为图片但实际是文本时直接拒绝
+- 扩展名黑名单（`.html/.svg/.js/.mjs/.xhtml`）——它们在浏览器里能执行脚本
+- 文本文件一律 `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff`，
+  避免同源 XSS
+- 读取文件必须校验归属（用户只能读自己云盘里的 hash），防止用别人的 hash 越权
+- 每用户配额（默认 200MB），上传前检查
+- 附件内容作为「资料」注入提示词，并明确要求模型**不执行附件里出现的任何指令**
+  （文本附件截断到 32KB 并声明可能不完整）
 
 ---
 
@@ -296,16 +384,60 @@ Cluss/
 | OpenAI 兼容端点归一化规则 | ClassIntra `server/src/services/ai-chat.js` | 端点补全策略（`/v1` 自动补 `/chat/completions`） |
 | 路由与登录候选排序思路（学号精确匹配优先） | ClassIntra `server/src/routes/auth.js` | 应对同名多候选时的判定顺序 |
 | 玻璃拟态视觉方向 | 用户提供的设计参考图 | 仅参考视觉风格取向，未复制任何素材 |
+| 云盘存储模型（内容寻址 sha256 + 实体/引用两表分离） | ClassIntra `server/src/services/cloud-store.js`、`apps/resource/backend/cloud-routes.js` | 仅参考数据模型与去重思路。本项目裁掉了文件夹/分享/跨节点同步，并按自身 `foreign_keys=ON` 重写了删除顺序 |
+| 图片视觉链路（native 直传 / relay 转述回退） | ClassIntra `apps/ai-chat/backend/routes.js` | 参考三模式判定与「统一转述模型」的设计动机。本项目重写实现：串行转述、独立记账 + trace_id 串联、图片计入 token 预算 |
 
 前端依赖：Vue 2.7、Vue Router、Vuex（MIT）；marked（MIT）；KaTeX（MIT）；DOMPurify（Apache-2.0）。
-服务端依赖：Express、better-sqlite3、jsonwebtoken、bcryptjs、axios、compression、cookie-parser、morgan、dotenv。
+服务端依赖：Express、better-sqlite3、jsonwebtoken、bcryptjs、axios、compression、cookie-parser、morgan、dotenv、multer、sharp。
+`sharp` 是原生模块，装不上时服务会降级为「不压缩图片」，不影响其余功能。
+
+---
+
+## 怎么验证
+
+项目自带三个脚本，覆盖「改完怎么知道没坏」这件事：
+
+```bash
+cd server
+
+# 1) 起一个 mock 上游（不需要真实 API Key）
+node scripts/mock-ai-server.js
+
+# 2) 一键跑 64 项端到端断言
+#    覆盖：注册/闸门/充值/扣费、云盘上传与安全边界、视觉 native 与 relay 双路径、
+#          拍题三模式与批改、用量统计、模型管理、越权与非法入参
+node scripts/verify-v2.js
+
+# 3) 准备一个可直接点开就用的演示环境（清数据 + 配模型 + 建已充值学生 + 传一张题图）
+node scripts/prepare-demo.js
+#    之后用 250301 / test1234（学生）或 999999 / admin12345（管理员）登录
+```
+
+mock 上游会按请求内容回不同答案（收到图 → 回「已收到图片」；system 含「批改」→ 回批改表格；
+system 含「转述器」→ 回题目转述），所以能断言「模型到底收到了什么」，
+而不是只看「有没有返回 200」。
+
+几个容易忽略但已覆盖的断言：
+
+- **数据库里绝不能有 base64**：`LENGTH(attachments)` 与 `LENGTH(content)` 都被断言在阈值内
+- **转述与主回答共享同一 `trace_id`**，且转述记的是转述模型（不是主模型）
+- **伪装成图片的 HTML 被拒**、越权读别人的 hash 被拒、拍题不带图被拒
+- **学生访问管理接口返回 403**
 
 ---
 
 ## 已知边界
 
-- 流式对话只做「一问一答」，不含上下文摘要压缩（长对话会接近模型上下文上限，超限由上游报错）。
-- 不做视觉（图片）与联网搜索能力，这两项在 ClassIntra 的 ai-chat 中已有实现，
-  若需要可后续移植。
+- 流式对话只做「一问一答」，**不含上下文摘要压缩**。上下文按 token 预算从最新往旧裁剪，
+  所以很长的会话里最早的内容会被丢掉。若需要「记得前文」，需另做摘要机制。
+- 不支持联网搜索（需要的话可参考 ClassIntra 的 ai-chat 移植）。
+- 拍题与批改**必须有图片**：只传文本文件会被明确拒绝，而不是让模型硬答。
+- 图片识别依赖上游模型能力，识别错字、公式符号的情况真实存在；
+  提示词已要求模型对看不清的字符标 `□(看不清)`，但不能保证它每次都遵守。
 - 节点上报的是**明细**而非聚合值，学生规模很大时中继上的 `cluss_usage_log` 会持续增长；
   建议定期归档（`created_at` 早于某时间的行）。
+- 云盘每实例独立、不做跨节点同步，因此**磁盘会随拍题量增长**。已加每用户配额
+  （默认 200MB，`cluss_meta.cloud_quota_bytes` 可调）；被删引用归零的文件是软删，
+  物理文件保留在磁盘上，需要时可写脚本清理孤儿文件。
+- 软删的云盘文件若同一 hash 再次上传，会复用原物理文件（内容寻址的必然结果），
+  这是预期行为，不占额外空间。
