@@ -123,6 +123,11 @@ export default {
   padding: 10px 18px;
   border-radius: var(--radius-lg);
   flex-shrink: 0;
+  /* 必须定位并给出层级：.glass 的 backdrop-filter 虽然让顶栏自成一个层叠上下文，
+     但 static 元素的层叠层级仍是 0，会排在同为文档流内的正文之下 ——
+     结果就是下拉菜单被消息气泡盖住。抬到正文之上才是 header 应有的层级。 */
+  position: relative;
+  z-index: 100;
 }
 
 .topbar-left {
