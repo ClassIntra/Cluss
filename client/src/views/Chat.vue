@@ -96,61 +96,90 @@
           <span class="mode-hint tiny muted">{{ modeHint }}</span>
         </div>
 
-        <div ref="scroller" class="messages">
-          <div v-if="!messages.length" class="empty-state">
-            <ClussLogo :size="52" />
-            <h2 class="empty-title">{{ emptyTitle }}</h2>
-            <p class="empty-sub">{{ emptySub }}</p>
+        <div class="messages-wrap">
+          <div ref="scroller" class="messages" @scroll="onScroll">
+            <div v-if="!messages.length" class="empty-state">
+              <ClussLogo :size="52" />
+              <h2 class="empty-title">{{ emptyTitle }}</h2>
+              <p class="empty-sub">{{ emptySub }}</p>
 
-            <div class="chips-wrap">
-              <button
-                v-for="chip in currentChips"
-                :key="chip"
-                class="chip-suggest"
-                @click="useChip(chip)"
-              >{{ chip }}</button>
+              <div class="chips-wrap">
+                <button
+                  v-for="chip in currentChips"
+                  :key="chip"
+                  class="chip-suggest"
+                  @click="useChip(chip)"
+                >{{ chip }}</button>
+              </div>
             </div>
-          </div>
 
-          <div
-            v-for="(m, idx) in messages"
-            :key="idx"
-            class="msg"
-            :class="m.role === 'user' ? 'msg-user' : 'msg-assistant'"
-          >
-            <div v-if="m.role === 'assistant'" class="msg-avatar">
-              <ClussLogo :size="26" />
-            </div>
-            <div class="bubble" :class="m.role === 'user' ? 'bubble-user' : 'bubble-assistant'">
-              <!-- 用户消息里带过的附件：只显示缩略图占位，不重新加载原图 -->
-              <div v-if="m.role === 'user' && m.attachments && m.attachments.length" class="bubble-attachments">
-                <div v-for="a in m.attachments" :key="a.hash" class="mini-attach">
-                  <img
-                    v-if="a.kind === 'image'"
-                    class="mini-attach-img"
-                    :src="'/api/cloud/files/' + a.hash + '?thumb=1'"
-                    :alt="a.name"
-                    loading="lazy"
-                  />
-                  <span v-else class="mini-attach-txt">TXT</span>
+            <div
+              v-for="(m, idx) in messages"
+              :key="idx"
+              class="msg"
+              :class="m.role === 'user' ? 'msg-user' : 'msg-assistant'"
+            >
+              <div v-if="m.role === 'assistant'" class="msg-avatar">
+                <ClussLogo :size="26" />
+              </div>
+              <div class="msg-col">
+                <div class="bubble" :class="m.role === 'user' ? 'bubble-user' : 'bubble-assistant'">
+                  <!-- 用户消息里带过的附件：只显示缩略图占位，不重新加载原图 -->
+                  <div v-if="m.role === 'user' && m.attachments && m.attachments.length" class="bubble-attachments">
+                    <div v-for="a in m.attachments" :key="a.hash" class="mini-attach">
+                      <img
+                        v-if="a.kind === 'image'"
+                        class="mini-attach-img"
+                        :src="'/api/cloud/files/' + a.hash + '?thumb=1'"
+                        :alt="a.name"
+                        loading="lazy"
+                      />
+                      <span v-else class="mini-attach-txt">TXT</span>
+                    </div>
+                  </div>
+
+                  <div v-if="m.role === 'assistant' && m.content" class="md-body" v-html="render(m.content)"></div>
+                  <div
+                    v-else-if="m.role === 'assistant' && m.stopped && !m.streaming"
+                    class="stopped-hint"
+                  >已停止生成</div>
+                  <div v-else-if="m.role === 'user'" class="user-text">{{ m.content }}</div>
+                  <span v-if="m.streaming" class="caret"></span>
+                </div>
+
+                <!-- 消息操作：恒显（平板没有 hover），靠低对比让位给正文 -->
+                <div v-if="m.role === 'assistant' && (m.content || !m.streaming)" class="msg-tools">
+                  <button v-if="m.content" class="tool-btn" @click="copyMessage(m.content, idx)">
+                    {{ copiedKey === idx ? '已复制' : '复制' }}
+                  </button>
+                  <button
+                    v-if="idx === messages.length - 1 && !sending"
+                    class="tool-btn"
+                    @click="regenerate"
+                  >重新生成</button>
                 </div>
               </div>
+            </div>
 
-              <div v-if="m.role === 'assistant'" class="md-body" v-html="render(m.content)"></div>
-              <div v-else class="user-text">{{ m.content }}</div>
-              <span v-if="m.streaming" class="caret"></span>
+            <div v-if="visionStatus" class="vision-status">
+              <span class="spinner"></span>
+              <span>{{ visionStatus }}</span>
+            </div>
+
+            <div v-if="streamError" class="stream-error alert alert-danger">
+              <span>{{ streamError }}</span>
+              <button class="btn btn-sm btn-ghost" @click="retry">重试</button>
             </div>
           </div>
 
-          <div v-if="visionStatus" class="vision-status">
-            <span class="spinner"></span>
-            <span>{{ visionStatus }}</span>
-          </div>
-
-          <div v-if="streamError" class="stream-error alert alert-danger">
-            <span>{{ streamError }}</span>
-            <button class="btn btn-sm btn-ghost" @click="retry">重试</button>
-          </div>
+          <transition name="fade">
+            <button
+              v-if="!atBottom && messages.length"
+              class="scroll-bottom"
+              type="button"
+              @click="scrollToBottom"
+            >回到底部 ↓</button>
+          </transition>
         </div>
 
         <!-- 输入区 -->
@@ -182,9 +211,12 @@
                 </option>
               </select>
 
-              <button class="btn btn-primary send-btn" :disabled="!canSend" @click="send">
-                {{ sending ? '生成中…' : '发送' }}
-              </button>
+              <button
+                class="btn send-btn"
+                :class="sending ? 'btn-stop' : 'btn-primary'"
+                :disabled="!sending && !canSend"
+                @click="sending ? stop() : send()"
+              >{{ sending ? '停止生成' : '发送' }}</button>
             </div>
           </div>
 
@@ -235,11 +267,16 @@ export default {
       sending: false,
       streamError: '',
       visionStatus: '',
-      lastFailed: null,
       pickerOpen: false,
       attachments: [],
       drawerOpen: false,
       isPortrait: false,
+      // 用户是否停在底部：不在底部时不要硬把视图拽回去，否则他想翻记录会被打断
+      atBottom: true,
+      // 刚复制过的消息下标，用于把「复制」短暂变成「已复制」
+      copiedKey: -1,
+      // 用户主动点了停止
+      stopped: false,
       // 会话模式
       mode: 'study',
       studyStyle: 'guided'
@@ -311,6 +348,7 @@ export default {
   beforeDestroy: function() {
     window.removeEventListener('resize', this.checkOrientation);
     window.removeEventListener('orientationchange', this.checkOrientation);
+    clearTimeout(this._copyTimer);
     if (this._abort) this._abort.abort();
   },
   methods: {
@@ -437,18 +475,84 @@ export default {
       this.$nextTick(function() {
         var el = self.$refs.scroller;
         if (el) el.scrollTop = el.scrollHeight;
+        self.atBottom = true;
       });
     },
 
-    retry: function() {
-      if (!this.lastFailed) return;
+    // 判断是否贴着底部：留 48px 容差，手指滑动时轻微偏移不该算"离开底部"
+    onScroll: function() {
+      var el = this.$refs.scroller;
+      if (!el) return;
+      this.atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    },
+
+    copyMessage: function(text, idx) {
+      var self = this;
+      if (!text) return;
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function() {
+          self.markCopied(idx);
+        }).catch(function() {
+          self.fallbackCopy(text, idx);
+        });
+        return;
+      }
+      this.fallbackCopy(text, idx);
+    },
+
+    // 旧内核（部分平板 WebView）没有 navigator.clipboard，退回选中 + execCommand
+    fallbackCopy: function(text, idx) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+
+      if (ok) this.markCopied(idx);
+      else this.$store.dispatch('toast', { message: '复制失败，请长按选中文本', type: 'error' });
+    },
+
+    markCopied: function(idx) {
+      var self = this;
+      this.copiedKey = idx;
+      clearTimeout(this._copyTimer);
+      this._copyTimer = setTimeout(function() { self.copiedKey = -1; }, 1600);
+    },
+
+    // 中断当前生成：真正的收尾放在流式 promise 的 finally 里，这里只负责发出信号
+    stop: function() {
+      if (!this.sending) return;
+      this.stopped = true;
+      if (this._abort) this._abort.abort();
+    },
+
+    // 重来一轮：砍掉最后一个用户消息之后的所有内容，用同样的输入再跑一次
+    regenerate: function() {
+      if (this.sending) return;
+
+      var lastUserIdx = -1;
+      for (var i = this.messages.length - 1; i >= 0; i--) {
+        if (this.messages[i].role === 'user') { lastUserIdx = i; break; }
+      }
+      if (lastUserIdx < 0) return;
+
+      var lastUser = this.messages[lastUserIdx];
+      this.messages = this.messages.slice(0, lastUserIdx);
       this.streamError = '';
-      this.draft = this.lastFailed;
-      this.send();
+      this.runTurn(lastUser.content, (lastUser.attachments || []).slice());
+    },
+
+    retry: function() {
+      this.regenerate();
     },
 
     send: function() {
-      var self = this;
       if (!this.canSend) return;
 
       var content = this.draft.trim();
@@ -458,11 +562,18 @@ export default {
       this.draft = '';
       this.attachments = [];
       this.$nextTick(this.autoGrow);
+      this.runTurn(content, atts);
+    },
+
+    // 一轮对话的完整编排：send 与 regenerate 共用，避免两处行为走偏
+    runTurn: function(content, atts) {
+      var self = this;
+
       this.streamError = '';
       this.visionStatus = '';
-      this.lastFailed = content;
+      this.stopped = false;
 
-      this.messages.push({ role: 'user', content: content, attachments: atts, streaming: false });
+      this.messages.push({ role: 'user', content: content, attachments: atts || [], streaming: false });
       var assistant = { role: 'assistant', content: '', attachments: [], streaming: true };
       this.messages.push(assistant);
       this.sending = true;
@@ -485,7 +596,7 @@ export default {
           model_id: this.modelId || '',
           mode: this.mode,
           study_style: this.studyStyle,
-          attachment_hashes: atts.map(function(a) { return a.hash; })
+          attachment_hashes: (atts || []).map(function(a) { return a.hash; })
         }),
         signal: controller.signal
       }).then(function(resp) {
@@ -512,12 +623,12 @@ export default {
           },
           onDelta: function(text) {
             assistant.content += text;
-            self.scrollToBottom();
+            // 用户上滚看历史时不抢滚动位置，只在底部时才跟随
+            if (self.atBottom) self.scrollToBottom();
           },
           onDone: function(done) {
             assistant.streaming = false;
             self.visionStatus = '';
-            self.lastFailed = null;
             self.loadWallet();
             self.loadConversations();
             if (done && done.estimated) {
@@ -539,6 +650,14 @@ export default {
       }).then(function() {
         self.sending = false;
         self._abort = null;
+
+        if (self.stopped) {
+          self.stopped = false;
+          // 主动停止：留着这条空回复并做标记，用户还能直接「重新生成」，
+          // 直接删掉的话只剩一条用户消息，没有入口可以重来。
+          assistant.stopped = true;
+          return;
+        }
         if (!assistant.content && !self.streamError) {
           self.streamError = '未收到回复内容，请重试';
         }
@@ -713,7 +832,7 @@ export default {
 }
 
 .dot-daily {
-  background: #8b6bff;
+  background: var(--purple);
 }
 
 .conv-title {
@@ -781,11 +900,42 @@ export default {
   white-space: nowrap;
 }
 
+/* 滚动容器 + 浮在右下角的「回到底部」按钮，两者必须同处一个定位上下文 */
+.messages-wrap {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
 .messages {
   flex: 1;
   overflow-y: auto;
   padding: 2px 2px 6px;
   min-height: 0;
+}
+
+.scroll-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  padding: 6px 15px;
+  border: 1px solid var(--menu-border);
+  border-radius: var(--radius-pill);
+  background: var(--menu-bg);
+  box-shadow: var(--shadow-float);
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  z-index: 5;
+  transition: color var(--transition), border-color var(--transition);
+}
+
+.scroll-bottom:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .empty-state {
@@ -860,8 +1010,59 @@ export default {
   margin-top: 2px;
 }
 
-.bubble {
+/* 气泡 + 操作条的竖排容器。
+   宽度上限放在这一层（而不是气泡上），因为气泡在竖排里会按内容收缩，
+   百分比上限如果挂在气泡上会参照自身宽度，算不出稳定结果。 */
+.msg-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
   max-width: min(760px, 84%);
+}
+
+.msg-user .msg-col {
+  align-items: flex-end;
+}
+
+.msg-assistant .msg-col {
+  align-items: flex-start;
+}
+
+/* 操作条恒显：平板没有 hover，藏起来就等于没有这个功能。
+   靠低透明度让位给正文，指到或点到时再提亮。 */
+.msg-tools {
+  display: flex;
+  gap: 6px;
+  opacity: 0.5;
+  transition: opacity var(--transition);
+}
+
+.msg:hover .msg-tools,
+.msg-tools:focus-within {
+  opacity: 1;
+}
+
+.tool-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--ink-3);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  font-family: inherit;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color var(--transition), border-color var(--transition), background var(--transition);
+}
+
+.tool-btn:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.bubble {
+  max-width: 100%;
   padding: 12px 16px;
   border-radius: var(--radius-lg);
   font-size: 14px;
@@ -921,6 +1122,11 @@ export default {
 .user-text {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.stopped-hint {
+  color: var(--text-tertiary);
+  font-size: 13px;
 }
 
 .caret {

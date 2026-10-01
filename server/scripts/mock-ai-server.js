@@ -16,6 +16,9 @@
 var http = require('http');
 
 var PORT = Number(process.env.MOCK_AI_PORT || 9200);
+// 每个流式分片的间隔（毫秒）。默认 6ms 贴近真实节奏；调大可以把流拉长，
+// 方便手工验证「停止生成」「上滚不回弹」这类依赖"流还在跑"的交互。
+var CHUNK_MS = Number(process.env.MOCK_CHUNK_MS || 6);
 
 // 固定用量，便于断言计费结果
 var USAGE_TEXT = { prompt_tokens: 1000, completion_tokens: 500, cache_hit_tokens: 200, total_tokens: 1500 };
@@ -214,7 +217,8 @@ var server = http.createServer(function(req, res) {
       'Connection': 'keep-alive'
     });
 
-    // 逐块下发正文，模拟真实流式的到达节奏
+    // 逐块下发正文，模拟真实流式的到达节奏。
+    // MOCK_CHUNK_MS 可放大间隔，用来测「停止生成」这类需要流还在跑的场景。
     var chunks = reply.match(/[\s\S]{1,24}/g) || [];
     var i = 0;
     var timer = setInterval(function() {
@@ -235,7 +239,7 @@ var server = http.createServer(function(req, res) {
         choices: [{ index: 0, delta: { content: chunks[i] }, finish_reason: null }]
       }) + '\n\n');
       i++;
-    }, 6);
+    }, CHUNK_MS);
   });
 });
 

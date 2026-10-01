@@ -369,6 +369,18 @@ body::after {
   color: var(--text-primary);
 }
 
+/* 停止生成：比主按钮弱、比幽灵按钮强，用危险色淡化，明确「这是中断动作」 */
+.btn-stop {
+  background: var(--danger-soft);
+  border-color: var(--danger-tint);
+  color: var(--danger);
+}
+
+.btn-stop:hover {
+  background: var(--danger-tint);
+  box-shadow: 0 8px 20px var(--danger-tint);
+}
+
 .btn-sm {
   padding: 7px 14px;
   font-size: 13px;
