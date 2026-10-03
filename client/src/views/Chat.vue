@@ -271,7 +271,7 @@
               :placeholder="composerPlaceholder"
               :disabled="sending || !canAsk"
               rows="1"
-              @keydown.enter.exact.prevent="send"
+              @keydown="onComposerKeydown"
               @input="autoGrow"
             ></textarea>
 
@@ -302,7 +302,7 @@
           </div>
 
           <div class="composer-foot tiny muted">
-            Enter 发送，Shift + Enter 换行 · 回答由 AI 生成，请自行核对
+            <span class="foot-kbd">Enter 发送，Shift + Enter 换行 · </span>回答由 AI 生成，请自行核对
           </div>
         </div>
       </main>
@@ -367,6 +367,8 @@ export default {
       copiedKey: -1,
       // 用户主动点了停止
       stopped: false,
+      // 主输入是否为触摸（安卓平板 = true）：决定 Enter 是发送还是换行
+      isTouch: false,
       // 会话模式
       mode: 'study',
       studyStyle: 'guided',
@@ -466,6 +468,9 @@ export default {
     }
   },
   mounted: function() {
+    // 主输入是否为触摸（决定 Enter 是发送还是换行，见 onComposerKeydown）
+    try { this.isTouch = window.matchMedia('(hover: none)').matches; } catch (e) { /* 探测失败按桌面处理 */ }
+
     // 方向与抽屉手势由 mixins/orientation 统一处理（三个页面共用）
     this.$store.dispatch('auth/fetchProfile').catch(function() {});
     this.loadWallet();
@@ -623,6 +628,19 @@ export default {
 
     focusInput: function() {
       if (this.$refs.input) this.$refs.input.focus();
+    },
+
+    // Enter 行为按输入设备分流：
+    //   桌面（有鼠标）：Enter 发送，Shift + Enter 换行 —— 键盘党的效率习惯
+    //   触屏（目标设备安卓平板）：软键盘没有 Shift，Enter 一律换行，
+    //     发送交给按钮 —— 与微信等主流 App 一致；否则多行输入没法换行。
+    // 判据用 (hover: none)（主输入是触摸），平板插了物理键盘也按触屏算。
+    onComposerKeydown: function(e) {
+      if (this.isTouch) return;
+      if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        this.send();
+      }
     },
 
     autoGrow: function() {
@@ -951,9 +969,11 @@ html.no-flex-gap .sidebar > * + * {
   cursor: pointer;
 }
 
+@media (hover: hover) {
 .icon-btn:hover {
   background: var(--ink-2);
   color: var(--text-primary);
+}
 }
 
 .wallet-amount {
@@ -1046,6 +1066,7 @@ html.no-flex-gap .wallet-amount > * + * {
 html.no-flex-gap .conv-head-tools > * + * {
   margin-left: 4px;
 }
+
 /* 导出按钮的线性图标：跟随 currentColor，与文字类图标按钮（＋ ↻ ×）同灰度 */
 .icon-btn svg {
   display: block;
@@ -1084,8 +1105,10 @@ html.no-flex-gap .conv-item > * + * {
   margin-left: 6px;
 }
 
+@media (hover: hover) {
 .conv-item:hover {
   background: var(--ink-1);
+}
 }
 
 .conv-item.active {
@@ -1135,8 +1158,10 @@ html.no-flex-gap .conv-item > * + * {
   flex-shrink: 0;
 }
 
+@media (hover: hover) {
 .conv-item:hover .conv-del {
   opacity: 1;
+}
 }
 
 /* 触屏没有 hover：竖屏触控设备上操作按钮常显（靠低对比让位正文，
@@ -1145,9 +1170,11 @@ html.is-portrait .conv-del {
   opacity: 1;
 }
 
+@media (hover: hover) {
 .conv-del:hover {
   background: var(--danger-tint);
   color: var(--danger);
+}
 }
 
 .conv-del svg {
@@ -1269,9 +1296,11 @@ html.no-flex-gap .mode-bar > * + * {
   transition: color var(--transition), border-color var(--transition);
 }
 
+@media (hover: hover) {
 .scroll-bottom:hover {
   color: var(--accent);
   border-color: var(--accent);
+}
 }
 
 .empty-state {
@@ -1323,9 +1352,11 @@ html.no-flex-gap .chips-wrap > * + * {
   transition: background var(--transition), color var(--transition);
 }
 
+@media (hover: hover) {
 .chip-suggest:hover {
   background: var(--glass-bg-strong);
   color: var(--text-primary);
+}
 }
 
 .msg {
@@ -1403,9 +1434,13 @@ html.no-flex-gap .msg-tools > * + * {
   margin-left: 6px;
 }
 
-.msg:hover .msg-tools,
 .msg-tools:focus-within {
   opacity: 1;
+}
+@media (hover: hover) {
+.msg:hover .msg-tools {
+  opacity: 1;
+}
 }
 
 .tool-btn {
@@ -1420,10 +1455,12 @@ html.no-flex-gap .msg-tools > * + * {
   transition: color var(--transition), border-color var(--transition), background var(--transition);
 }
 
+@media (hover: hover) {
 .tool-btn:hover {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent);
+}
 }
 
 /* 竖屏触控：复制 / 重新生成在平板上是纯触摸操作，
@@ -1601,9 +1638,11 @@ html.no-flex-gap .composer > * + * {
   flex-shrink: 0;
 }
 
+@media (hover: hover) {
 .attach-btn:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
 }
 
 .composer-input {
@@ -1656,6 +1695,13 @@ html.no-flex-gap .composer-actions > * + * {
 
 .composer-foot {
   text-align: center;
+}
+
+/* 触屏上没有 Shift 键，「Enter 发送」的说明不成立（Enter 是换行），整段收起 */
+@media (hover: none) {
+  .foot-kbd {
+    display: none;
+  }
 }
 
 @media (max-width: 900px) {

@@ -707,8 +707,10 @@ html.no-flex-gap .hist-item > * + * {
   margin-left: 6px;
 }
 
+@media (hover: hover) {
 .hist-item:hover {
   background: var(--ink-2);
+}
 }
 
 .hist-item.active {
@@ -747,13 +749,17 @@ html.no-flex-gap .hist-item > * + * {
   flex-shrink: 0;
 }
 
+@media (hover: hover) {
 .hist-item:hover .hist-del {
   opacity: 1;
 }
+}
 
+@media (hover: hover) {
 .hist-del:hover {
   background: var(--danger-tint);
   color: var(--danger);
+}
 }
 
 .hist-empty {
@@ -773,9 +779,11 @@ html.no-flex-gap .hist-item > * + * {
   cursor: pointer;
 }
 
+@media (hover: hover) {
 .icon-btn:hover {
   background: var(--ink-2);
   color: var(--text-primary);
+}
 }
 
 /* ---------- 主区 ---------- */

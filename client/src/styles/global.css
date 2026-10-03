@@ -386,9 +386,11 @@ html.no-flex-gap .btn > * + * {
   margin-left: 8px;
 }
 
+@media (hover: hover) {
 .btn:hover {
   transform: translateY(-1px);
   box-shadow: 0 8px 20px var(--ink-3);
+}
 }
 
 /* 按下**立即**（transition-duration 0s），松开才走 160ms 回弹。
@@ -414,9 +416,11 @@ html.no-flex-gap .btn > * + * {
   box-shadow: 0 8px 22px var(--accent-glow);
 }
 
+@media (hover: hover) {
 .btn-primary:hover {
   background: var(--accent-hover);
   box-shadow: 0 12px 28px var(--accent-glow);
+}
 }
 
 .btn-ghost {
@@ -425,9 +429,11 @@ html.no-flex-gap .btn > * + * {
   color: var(--text-secondary);
 }
 
+@media (hover: hover) {
 .btn-ghost:hover {
   background: var(--glass-bg-strong);
   color: var(--text-primary);
+}
 }
 
 /* 停止生成：比主按钮弱、比幽灵按钮强，用危险色淡化，明确「这是中断动作」 */
@@ -437,9 +443,11 @@ html.no-flex-gap .btn > * + * {
   color: var(--danger);
 }
 
+@media (hover: hover) {
 .btn-stop:hover {
   background: var(--danger-tint);
   box-shadow: 0 8px 20px var(--danger-tint);
+}
 }
 
 /* 实心危险按钮：只用于「不可逆的破坏性操作」的最终确认（删除等）。
@@ -451,9 +459,11 @@ html.no-flex-gap .btn > * + * {
   box-shadow: 0 8px 22px var(--danger-tint);
 }
 
+@media (hover: hover) {
 .btn-danger:hover {
   filter: brightness(0.92);
   box-shadow: 0 12px 28px var(--danger-tint);
+}
 }
 
 .btn-sm {
@@ -786,7 +796,9 @@ html.no-flex-gap .alert > * + * {
   border-bottom: 1px solid var(--accent-ring);
 }
 
+@media (hover: hover) {
 .md-body a:hover { border-bottom-color: var(--accent); }
+}
 
 .md-body strong { font-weight: 600; }
 
@@ -902,8 +914,10 @@ html.no-flex-gap .alert > * + * {
   border-radius: var(--radius-pill);
 }
 
+@media (hover: hover) {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--ink-5);
+}
 }
 
 ::-webkit-scrollbar-track {
@@ -989,16 +1003,9 @@ html.no-flex-gap .alert > * + * {
   opacity: 0;
 }
 
-/* 触屏设备：不依赖 hover 反馈 */
-@media (hover: none) {
-  .btn:hover {
-    transform: none;
-    box-shadow: none;
-  }
-  .btn-primary:hover {
-    background: var(--accent);
-  }
-}
+/* （原 @media (hover: none) 的 hover 兜底已删除：
+   所有 :hover 规则现已收进 @media (hover: hover)，
+   触屏设备根本收不到 hover 样式，无需再逐一覆盖抵消） */
 
 @media (prefers-reduced-motion: reduce) {
   * {
@@ -1201,8 +1208,10 @@ html.no-flex-gap .segmented > * + * {
   -webkit-tap-highlight-color: transparent;
 }
 
+@media (hover: hover) {
 .segmented-item:hover:not(.is-active) {
   color: var(--text-primary);
+}
 }
 
 .segmented-item.is-active {

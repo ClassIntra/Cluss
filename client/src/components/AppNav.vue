@@ -289,8 +289,10 @@ export default {
   cursor: pointer;
 }
 
+@media (hover: hover) {
 .menu-btn:hover {
   background: var(--ink-2);
+}
 }
 
 .brand-name {
@@ -333,9 +335,11 @@ export default {
   transition: background var(--transition), color var(--transition);
 }
 
+@media (hover: hover) {
 .nav-item:hover {
   background: var(--glass-bg-strong);
   color: var(--text-primary);
+}
 }
 
 .nav-item.active {
@@ -364,10 +368,15 @@ export default {
   margin-left: 8px;
 }
 
-.user-chip:hover,
 .user-chip.is-open {
   background: var(--glass-bg-strong);
   border-color: var(--ink-3);
+}
+@media (hover: hover) {
+.user-chip:hover {
+  background: var(--glass-bg-strong);
+  border-color: var(--ink-3);
+}
 }
 
 .avatar {
@@ -489,8 +498,10 @@ export default {
   cursor: pointer;
 }
 
+@media (hover: hover) {
 .menu-item:hover {
   background: var(--ink-2);
+}
 }
 
 /* 主题切换项：右侧带一个小色块示意当前会切到哪一边 */
@@ -525,9 +536,11 @@ export default {
   color: var(--danger);
 }
 
+@media (hover: hover) {
 .menu-danger:hover {
   background: var(--danger-tint);
   color: var(--danger);
+}
 }
 
 .menu-version {

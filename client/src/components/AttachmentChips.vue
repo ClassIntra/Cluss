@@ -119,8 +119,11 @@ html.no-flex-gap .chip > * + * {
   flex-shrink: 0;
 }
 
+@media (hover: hover) {
 .chip-remove:hover {
   background: var(--danger-tint);
   color: var(--danger);
 }
+}
+
 </style>

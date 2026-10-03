@@ -295,8 +295,6 @@ html.no-flex-gap .switch-list > * + * {
   margin-top: 9px;
 }
 
-
-
 .switch-row {
   display: flex;
   align-items: flex-start;
@@ -308,8 +306,6 @@ html.no-flex-gap .switch-list > * + * {
 html.no-flex-gap .switch-row > * + * {
   margin-left: 9px;
 }
-
-
 
 .switch-row input {
   margin-top: 3px;
@@ -327,8 +323,6 @@ html.no-flex-gap .switch-row > * + * {
 html.no-flex-gap .modal-actions > * + * {
   margin-left: 10px;
 }
-
-
 
 .spacer {
   flex: 1;

@@ -436,9 +436,12 @@ html.no-flex-gap .form-foot > * + * {
   font-weight: 500;
 }
 
+@media (hover: hover) {
 .link:hover {
   text-decoration: underline;
 }
+}
+
 
 /* ---------- 注册成功面板 ---------- */
 .success-pane {

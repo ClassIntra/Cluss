@@ -977,9 +977,11 @@ html.no-flex-gap .filters > * + * {
   cursor: pointer;
 }
 
+@media (hover: hover) {
 .icon-btn:hover {
   background: var(--ink-2);
   color: var(--text-primary);
+}
 }
 
 /* ---------- 表格 ---------- */
@@ -1012,8 +1014,10 @@ html.no-flex-gap .filters > * + * {
   white-space: nowrap;
 }
 
+@media (hover: hover) {
 .table tbody tr:hover {
   background: var(--surface-1);
+}
 }
 
 .num {
@@ -1056,9 +1060,11 @@ html.no-flex-gap .filters > * + * {
   color: var(--success);
 }
 
+@media (hover: hover) {
 .danger-text:hover {
   color: var(--danger);
   background: var(--danger-tint);
+}
 }
 
 .model-cell {

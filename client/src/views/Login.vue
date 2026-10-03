@@ -298,9 +298,12 @@ html.no-flex-gap .form-foot > * + * {
   font-weight: 500;
 }
 
+@media (hover: hover) {
 .link:hover {
   text-decoration: underline;
 }
+}
+
 
 .ci-hint {
   margin-top: var(--gap-md);

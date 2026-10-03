@@ -3,7 +3,18 @@
     <div v-if="!items.length" class="empty-hint tiny">暂无数据</div>
 
     <div v-else class="bars">
-      <div v-for="(item, idx) in items" :key="idx" class="bar-col" :title="tooltip(item)">
+      <div
+        v-for="(item, idx) in items"
+        :key="idx"
+        class="bar-col"
+        :class="{ 'is-active': idx === activeIdx }"
+        role="button"
+        :title="tooltip(item)"
+        @click="activeIdx = activeIdx === idx ? -1 : idx"
+      >
+        <!-- 点按显示数值：title 属性在触屏上永远不出现（没有悬停），
+             平板学生此前只能看到柱子高度，看不到具体积分与次数 -->
+        <div v-if="idx === activeIdx" class="bar-tip tiny">{{ tooltip(item) }}</div>
         <div class="bar-track">
           <!-- 用 scaleY 而不是 height：一次要动几十根柱子，
                height 每帧都要重排，scaleY 只走合成层（见下方样式说明） -->
@@ -21,6 +32,9 @@
 // 为什么不用 ECharts / Chart.js：教室低端平板加载一个图表库要几百 KB，
 // 而这里的图表只有「按天看趋势」一个用途，用 div 高度百分比画完全够。
 // 少一个依赖 = 更快的首屏 + 更小的故障面。
+//
+// 数值查看：桌面靠 title 悬停；触屏上 title 永远不出现，所以柱子可点按，
+// 点亮的柱子在其上方浮出数值气泡（再点同一根收起，点别的柱子切换）。
 
 export default {
   name: 'UsageChart',
@@ -31,6 +45,17 @@ export default {
     field: { type: String, default: 'cost_yuan' },
     // 单位口径：yuan（管理台，带 ¥）| points（学生端，带"积分"）
     unit: { type: String, default: 'yuan' }
+  },
+  data: function() {
+    return {
+      activeIdx: -1
+    };
+  },
+  watch: {
+    // 数据刷新（切分组 / 换月份）后，旧的下标可能指到不同的柱子，直接收起
+    items: function() {
+      this.activeIdx = -1;
+    }
   },
   computed: {
     max: function() {
@@ -92,9 +117,33 @@ html.no-flex-gap .bars > * + * {
   align-items: center;
   gap: 6px;
   height: 100%;
+  position: relative;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 html.no-flex-gap .bar-col > * + * {
   margin-top: 6px;
+}
+
+/* 点亮的柱子整根提亮，气泡浮在它上方 */
+.bar-col.is-active .bar-value {
+  filter: brightness(1.18);
+}
+
+.bar-tip {
+  position: absolute;
+  bottom: calc(100% - 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  padding: 4px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--mask-strong);
+  color: var(--text-invert);
+  white-space: nowrap;
+  pointer-events: none;
+  animation: popIn var(--dur-fast) var(--ease-out);
 }
 
 .bar-track {

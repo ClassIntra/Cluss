@@ -674,8 +674,10 @@ html.no-flex-gap .hist-item > * + * {
   margin-left: 6px;
 }
 
+@media (hover: hover) {
 .hist-item:hover {
   background: var(--ink-1);
+}
 }
 
 .hist-item.active {
@@ -710,8 +712,10 @@ html.no-flex-gap .hist-item > * + * {
   flex-shrink: 0;
 }
 
+@media (hover: hover) {
 .hist-item:hover .hist-del {
   opacity: 1;
+}
 }
 
 .hist-empty {
@@ -731,9 +735,11 @@ html.no-flex-gap .hist-item > * + * {
   cursor: pointer;
 }
 
+@media (hover: hover) {
 .icon-btn:hover {
   background: var(--ink-2);
   color: var(--text-primary);
+}
 }
 
 /* ---------- 双栏 ---------- */
@@ -911,8 +917,10 @@ html.no-flex-gap .pane-foot > * + * {
   cursor: pointer;
 }
 
+@media (hover: hover) {
 .img-remove:hover {
   background: var(--danger);
+}
 }
 
 /* ---------- 补充说明输入 ---------- */

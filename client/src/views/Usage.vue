@@ -347,9 +347,11 @@ html.no-flex-gap .filters > * + * {
   cursor: pointer;
 }
 
+@media (hover: hover) {
 .icon-btn:hover {
   background: var(--ink-2);
   color: var(--text-primary);
+}
 }
 
 .panels {

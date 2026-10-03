@@ -613,6 +613,21 @@ Cluss 会退化成按字符估算，并在 `done` 事件里标记 `estimated`。
 会把 `:active` 推迟到手指抬起前后才触发 —— 按下去像没反应。
 `manipulation` 去掉双击缩放判定，同时保留滚动与捏合缩放。
 
+**6b. hover 是鼠标的语义，触屏一根都不要**
+
+安卓 Chrome 上手指点按会让 `:hover` 生效并**粘住**（直到点别处才消失），
+导航、列表行、按钮会残留常亮高亮。所以全项目的 `:hover` 规则都用
+`wrap-hover-media.cjs` 包进 `@media (hover: hover)`（47 处，一次性工具，
+新增 hover 样式后重跑一次即可）：触屏设备根本收不到 hover 样式，
+桌面行为不变，也不再需要 `(hover: none)` 逐一抵消。
+
+配套的两处触屏适配：
+
+- 用量图表的数值原先挂在 `title` 悬停上——触屏上永远不出现。
+  柱子现在可点按，点亮的柱子上方浮出数值气泡（再点收起）；
+- 对话输入的 Enter 按输入设备分流：桌面 Enter 发送 / Shift+Enter 换行；
+  触屏（软键盘没有 Shift）Enter 一律换行、发送交给按钮，否则平板上无法输入多行。
+
 **7. 进场动画只给新增元素**
 
 消息进场的 `animation` 原来挂在所有 `.msg` 上，打开历史会话时几十条一起涌出——
@@ -622,7 +637,7 @@ Cluss 会退化成按字符估算，并在 `done` 事件里标记 `estimated`。
 弹窗卡片统一 `popIn`（scale 0.96 → 1 + 淡入），只走合成层；关闭不做动画——
 用户已经决定关掉了，再等 300ms 只会显得拖沓。
 
-> 已加 `prefers-reduced-motion` 与 `@media (hover: none)` 处理（见 global.css 末尾）。
+> 已加 `prefers-reduced-motion` 处理（见 global.css 末尾）；hover 策略见上 6b。
 
 ### 深色模式
 

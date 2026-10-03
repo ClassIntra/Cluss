@@ -325,6 +325,8 @@ html.no-flex-gap .picker-head > * + * {
 
 
 
+
+
 .picker-title {
   margin: 0;
   font-size: 17px;
@@ -344,6 +346,8 @@ html.no-flex-gap .picker-head > * + * {
 html.no-flex-gap .upload-row > * + * {
   margin-left: 12px;
 }
+
+
 
 
 
@@ -381,6 +385,8 @@ html.no-flex-gap .quota-row > * + * {
 
 
 
+
+
 .quota-bar {
   flex: 1;
   height: 4px;
@@ -399,6 +405,8 @@ html.no-flex-gap .filter-row > * + * {
 
 
 
+
+
 .icon-btn {
   width: 28px;
   height: 28px;
@@ -412,10 +420,13 @@ html.no-flex-gap .filter-row > * + * {
   flex-shrink: 0;
 }
 
+@media (hover: hover) {
 .icon-btn:hover {
   background: var(--ink-2);
   color: var(--text-primary);
 }
+}
+
 
 .grid-wrap {
   flex: 1;
@@ -446,9 +457,12 @@ html.no-flex-gap .filter-row > * + * {
   transition: border-color var(--transition), box-shadow var(--transition);
 }
 
+@media (hover: hover) {
 .cell:hover {
   border-color: var(--accent-border-strong);
 }
+}
+
 
 .cell.is-selected {
   border-color: var(--accent);
@@ -519,13 +533,19 @@ html.no-flex-gap .filter-row > * + * {
   transition: opacity var(--transition);
 }
 
+@media (hover: hover) {
 .cell:hover .cell-del {
   opacity: 1;
 }
+}
 
+
+@media (hover: hover) {
 .cell-del:hover {
   background: var(--danger);
 }
+}
+
 
 .picker-foot {
   display: flex;
@@ -542,6 +562,8 @@ html.no-flex-gap .picker-foot > * + * {
 
 
 
+
+
 .foot-actions {
   display: flex;
   gap: 8px;
@@ -549,6 +571,8 @@ html.no-flex-gap .picker-foot > * + * {
 html.no-flex-gap .foot-actions > * + * {
   margin-left: 8px;
 }
+
+
 
 
 

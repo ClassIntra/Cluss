@@ -187,6 +187,7 @@ html.no-flex-gap .records-page > * + * {
 
 
 
+
 .body {
   flex: 1;
   min-height: 0;
@@ -197,6 +198,7 @@ html.no-flex-gap .records-page > * + * {
 html.no-flex-gap .body > * + * {
   margin-top: var(--gap-md);
 }
+
 
 
 
@@ -213,6 +215,7 @@ html.no-flex-gap .body > * + * {
 html.no-flex-gap .toolbar > * + * {
   margin-left: var(--gap-md);
 }
+
 
 
 
@@ -252,10 +255,13 @@ html.no-flex-gap .toolbar > * + * {
   cursor: pointer;
 }
 
+@media (hover: hover) {
 .search-clear:hover {
   background: var(--ink-2);
   color: var(--text-primary);
 }
+}
+
 
 .icon-btn {
   width: 28px;
@@ -269,10 +275,13 @@ html.no-flex-gap .toolbar > * + * {
   cursor: pointer;
 }
 
+@media (hover: hover) {
 .icon-btn:hover {
   background: var(--ink-2);
   color: var(--text-primary);
 }
+}
+
 
 .list-wrap {
   flex: 1;
@@ -310,10 +319,14 @@ html.no-flex-gap .card > * + * {
 
 
 
+
+@media (hover: hover) {
 .card:hover {
   border-color: var(--accent-border);
   box-shadow: 0 8px 20px var(--ink-2);
 }
+}
+
 
 .card-thumb {
   position: relative;
@@ -366,6 +379,7 @@ html.no-flex-gap .card-body > * + * {
 
 
 
+
 .card-top {
   display: flex;
   align-items: center;
@@ -375,6 +389,7 @@ html.no-flex-gap .card-body > * + * {
 html.no-flex-gap .card-top > * + * {
   margin-left: 8px;
 }
+
 
 
 
@@ -413,6 +428,7 @@ html.no-flex-gap .card-foot > * + * {
 
 
 
+
 .card-go {
   font-size: 12px;
   color: var(--accent);
@@ -434,6 +450,7 @@ html.no-flex-gap .card-foot > * + * {
 html.no-flex-gap .pager > * + * {
   margin-left: var(--gap-md);
 }
+
 
 
 

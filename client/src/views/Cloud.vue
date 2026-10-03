@@ -229,6 +229,8 @@ html.no-flex-gap .cloud-page > * + * {
 
 
 
+
+
 .body {
   flex: 1;
   min-height: 0;
@@ -239,6 +241,8 @@ html.no-flex-gap .cloud-page > * + * {
 html.no-flex-gap .body > * + * {
   margin-top: var(--gap-md);
 }
+
+
 
 
 
@@ -258,6 +262,8 @@ html.no-flex-gap .toolbar > * + * {
 
 
 
+
+
 .toolbar-left {
   display: flex;
   align-items: center;
@@ -270,6 +276,8 @@ html.no-flex-gap .toolbar-left > * + * {
 
 
 
+
+
 .toolbar-right {
   display: flex;
   align-items: center;
@@ -278,6 +286,8 @@ html.no-flex-gap .toolbar-left > * + * {
 html.no-flex-gap .toolbar-right > * + * {
   margin-left: 8px;
 }
+
+
 
 
 
@@ -379,6 +389,8 @@ html.no-flex-gap .card-text > * + * {
 
 
 
+
+
 .card-text-icon {
   font-size: 13px;
   font-weight: 700;
@@ -409,6 +421,8 @@ html.no-flex-gap .card-foot > * + * {
 
 
 
+
+
 .card-meta {
   flex: 1;
   min-width: 0;
@@ -432,6 +446,8 @@ html.no-flex-gap .card-actions > * + * {
 
 
 
+
+
 .icon-btn {
   width: 26px;
   height: 26px;
@@ -447,15 +463,21 @@ html.no-flex-gap .card-actions > * + * {
   display: inline-block;
 }
 
+@media (hover: hover) {
 .icon-btn:hover {
   background: var(--ink-2);
   color: var(--text-primary);
 }
+}
 
+
+@media (hover: hover) {
 .icon-danger:hover {
   background: var(--danger-tint);
   color: var(--danger);
 }
+}
+
 
 /* ---------- 预览 ---------- */
 .preview-mask {
@@ -481,6 +503,8 @@ html.no-flex-gap .preview-mask > * + * {
 
 
 
+
+
 .preview-img {
   max-width: 94vw;
   max-height: 84vh;
@@ -496,6 +520,8 @@ html.no-flex-gap .preview-mask > * + * {
 html.no-flex-gap .preview-bar > * + * {
   margin-left: var(--gap-md);
 }
+
+
 
 
 
