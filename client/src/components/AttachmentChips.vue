@@ -44,6 +44,11 @@ export default {
   flex-wrap: wrap;
   gap: 8px;
 }
+html.no-flex-gap .chips > * + * {
+  margin-left: 8px;
+}
+
+
 
 .chip {
   display: flex;
@@ -55,11 +60,16 @@ export default {
   border-radius: var(--radius-md);
   background: var(--surface-2);
 }
+html.no-flex-gap .chip > * + * {
+  margin-left: 8px;
+}
+
+
 
 .chip-thumb {
   width: 34px;
   height: 34px;
-  border-radius: 8px;
+  border-radius: var(--radius-xs);
   object-fit: cover;
   background: var(--ink-2);
   flex-shrink: 0;
@@ -68,7 +78,7 @@ export default {
 .chip-file-icon {
   width: 34px;
   height: 34px;
-  border-radius: 8px;
+  border-radius: var(--radius-xs);
   background: var(--accent-soft);
   color: var(--accent);
   font-size: 10px;
@@ -100,7 +110,7 @@ export default {
   width: 22px;
   height: 22px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-2xs);
   background: transparent;
   color: var(--text-tertiary);
   font-size: 15px;

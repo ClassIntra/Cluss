@@ -6,27 +6,28 @@
       <!-- 额度概况 -->
       <section class="wallet-row">
         <div class="wallet-card glass">
-          <span class="section-label">可用余额</span>
+          <span class="section-label">可用积分</span>
           <div class="wallet-amount">
-            <span class="wallet-symbol">¥</span>
             <span class="wallet-value" :class="{ 'wallet-empty': !wallet || !wallet.is_allocated }">
-              {{ wallet ? wallet.available_yuan : '—' }}
+              {{ wallet ? wallet.available_points : '—' }}
             </span>
+            <span class="wallet-unit">积分</span>
           </div>
           <div v-if="wallet" class="bar wallet-bar">
             <div class="bar-fill" :style="{ width: wallet.used_percent + '%' }"></div>
           </div>
-          <div v-if="wallet" class="tiny muted">已用 ¥{{ wallet.used_yuan }} / 共 ¥{{ wallet.allocated_yuan }}</div>
+          <!-- 同 Chat：说「额度」不说「共」，可用值含同步容错 -->
+          <div v-if="wallet" class="tiny muted">已用 {{ wallet.used_points }} 积分 · 额度 {{ wallet.allocated_points }} 积分</div>
           <div v-if="wallet && !wallet.is_allocated" class="alert alert-warning wallet-alert">
-            尚未开通额度，请联系管理员充值
+            还没有开通，请联系管理员充值
           </div>
         </div>
 
         <div class="wallet-card glass">
           <span class="section-label">本周用量</span>
           <div class="wallet-amount">
-            <span class="wallet-value small">{{ wallet ? wallet.weekly_used_yuan : '—' }}</span>
-            <span v-if="wallet && !wallet.weekly_unlimited" class="tiny muted">/ ¥{{ wallet.weekly_quota_yuan }}</span>
+            <span class="wallet-value small">{{ wallet && !wallet.weekly_unlimited ? wallet.weekly_used_points : (wallet ? '不限' : '—') }}</span>
+            <span v-if="wallet && !wallet.weekly_unlimited" class="tiny muted">/ {{ wallet.weekly_quota_points }} 积分</span>
           </div>
           <div v-if="wallet && !wallet.weekly_unlimited" class="bar wallet-bar">
             <div class="bar-fill weekly-fill" :style="{ width: wallet.weekly_percent + '%' }"></div>
@@ -37,12 +38,16 @@
         </div>
 
         <div class="wallet-card glass">
-          <span class="section-label">统计区间用量</span>
+          <span class="section-label">统计区间消耗</span>
           <div class="wallet-amount">
-            <span class="wallet-symbol">¥</span>
-            <span class="wallet-value small">{{ totals.cost_yuan || '0.00' }}</span>
+            <span class="wallet-value small">{{ totals.cost_points || 0 }}</span>
+            <span class="wallet-unit">积分</span>
           </div>
-          <div class="tiny muted">{{ totals.calls || 0 }} 次调用 · {{ formatTokens(totals.total_tokens) }} tokens</div>
+          <!-- 这里原来写的是「N 次调用 · X tokens」——token 是纯技术单位，
+               学生既看不懂也不知道能用它做什么。改成他关心的：用了几次、看了几张图。 -->
+          <div class="tiny muted">
+            {{ totals.calls || 0 }} 次使用<span v-if="totals.image_count"> · 看了 {{ totals.image_count }} 张图</span>
+          </div>
         </div>
       </section>
 
@@ -58,8 +63,8 @@
       <div class="panels">
         <!-- 趋势 / 分组柱状图 -->
         <section class="panel glass">
-          <h2 class="panel-title">{{ groupBy === 'day' ? '每日消耗（元）' : (groupBy === 'model' ? '各模型消耗（元）' : '各类型消耗（元）') }}</h2>
-          <UsageChart :items="items" field="cost_yuan" />
+          <h2 class="panel-title">{{ groupBy === 'day' ? '每天用了多少（积分）' : '各类用途用了多少（积分）' }}</h2>
+          <UsageChart :items="items" field="cost_points" unit="points" />
         </section>
 
         <!-- 分组明细 -->
@@ -67,19 +72,21 @@
           <h2 class="panel-title">{{ groupTitle }}</h2>
           <div class="group-list">
             <div v-for="(item, idx) in items" :key="idx" class="group-row">
-              <span class="group-key">{{ labelOf(item) }}</span>
+              <span class="group-key">{{ item.label || item.key }}</span>
               <span class="tiny muted">{{ item.calls }} 次</span>
-              <span class="group-cost">¥{{ item.cost_yuan }}</span>
+              <span class="group-cost">{{ item.cost_points }} 积分</span>
             </div>
             <div v-if="!items.length" class="empty-hint tiny">{{ loading ? '读取中…' : '暂无数据' }}</div>
           </div>
         </section>
       </div>
 
-      <!-- 明细表 -->
+      <!-- 明细表：这是"我的学习账单"，不是运维报表。
+           token 数、缓存命中、模型名这些在服务端就已经裁掉了，前端拿不到。
+           「做了什么」用的是会话标题 —— 学生看到"求最值"才知道那 12 积分花在哪。 -->
       <section class="panel glass">
         <div class="panel-head">
-          <h2 class="panel-title">调用明细</h2>
+          <h2 class="panel-title">使用明细</h2>
           <span class="tiny muted">共 {{ recordTotal }} 条</span>
         </div>
 
@@ -88,26 +95,22 @@
             <thead>
               <tr>
                 <th>时间</th>
-                <th>类型</th>
-                <th>模型</th>
-                <th class="num">输入</th>
-                <th class="num">输出</th>
-                <th class="num">图片</th>
-                <th class="num">费用</th>
+                <th>做了什么</th>
+                <th class="num">消耗</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="r in records" :key="r.id">
                 <td class="nowrap tiny">{{ formatTime(r.created_at) }}</td>
-                <td><span class="badge" :class="'src-' + r.source">{{ sourceLabel(r.source) }}</span></td>
-                <td class="tiny">{{ r.model_label }}</td>
-                <td class="num">{{ r.prompt_tokens }}</td>
-                <td class="num">{{ r.completion_tokens }}</td>
-                <td class="num">{{ r.image_count || '—' }}</td>
-                <td class="num">{{ r.estimated ? '~' : '' }}¥{{ r.cost_yuan }}</td>
+                <td class="rec-what">
+                  <span class="badge" :class="'src-' + r.source">{{ r.source_label }}</span>
+                  <span v-if="r.title" class="rec-title">{{ r.title }}</span>
+                  <span v-if="r.image_count" class="tiny muted">（{{ r.image_count }} 张图）</span>
+                </td>
+                <td class="num">{{ r.estimated ? '约 ' : '' }}{{ r.cost_points }}</td>
               </tr>
               <tr v-if="!records.length">
-                <td colspan="7" class="empty-cell muted">{{ loading ? '读取中…' : '暂无记录' }}</td>
+                <td colspan="3" class="empty-cell muted">{{ loading ? '读取中…' : '暂无记录' }}</td>
               </tr>
             </tbody>
           </table>
@@ -127,14 +130,6 @@
 import AppNav from '@/components/AppNav.vue';
 import Segmented from '@/components/Segmented.vue';
 import UsageChart from '@/components/UsageChart.vue';
-
-var SOURCE_LABELS = {
-  chat: '对话',
-  study: '学习',
-  solve: '拍题',
-  grade: '批改',
-  vision_relay: '图片识别'
-};
 
 export default {
   name: 'UsageView',
@@ -168,12 +163,11 @@ export default {
     groupOptions: function() {
       return [
         { id: 'day', label: '按天' },
-        { id: 'model', label: '按模型' },
-        { id: 'source', label: '按类型' }
+        { id: 'source', label: '按用途' }
       ];
     },
     groupTitle: function() {
-      return { day: '每日明细', model: '模型明细', source: '类型明细' }[this.groupBy] || '明细';
+      return { day: '每天明细', source: '各类用途明细' }[this.groupBy] || '明细';
     },
     exportUrl: function() {
       var token = this.$store.state.auth.token;
@@ -233,24 +227,10 @@ export default {
       this.loadRecords();
     },
 
-    labelOf: function(item) {
-      if (this.groupBy === 'source') return SOURCE_LABELS[item.key] || item.key;
-      return item.label || item.key;
-    },
-
-    sourceLabel: function(s) {
-      return SOURCE_LABELS[s] || s || '对话';
-    },
-
+    // 分组的可读名与「类型」的中文都由服务端给（见 usage-stats 的 student* 系列），
+    // 前端不再自己维护一份映射表 —— 两处各写一份迟早会不一致。
     formatTime: function(iso) {
       return String(iso || '').replace('T', ' ').slice(5, 16);
-    },
-
-    formatTokens: function(n) {
-      var v = Number(n || 0);
-      if (v >= 1000000) return (v / 1000000).toFixed(1) + 'M';
-      if (v >= 1000) return (v / 1000).toFixed(1) + 'K';
-      return String(v);
     }
   }
 };
@@ -264,6 +244,9 @@ export default {
   padding: var(--gap-md);
   gap: var(--gap-md);
 }
+html.no-flex-gap .usage-page > * + * {
+  margin-top: var(--gap-md);
+}
 
 .body {
   flex: 1;
@@ -273,6 +256,9 @@ export default {
   flex-direction: column;
   gap: var(--gap-md);
   padding-bottom: var(--gap-md);
+}
+html.no-flex-gap .body > * + * {
+  margin-top: var(--gap-md);
 }
 
 .wallet-row {
@@ -293,9 +279,13 @@ export default {
   gap: 4px;
   margin: 6px 0 8px;
 }
+html.no-flex-gap .wallet-amount > * + * {
+  margin-left: 4px;
+}
 
-.wallet-symbol {
-  font-size: 15px;
+.wallet-unit {
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text-secondary);
 }
 
@@ -336,6 +326,9 @@ export default {
   flex-shrink: 0;
   flex-wrap: wrap;
 }
+html.no-flex-gap .filters > * + * {
+  margin-left: 10px;
+}
 
 .export-btn {
   margin-left: auto;
@@ -346,7 +339,7 @@ export default {
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-tertiary);
   font-size: 16px;
@@ -400,6 +393,9 @@ export default {
   border-bottom: 1px solid var(--ink-1);
   font-size: 13px;
 }
+html.no-flex-gap .group-row > * + * {
+  margin-left: 10px;
+}
 
 .group-key {
   flex: 1;
@@ -449,6 +445,25 @@ export default {
   font-variant-numeric: tabular-nums;
 }
 
+/* 「做了什么」列：徽章 + 会话标题。
+   标题是学生当初那句提问，比任何技术字段都更能说明这笔积分花在哪。
+   注意这里是 <td>，**不能**用 display:flex —— 那会让它不再是表格单元格，
+   整列对齐会塌掉。用行内元素 + margin 即可。 */
+.rec-what > * + * {
+  margin-left: 8px;
+}
+
+.rec-title {
+  display: inline-block;
+  max-width: 340px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
 .empty-cell {
   padding: 22px;
   text-align: center;
@@ -466,6 +481,9 @@ export default {
   justify-content: center;
   gap: var(--gap-md);
   margin-top: var(--gap-md);
+}
+html.no-flex-gap .pager > * + * {
+  margin-left: var(--gap-md);
 }
 
 @media (max-width: 900px) {

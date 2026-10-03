@@ -365,11 +365,20 @@
           <label class="field">
             <span class="field-label">分配额度（元）</span>
             <input v-model="quotaModal.quotaYuan" class="input" type="number" min="0" step="0.01" placeholder="如 30" />
+            <span class="tiny muted field-hint">
+              <template v-if="quotaModalPoints > 0">
+                学生端看到 <strong>{{ quotaModalPoints }}</strong> 积分（1 元 = {{ pointsPerYuan }} 积分）
+              </template>
+              <template v-else>学生端按积分显示，1 元 = {{ pointsPerYuan }} 积分</template>
+            </span>
           </label>
 
           <label class="field">
             <span class="field-label">周限额（元，选填）</span>
             <input v-model="quotaModal.weeklyYuan" class="input" type="number" min="0" step="0.01" placeholder="留空表示不限" />
+            <span v-if="weeklyModalPoints > 0" class="tiny muted field-hint">
+              学生端显示为每 7 天 {{ weeklyModalPoints }} 积分
+            </span>
           </label>
 
           <label class="field">
@@ -379,6 +388,7 @@
 
           <div class="modal-note tiny muted">
             分配的是「总额度」，学生按实际用量扣减；重复分配会覆盖原额度。
+            管理台与对账一律用元，学生端只看到积分。
           </div>
 
           <div v-if="quotaModal.error" class="alert alert-danger">{{ quotaModal.error }}</div>
@@ -472,6 +482,20 @@ export default {
     instanceLabel: function() {
       if (!this.dashboard) return '';
       return this.dashboard.instance_id + ' · ' + this.dashboard.mode + ' 模式';
+    },
+    // 换算率由服务端下发（自部署可配），前端不写死，避免两边不一致
+    pointsPerYuan: function() {
+      return Number((this.dashboard && this.dashboard.points_per_yuan) || 100);
+    },
+    quotaModalPoints: function() {
+      var y = Number(this.quotaModal.quotaYuan);
+      if (!isFinite(y) || y <= 0) return 0;
+      return Math.round(y * this.pointsPerYuan);
+    },
+    weeklyModalPoints: function() {
+      var y = Number(this.quotaModal.weeklyYuan);
+      if (!isFinite(y) || y <= 0) return 0;
+      return Math.round(y * this.pointsPerYuan);
     },
     classes: function() {
       return (this.dashboard && this.dashboard.by_class) || [];
@@ -666,14 +690,19 @@ export default {
 
     deleteModel: function(m) {
       var self = this;
-      if (!window.confirm('确定删除模型「' + m.label + '」？\n若已被会话使用，将改为禁用而非删除。')) return;
-
-      this.$http.delete('/admin/models/' + m.id).then(function(r) {
-        if (r.data.code !== 200) throw new Error(r.data.message || '删除失败');
-        self.$store.dispatch('toast', { message: r.data.message, type: 'success' });
-        self.loadModels();
-      }).catch(function(err) {
-        self.$store.dispatch('toast', { message: err.message || '删除失败', type: 'error' });
+      this.$store.dispatch('confirm', {
+        message: '确定删除模型「' + m.label + '」？若已被会话使用，将改为禁用而非删除。',
+        confirmText: '删除',
+        danger: true
+      }).then(function(ok) {
+        if (!ok) return;
+        self.$http.delete('/admin/models/' + m.id).then(function(r) {
+          if (r.data.code !== 200) throw new Error(r.data.message || '删除失败');
+          self.$store.dispatch('toast', { message: r.data.message, type: 'success' });
+          self.loadModels();
+        }).catch(function(err) {
+          self.$store.dispatch('toast', { message: err.message || '删除失败', type: 'error' });
+        });
       });
     },
 
@@ -762,6 +791,7 @@ export default {
 
     // ---------- 导出 ----------
     download: function(url, filename) {
+      var self = this;
       var token = this.$store.state.auth.token;
       fetch(url, {
         headers: token ? { Authorization: 'Bearer ' + token } : {},
@@ -779,7 +809,7 @@ export default {
         document.body.removeChild(a);
         URL.revokeObjectURL(objUrl);
       }).catch(function() {
-        window.alert('导出失败，请重试');
+        self.$store.dispatch('toast', { message: '导出失败，请重试', type: 'error' });
       });
     },
 
@@ -802,6 +832,9 @@ export default {
   padding: var(--gap-md);
   gap: var(--gap-md);
 }
+html.no-flex-gap .admin-page > * + * {
+  margin-top: var(--gap-md);
+}
 
 .body {
   flex: 1;
@@ -812,6 +845,9 @@ export default {
   gap: var(--gap-md);
   padding-bottom: var(--gap-md);
 }
+html.no-flex-gap .body > * + * {
+  margin-top: var(--gap-md);
+}
 
 .tabs {
   display: flex;
@@ -821,6 +857,9 @@ export default {
   padding: 8px 14px;
   border-radius: var(--radius-lg);
   flex-shrink: 0;
+}
+html.no-flex-gap .tabs > * + * {
+  margin-left: var(--gap-md);
 }
 
 .tabs-note {
@@ -867,6 +906,9 @@ export default {
   gap: var(--gap-md);
   margin-bottom: var(--gap-md);
 }
+html.no-flex-gap .panel-head > * + * {
+  margin-left: var(--gap-md);
+}
 
 .panel-title {
   margin: 0 0 4px;
@@ -885,6 +927,9 @@ export default {
   flex-shrink: 0;
   margin-top: var(--gap-md);
 }
+html.no-flex-gap .panel-actions > * + * {
+  margin-left: 8px;
+}
 
 .panel-head .panel-actions {
   margin-top: 0;
@@ -895,6 +940,9 @@ export default {
   gap: 10px;
   margin-bottom: var(--gap-md);
 }
+html.no-flex-gap .filters-row > * + * {
+  margin-left: 10px;
+}
 
 .filters {
   display: flex;
@@ -904,6 +952,9 @@ export default {
   border-radius: var(--radius-lg);
   flex-shrink: 0;
   flex-wrap: wrap;
+}
+html.no-flex-gap .filters > * + * {
+  margin-left: 10px;
 }
 
 .filter-input {
@@ -918,7 +969,7 @@ export default {
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-tertiary);
   font-size: 16px;
@@ -1015,6 +1066,9 @@ export default {
   flex-direction: column;
   gap: 1px;
 }
+html.no-flex-gap .model-cell > * + * {
+  margin-top: 1px;
+}
 
 .model-name {
   font-weight: 500;
@@ -1048,6 +1102,9 @@ export default {
   border-bottom: 1px solid var(--ink-1);
   font-size: 13px;
 }
+html.no-flex-gap .row-line > * + * {
+  margin-left: 12px;
+}
 
 .line-key {
   flex: 1;
@@ -1073,6 +1130,9 @@ export default {
   gap: 12px;
   font-size: 13px;
 }
+html.no-flex-gap .log-main > * + * {
+  margin-left: 12px;
+}
 
 .log-user {
   font-weight: 500;
@@ -1097,6 +1157,9 @@ export default {
   border-radius: var(--radius-md);
   background: var(--ink-1);
 }
+html.no-flex-gap .switch-list > * + * {
+  margin-top: 9px;
+}
 
 .switch-row {
   display: flex;
@@ -1105,6 +1168,9 @@ export default {
   font-size: 13px;
   line-height: 1.5;
   cursor: pointer;
+}
+html.no-flex-gap .switch-row > * + * {
+  margin-left: 9px;
 }
 
 .switch-row input {
@@ -1125,7 +1191,7 @@ export default {
 
 .panel code {
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: var(--radius-2xs);
   background: var(--ink-2);
   font-size: 11.5px;
 }
@@ -1133,7 +1199,10 @@ export default {
 /* ---------- 弹窗 ---------- */
 .modal-mask {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   z-index: 350;
   display: flex;
   align-items: center;
@@ -1173,6 +1242,9 @@ export default {
   justify-content: flex-end;
   gap: 10px;
   margin-top: var(--gap-md);
+}
+html.no-flex-gap .modal-actions > * + * {
+  margin-left: 10px;
 }
 
 @media (max-width: 1000px) {

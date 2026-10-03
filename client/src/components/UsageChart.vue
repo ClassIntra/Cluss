@@ -5,7 +5,9 @@
     <div v-else class="bars">
       <div v-for="(item, idx) in items" :key="idx" class="bar-col" :title="tooltip(item)">
         <div class="bar-track">
-          <div class="bar-value" :style="{ height: heightOf(item) + '%' }"></div>
+          <!-- 用 scaleY 而不是 height：一次要动几十根柱子，
+               height 每帧都要重排，scaleY 只走合成层（见下方样式说明） -->
+          <div class="bar-value" :style="{ transform: 'scaleY(' + (heightOf(item) / 100) + ')' }"></div>
         </div>
         <div class="bar-label tiny">{{ shortLabel(item.key) }}</div>
       </div>
@@ -23,10 +25,12 @@
 export default {
   name: 'UsageChart',
   props: {
-    // [{ key, cost_yuan, calls, ... }]
+    // [{ key, cost_yuan | cost_points, calls, ... }]
     items: { type: Array, default: function() { return []; } },
-    // 纵轴取哪个字段（默认费用）
-    field: { type: String, default: 'cost_yuan' }
+    // 纵轴取哪个字段（管理台传 cost_yuan，学生端传 cost_points）
+    field: { type: String, default: 'cost_yuan' },
+    // 单位口径：yuan（管理台，带 ¥）| points（学生端，带"积分"）
+    unit: { type: String, default: 'yuan' }
   },
   computed: {
     max: function() {
@@ -53,9 +57,12 @@ export default {
       return s.length > 8 ? s.slice(0, 8) + '…' : s;
     },
 
+    // 单位不能写死：学生端一旦看到 ¥，就会开始按"花了多少钱"衡量这次提问值不值
     tooltip: function(item) {
-      return String(item.key || '') + '：¥' + (item.cost_yuan || '0.00') +
-        '，' + (item.calls || 0) + ' 次';
+      var amount = this.unit === 'points'
+        ? (Number(item[this.field] || 0) + ' 积分')
+        : ('¥' + (item[this.field] || '0.00'));
+      return String(item.key || '') + '：' + amount + '，' + (item.calls || 0) + ' 次';
     }
   }
 };
@@ -73,6 +80,9 @@ export default {
   height: 140px;
   padding-top: 8px;
 }
+html.no-flex-gap .bars > * + * {
+  margin-left: 6px;
+}
 
 .bar-col {
   flex: 1;
@@ -83,6 +93,9 @@ export default {
   gap: 6px;
   height: 100%;
 }
+html.no-flex-gap .bar-col > * + * {
+  margin-top: 6px;
+}
 
 .bar-track {
   flex: 1;
@@ -90,16 +103,24 @@ export default {
   max-width: 44px;
   display: flex;
   align-items: flex-end;
-  border-radius: 6px;
+  border-radius: var(--radius-2xs);
   background: var(--ink-1);
   overflow: hidden;
 }
 
+/* 用 transform: scaleY 做生长动画，而不是动 height。
+   一屏可能有 30 根柱子同时长出来：动 height 意味着每帧 30 次重排 + 重绘，
+   低端设备上就是肉眼可见的一顿；scaleY 在合成层完成，代价几乎为零。
+
+   代价是圆角会跟着纵向缩放（顶端略扁），在 6px 小圆角上基本看不出来 ——
+   拿这个换"加载时不卡"很划算。 */
 .bar-value {
   width: 100%;
-  border-radius: 6px;
+  height: 100%;
+  transform-origin: bottom center;
+  border-radius: var(--radius-2xs);
   background: linear-gradient(180deg, var(--chart-a), var(--chart-b));
-  transition: height 0.4s cubic-bezier(0.32, 0.72, 0, 1);
+  transition: transform var(--dur-slow) var(--ease-out);
 }
 
 .bar-label {

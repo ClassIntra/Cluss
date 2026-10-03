@@ -251,16 +251,21 @@ export default {
 
     remove: function(f) {
       var self = this;
-      if (!window.confirm('确定从云盘删除「' + f.name + '」？')) return;
-
-      this.$http.delete('/cloud/files/' + f.hash).then(function(r) {
-        if (r.data.code !== 200) throw new Error(r.data.message || '删除失败');
-        var idx = self.selected.indexOf(f.hash);
-        if (idx !== -1) self.selected.splice(idx, 1);
-        self.files = self.files.filter(function(x) { return x.hash !== f.hash; });
-        self.loadQuota();
-      }).catch(function(err) {
-        self.$store.dispatch('toast', { message: err.message || '删除失败', type: 'error' });
+      this.$store.dispatch('confirm', {
+        message: '确定从云盘删除「' + f.name + '」？删除后无法恢复。',
+        confirmText: '删除',
+        danger: true
+      }).then(function(ok) {
+        if (!ok) return;
+        self.$http.delete('/cloud/files/' + f.hash).then(function(r) {
+          if (r.data.code !== 200) throw new Error(r.data.message || '删除失败');
+          var idx = self.selected.indexOf(f.hash);
+          if (idx !== -1) self.selected.splice(idx, 1);
+          self.files = self.files.filter(function(x) { return x.hash !== f.hash; });
+          self.loadQuota();
+        }).catch(function(err) {
+          self.$store.dispatch('toast', { message: err.message || '删除失败', type: 'error' });
+        });
       });
     },
 
@@ -283,7 +288,10 @@ export default {
 <style scoped>
 .picker-mask {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   z-index: 250;
   display: flex;
   align-items: center;
@@ -311,6 +319,11 @@ export default {
   gap: var(--gap-md);
   margin-bottom: var(--gap-sm);
 }
+html.no-flex-gap .picker-head > * + * {
+  margin-left: var(--gap-md);
+}
+
+
 
 .picker-title {
   margin: 0;
@@ -328,6 +341,11 @@ export default {
   gap: 12px;
   margin-bottom: var(--gap-sm);
 }
+html.no-flex-gap .upload-row > * + * {
+  margin-left: 12px;
+}
+
+
 
 .upload-btn {
   position: relative;
@@ -343,7 +361,10 @@ export default {
 
 .upload-btn input[type="file"] {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   opacity: 0;
   cursor: pointer;
 }
@@ -354,6 +375,11 @@ export default {
   gap: 10px;
   margin-bottom: var(--gap-sm);
 }
+html.no-flex-gap .quota-row > * + * {
+  margin-left: 10px;
+}
+
+
 
 .quota-bar {
   flex: 1;
@@ -367,12 +393,17 @@ export default {
   gap: var(--gap-sm);
   margin-bottom: var(--gap-sm);
 }
+html.no-flex-gap .filter-row > * + * {
+  margin-left: var(--gap-sm);
+}
+
+
 
 .icon-btn {
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-tertiary);
   font-size: 16px;
@@ -505,11 +536,21 @@ export default {
   padding-top: var(--gap-sm);
   border-top: 1px solid var(--ink-2);
 }
+html.no-flex-gap .picker-foot > * + * {
+  margin-left: var(--gap-md);
+}
+
+
 
 .foot-actions {
   display: flex;
   gap: 8px;
 }
+html.no-flex-gap .foot-actions > * + * {
+  margin-left: 8px;
+}
+
+
 
 @media (max-width: 600px) {
   .picker-mask {

@@ -1,6 +1,16 @@
 <template>
   <div id="app-root">
-    <router-view />
+    <!-- 页面切换动画：名字由路由方向决定（见 watch），transition 而非 keyframes，
+         切到一半再切一次也能从当前位置平滑接续 -->
+    <transition :name="pageAnim">
+      <router-view />
+    </transition>
+
+    <!-- 竖屏窄屏的底部导航（登录页自动隐藏，见组件内说明） -->
+    <TabBar />
+
+    <!-- 全局确认弹窗（替代 window.confirm，见 store 的 confirm action） -->
+    <ConfirmDialog />
 
     <!-- 全局轻提示 -->
     <transition name="toast">
@@ -12,14 +22,41 @@
 </template>
 
 <script>
+import TabBar from './components/TabBar.vue';
+import ConfirmDialog from './components/ConfirmDialog.vue';
+import navItems from './utils/nav-items';
+
+// 学生主导航页的先后次序：决定切页动画往左还是往右。
+// 不在这张表里的页（登录 / 注册 / 管理台 / 我的消耗）没有方向感可言，走淡化。
+var ORDER = {};
+navItems.forEach(function(item, index) {
+  ORDER[item.to] = index;
+});
+
 export default {
   name: 'App',
+  components: { TabBar, ConfirmDialog },
+  data: function() {
+    return {
+      pageAnim: 'page-fade'
+    };
+  },
   computed: {
     toast: function() {
       return this.$store.state.toast;
     }
   },
   watch: {
+    '$route': function(to, from) {
+      var a = ORDER[to.path];
+      var b = ORDER[from.path];
+      if (a === undefined || b === undefined || a === b) {
+        this.pageAnim = 'page-fade';
+      } else {
+        // 序号变大 = 往右边的标签去，内容向左滑
+        this.pageAnim = a > b ? 'page-slide-left' : 'page-slide-right';
+      }
+    },
     toast: function(val) {
       if (!val) return;
       var self = this;

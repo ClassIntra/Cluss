@@ -99,4 +99,22 @@ router.beforeEach(function(to, from, next) {
   next();
 });
 
+// 部署会整体替换带 hash 的 chunk 文件名。已经打开的旧页面再点懒加载路由时，
+// 请求的那个 chunk 已经不存在，服务端的 SPA 兜底又会把 index.html 当 JS 返回，
+// 浏览器按 MIME 严格校验拒绝执行 —— 表现就是「点了没反应」，学生只会以为坏了。
+// 这里刷新一次拿新的 index.html 即可。
+var CHUNK_ERROR = /Loading chunk|Loading CSS chunk|Failed to fetch dynamically imported module|Importing a module script failed/i;
+var CHUNK_RELOAD_KEY = 'cluss_chunk_reload_at';
+
+router.onError(function(err) {
+  var msg = (err && err.message) || '';
+  if (!CHUNK_ERROR.test(msg)) return;
+
+  // 只兜底刷一次：万一新版本本身有问题，不能变成无限刷新
+  var last = Number(sessionStorage.getItem(CHUNK_RELOAD_KEY) || 0);
+  if (Date.now() - last < 15000) return;
+  try { sessionStorage.setItem(CHUNK_RELOAD_KEY, String(Date.now())); } catch (e) {}
+  window.location.reload();
+});
+
 export default router;

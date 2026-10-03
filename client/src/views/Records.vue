@@ -5,6 +5,16 @@
     <main class="body">
       <div class="toolbar glass">
         <Segmented v-model="type" :options="typeOptions" />
+        <div class="search-box">
+          <input
+            v-model="query"
+            class="input search-input"
+            type="search"
+            placeholder="搜标题或题目内容…"
+            @input="onSearchInput"
+          />
+          <button v-if="query" class="search-clear" type="button" title="清空" @click="clearSearch">×</button>
+        </div>
         <span class="tiny muted toolbar-note">共 {{ total }} 条记录</span>
         <button class="icon-btn" title="刷新" @click="load(1)">↻</button>
       </div>
@@ -15,9 +25,16 @@
         <div v-if="loading" class="empty-hint">读取中…</div>
 
         <div v-else-if="!items.length" class="empty-hint">
-          <div>还没有{{ type === 'grade' ? '批改' : (type === 'solve' ? '解题' : '') }}记录</div>
-          <div class="tiny">去「学习」页拍一张题目试试</div>
-          <router-link class="btn btn-sm btn-primary empty-btn" to="/study">去做一道题</router-link>
+          <template v-if="query.trim()">
+            <div>没有找到匹配的记录</div>
+            <div class="tiny">换个关键词试试，比如题目里的一个词</div>
+            <button class="btn btn-sm btn-ghost empty-btn" @click="clearSearch">清除搜索</button>
+          </template>
+          <template v-else>
+            <div>还没有{{ type === 'grade' ? '批改' : (type === 'solve' ? '解题' : '') }}记录</div>
+            <div class="tiny">去「学习」页拍一张题目试试</div>
+            <router-link class="btn btn-sm btn-primary empty-btn" to="/study">去做一道题</router-link>
+          </template>
         </div>
 
         <div v-else class="cards">
@@ -74,6 +91,7 @@ export default {
   data: function() {
     return {
       type: 'all',
+      query: '',
       items: [],
       total: 0,
       page: 1,
@@ -97,7 +115,26 @@ export default {
   mounted: function() {
     this.load(1);
   },
+  beforeDestroy: function() {
+    clearTimeout(this._searchTimer);
+  },
   methods: {
+    // 输入防抖 350ms：学生打"二次函数"要按六七个键，
+    // 每个键都打一次接口既浪费也会让列表闪个不停
+    onSearchInput: function() {
+      var self = this;
+      clearTimeout(this._searchTimer);
+      this._searchTimer = setTimeout(function() {
+        self.load(1);
+      }, 350);
+    },
+
+    clearSearch: function() {
+      this.query = '';
+      clearTimeout(this._searchTimer);
+      this.load(1);
+    },
+
     load: function(page) {
       var self = this;
       this.loading = true;
@@ -105,7 +142,12 @@ export default {
       this.page = page || 1;
 
       return this.$http.get('/study/records', {
-        params: { type: this.type, page: this.page, limit: 20 }
+        params: {
+          type: this.type,
+          q: this.query.trim(),
+          page: this.page,
+          limit: 20
+        }
       }).then(function(r) {
         if (r.data.code !== 200) throw new Error(r.data.message || '加载失败');
         self.items = r.data.data.items || [];
@@ -138,6 +180,12 @@ export default {
   padding: var(--gap-md);
   gap: var(--gap-md);
 }
+html.no-flex-gap .records-page > * + * {
+  margin-top: var(--gap-md);
+}
+
+
+
 
 .body {
   flex: 1;
@@ -146,6 +194,12 @@ export default {
   flex-direction: column;
   gap: var(--gap-md);
 }
+html.no-flex-gap .body > * + * {
+  margin-top: var(--gap-md);
+}
+
+
+
 
 .toolbar {
   display: flex;
@@ -156,16 +210,58 @@ export default {
   flex-shrink: 0;
   flex-wrap: wrap;
 }
+html.no-flex-gap .toolbar > * + * {
+  margin-left: var(--gap-md);
+}
+
+
+
 
 .toolbar-note {
   margin-left: auto;
+}
+
+/* 搜索框：flex 布局里占中间弹性空间，窄屏由 flex-wrap 折行 */
+.search-box {
+  position: relative;
+  flex: 1 1 180px;
+  max-width: 300px;
+  min-width: 150px;
+}
+
+.search-input {
+  padding: 8px 30px 8px 12px;
+  font-size: 13.5px;
+  border-radius: var(--radius-pill);
+}
+
+/* type=search 的原生清除按钮样式不可控，自己画一个（×）盖在右侧 */
+.search-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.search-clear:hover {
+  background: var(--ink-2);
+  color: var(--text-primary);
 }
 
 .icon-btn {
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-tertiary);
   font-size: 16px;
@@ -207,6 +303,12 @@ export default {
   cursor: pointer;
   transition: border-color var(--transition), transform var(--transition), box-shadow var(--transition);
 }
+html.no-flex-gap .card > * + * {
+  margin-left: 12px;
+}
+
+
+
 
 .card:hover {
   border-color: var(--accent-border);
@@ -257,6 +359,12 @@ export default {
   flex-direction: column;
   gap: 4px;
 }
+html.no-flex-gap .card-body > * + * {
+  margin-top: 4px;
+}
+
+
+
 
 .card-top {
   display: flex;
@@ -264,6 +372,12 @@ export default {
   justify-content: space-between;
   gap: 8px;
 }
+html.no-flex-gap .card-top > * + * {
+  margin-left: 8px;
+}
+
+
+
 
 .card-title {
   margin: 0;
@@ -292,6 +406,12 @@ export default {
   justify-content: space-between;
   gap: 8px;
 }
+html.no-flex-gap .card-foot > * + * {
+  margin-left: 8px;
+}
+
+
+
 
 .card-go {
   font-size: 12px;
@@ -311,6 +431,12 @@ export default {
   gap: var(--gap-md);
   margin-top: var(--gap-md);
 }
+html.no-flex-gap .pager > * + * {
+  margin-left: var(--gap-md);
+}
+
+
+
 
 @media (max-width: 700px) {
   .cards {

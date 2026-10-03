@@ -148,7 +148,7 @@ export default {
   grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
   width: 100%;
   max-width: 940px;
-  border-radius: 28px;
+  border-radius: var(--radius-xl);
   overflow: hidden;
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
@@ -166,12 +166,22 @@ export default {
   background: var(--brand-wash);
   border-right: 1px solid var(--glass-border-soft);
 }
+html.no-flex-gap .brand-pane > * + * {
+  margin-top: var(--gap-lg);
+}
+
+
 
 .brand-head {
   display: flex;
   align-items: center;
   gap: 14px;
 }
+html.no-flex-gap .brand-head > * + * {
+  margin-left: 14px;
+}
+
+
 
 .brand-name {
   font-size: 20px;
@@ -202,12 +212,22 @@ export default {
   font-size: 13.5px;
   color: var(--text-secondary);
 }
+html.no-flex-gap .brand-points > * + * {
+  margin-top: 12px;
+}
+
+
 
 .brand-points li {
   display: flex;
   align-items: center;
   gap: 10px;
 }
+html.no-flex-gap .brand-points li > * + * {
+  margin-left: 10px;
+}
+
+
 
 .dot {
   width: 6px;
@@ -265,6 +285,11 @@ export default {
   align-items: center;
   gap: 6px;
 }
+html.no-flex-gap .form-foot > * + * {
+  margin-left: 6px;
+}
+
+
 
 .link {
   font-size: 13px;
@@ -285,6 +310,11 @@ export default {
   font-size: 12.5px;
   color: var(--text-secondary);
 }
+html.no-flex-gap .ci-hint > * + * {
+  margin-left: 8px;
+}
+
+
 
 .dot-info {
   width: 6px;

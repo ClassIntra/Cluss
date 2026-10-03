@@ -2,7 +2,11 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <!-- interactive-widget=resizes-content：软键盘弹出时把布局视口一起缩掉。
+       Chrome 108+ 默认只缩"可视"视口，fixed 定位的输入区会被键盘盖住；
+       旧内核（基线 Chrome 80）本来就是这么做的，此参数对它无害。
+       加上后新旧内核的键盘行为一致，--app-height 的假设在两边都成立。 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
   <meta name="theme-color" content="#eef1f8" />
   <title>Cluss · 引导式 AI 解题</title>
   <script>

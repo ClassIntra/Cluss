@@ -44,7 +44,11 @@
   --danger: #d64545;
   --danger-soft: #fdecec;
 
-  /* 圆角 */
+  /* 圆角刻度（全局只用这一套，见 README「圆角刻度」）：
+     2xs 只用于气泡收尾等像素级细节；xs 小控件；sm 小元素；
+     md 输入框/按钮；lg 卡片；xl 大卡与弹窗；pill 胶囊 */
+  --radius-2xs: 6px;
+  --radius-xs: 8px;
   --radius-sm: 10px;
   --radius-md: 14px;
   --radius-lg: 20px;
@@ -67,7 +71,24 @@
      三处各写一个数字的话，切页时正文起始位置会左右跳。 */
   --sidebar-w: 288px;
 
-  --transition: 0.2s cubic-bezier(0.32, 0.72, 0, 1);
+  /* ---------- 动效令牌 ----------
+     统一缓动与时长。各组件各写一个曲线，手感就会不一致 ——
+     有的地方"跟手"，有的地方"顿一下"，整体就不"丝滑"了。
+
+     缓动都选 ease-out 系（快起慢收）：它最接近真实物理里"有惯性"的感觉，
+     也是界面动效的通用默认。ease-in 只用在"消失"上。 */
+  --ease-out: cubic-bezier(0.32, 0.72, 0, 1);      /* 出场 / 展开，最有跟手感 */
+  --ease-in: cubic-bezier(0.55, 0, 1, 0.45);       /* 离场 / 收起 */
+  --ease-inout: cubic-bezier(0.65, 0, 0.35, 1);    /* 位置互换等对称运动 */
+
+  /* 时长：按压反馈必须快，超过 150ms 就会觉得"迟钝"；
+     面板类可以慢一点，给用户看清"从哪来"的时间。 */
+  --dur-fast: 0.14s;
+  --dur-base: 0.22s;
+  --dur-slow: 0.32s;
+
+  /* 兼容旧写法：全站大量使用 var(--transition)，改这一处即全局生效 */
+  --transition: var(--dur-base) var(--ease-out);
 
   /* ---------- 令牌：墨色阶 ----------
      浅色下是「墨」的淡填充 / 分隔线 / 描边；深色下整体翻成白色系。
@@ -293,9 +314,36 @@ body::after {
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-card), var(--shadow-inset);
-  /* 强模糊是关键：它让卡片透出底色渐变，才有玻璃感 */
-  -webkit-backdrop-filter: blur(22px) saturate(1.4);
-  backdrop-filter: blur(22px) saturate(1.4);
+  /* 模糊半径 22px → 14px：肉眼看几乎没差别，但 GPU 成本对半径是超线性的。
+     在这类低端平板上，"看不出差别的省"是最划算的一类优化。 */
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  backdrop-filter: blur(14px) saturate(1.3);
+}
+
+/* ============================================================
+   低性能设备降级
+   ------------------------------------------------------------
+   backdrop-filter 是**实时**模糊：每一帧都要重新采样背后内容再模糊。
+   在低端安卓平板上，滚动时几个玻璃卡片就足以把帧率拉下来。
+   设备吃不住时由 main.js 加 .low-perf，这里整体关掉模糊并改用近不透明底 ——
+   少一点通透感，换回不卡。
+
+   注意：这是兜底，不是主力手段。真正的改善是"列表内容根本不用模糊"
+   （见 Chat.vue 里 .bubble-assistant 的说明）。
+   ============================================================ */
+html.low-perf .glass,
+html.low-perf .bubble-assistant,
+html.low-perf .app-sidebar-drawer,
+html.low-perf .app-drawer-mask,
+html.low-perf .toast {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* 关掉模糊后，原来的半透明底会"透"出下层文字而变脏，改成近不透明 */
+html.low-perf .glass,
+html.low-perf .bubble-assistant {
+  background: var(--glass-bg-strong);
 }
 
 .glass-soft {
@@ -334,14 +382,23 @@ body::after {
     background var(--transition), color var(--transition);
   -webkit-tap-highlight-color: transparent;
 }
+html.no-flex-gap .btn > * + * {
+  margin-left: 8px;
+}
 
 .btn:hover {
   transform: translateY(-1px);
   box-shadow: 0 8px 20px var(--ink-3);
 }
 
-.btn:active {
-  transform: translateY(0) scale(0.985);
+/* 按下**立即**（transition-duration 0s），松开才走 160ms 回弹。
+   这个不对称是刻意的，也是"跟手"的核心：真实按键按下去是瞬间的，
+   如果按下也走 160ms 缓动，手指已经抬起来了按钮才缩到最小，感觉就是迟钝。
+   scale 与 translateY 同属合成层属性，不触发重排。 */
+.btn:active:not(:disabled) {
+  transform: scale(0.96);
+  box-shadow: none;
+  transition-duration: 0s;
 }
 
 .btn:disabled {
@@ -385,10 +442,99 @@ body::after {
   box-shadow: 0 8px 20px var(--danger-tint);
 }
 
+/* 实心危险按钮：只用于「不可逆的破坏性操作」的最终确认（删除等）。
+   淡色系（btn-stop）是"中断"，实心红是"你真的要做吗"——两种危险强度分开。 */
+.btn-danger {
+  background: var(--danger);
+  border-color: transparent;
+  color: var(--text-invert);
+  box-shadow: 0 8px 22px var(--danger-tint);
+}
+
+.btn-danger:hover {
+  filter: brightness(0.92);
+  box-shadow: 0 12px 28px var(--danger-tint);
+}
+
 .btn-sm {
   padding: 7px 14px;
   font-size: 13px;
   border-radius: var(--radius-sm);
+}
+
+/* ============================================================
+   触屏手感
+   ------------------------------------------------------------
+   触屏上没有 hover，唯一能告诉学生"我按到了"的就是按下瞬间的反馈。
+   两条规则：
+
+   1. **tap 延迟**：Android WebView 会为了判断"这是不是双击缩放"
+      把 :active 推迟到手指抬起前后才触发 —— 按下去像没反应。
+      touch-action: manipulation 去掉双击缩放判定，保留滚动与捏合缩放。
+
+   2. **按下即时、松开回弹**：按下 0s（瞬时），松开走 var(--transition)。
+      不对称是刻意的，真实按键就是按下去立刻沉、松开慢慢弹。
+
+   按钮用缩放（有"按进去"的实体感）；**列表行只变色不缩放** ——
+   整行缩放会显得画面在晃，反而廉价。
+   ============================================================ */
+button,
+a,
+label,
+input,
+select,
+textarea,
+.segmented-item,
+.nav-item,
+.conv-item,
+.hist-item,
+.chip-suggest,
+.tool-btn,
+.icon-btn,
+.menu-btn,
+.user-chip {
+  touch-action: manipulation;
+}
+
+/* 列表 / 行：只换底色。加 html 前缀是为了压过组件 scoped 样式里
+   同特异性的基础规则（.foo[data-v-x] 与 .foo:active 同分，
+   而 global.css 先加载，不加前缀会输给后加载的 scoped 规则）。 */
+html .nav-item:active,
+html .conv-item:active,
+html .hist-item:active,
+html .menu-item:active,
+html .chip-suggest:active,
+html .segmented-item:active,
+html .tool-btn:active,
+html .icon-btn:active,
+html .menu-btn:active {
+  background: var(--ink-2);
+  transition-duration: 0s;
+}
+
+/* 图标类小按钮给一点缩放，它们没有文字，只变色不够"实"。
+   基础态补一条 transform 过渡：按下由上面的 0s 规则接管（瞬时），
+   松开走 140ms —— 这是"跟手"的不对称节奏。 */
+html .icon-btn,
+html .menu-btn {
+  transition: transform var(--dur-fast) var(--ease-out), background var(--transition);
+}
+
+html .icon-btn:active,
+html .menu-btn:active {
+  transform: scale(0.9);
+}
+
+/* 弹窗内容卡的进场：轻微放大 + 淡入。
+   只有 scale/opacity，不触发布局；关闭时不做动画（用户已经决定关掉，等待反而拖沓）。 */
+@keyframes popIn {
+  from { opacity: 0; transform: scale(0.96) translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.modal,
+.picker {
+  animation: popIn var(--dur-slow) var(--ease-out);
 }
 
 /* ---------- 表单 ---------- */
@@ -403,6 +549,13 @@ body::after {
   font-size: 13px;
   font-weight: 500;
   color: var(--text-secondary);
+}
+
+/* 字段下方的补充说明（如充值框旁的积分换算提示） */
+.field-hint {
+  display: block;
+  margin-top: 6px;
+  line-height: 1.5;
 }
 
 .input,
@@ -433,6 +586,96 @@ body::after {
 .input-error {
   border-color: var(--danger);
   box-shadow: 0 0 0 4px var(--danger-soft);
+}
+
+/* ---------- 下拉选择框 / 复选框 ----------
+   appearance:none 收掉原生外观：原生 select 在 Android WebView 上是系统灰底、
+   系统字号、直角箭头，和玻璃拟态完全脱节，深色下还会糊成一块。
+   直接命中所有 select（不挑类名），任何页面新加的下拉自动继承。
+   箭头用 data-URI 画（背景图里用不了 currentColor），深浅主题各一支。
+   这条必须赢过组件 scoped 里的 background/padding 简写 ——
+   设计系统对"所有下拉长一个样"的要求高于某处局部的微调，
+   所以对箭头相关属性用 !important（只锁外观，不动配色与字号） */
+html select {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  background-color: var(--surface-2);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='11' height='7' viewBox='0 0 11 7'%3E%3Cpath d='M1 1l4.5 4.5L10 1' fill='none' stroke='%235a6273' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 12px center !important;
+  background-size: 11px 7px !important;
+  padding-right: 34px !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+html[data-theme="dark"] select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='11' height='7' viewBox='0 0 11 7'%3E%3Cpath d='M1 1l4.5 4.5L10 1' fill='none' stroke='%23a8b0c2' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
+}
+
+html select.input:focus,
+html .select:focus {
+  background-color: var(--surface-3);
+}
+
+/* ---------- 复选框 / 单选 ----------
+   原生 checkbox 只有 13px，触屏上既难点中又和整体质感脱节。
+   自绘：20px 圆角方块 + 选中时的品牌色底与白色对勾；
+   点击区随尺寸放大，:checked 走 background 过渡（合成层友好） */
+html input[type="checkbox"],
+html input[type="radio"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  border: 1.5px solid var(--ink-4);
+  border-radius: var(--radius-xs);
+  background-color: var(--surface-2);
+  vertical-align: middle;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--transition), border-color var(--transition);
+}
+
+html input[type="radio"] {
+  border-radius: 50%;
+}
+
+html input[type="checkbox"]:checked,
+html input[type="radio"]:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='10' viewBox='0 0 12 10'%3E%3Cpath d='M1 5l3.4 3.4L11 1.2' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 12px 10px;
+}
+
+html input[type="checkbox"]:disabled,
+html input[type="radio"]:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 键盘可达性：Tab 聚焦时给清晰焦点环。
+   :focus-visible 只在键盘操作时出现，触屏点击不会画圈（Chrome 86+，旧内核整条忽略） */
+.btn:focus-visible,
+a:focus-visible,
+.tab-item:focus-visible,
+.menu-item:focus-visible,
+.input:focus-visible,
+.select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* 顶栏 / 底栏是操作件：长按不应弹出文本选择 */
+.topbar,
+.tabbar {
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /* ---------- 通用排版 ---------- */
@@ -468,6 +711,9 @@ body::after {
   border-radius: var(--radius-md);
   font-size: 13px;
   line-height: 1.55;
+}
+html.no-flex-gap .alert > * + * {
+  margin-left: 10px;
 }
 
 .alert-danger {
@@ -562,7 +808,7 @@ body::after {
 /* 行内代码 */
 .md-body code {
   padding: 0.15em 0.4em;
-  border-radius: 5px;
+  border-radius: var(--radius-2xs);
   background: var(--ink-2);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.9em;
@@ -675,6 +921,74 @@ body::after {
   opacity: 0;
 }
 
+/* ============================================================
+   页面切换：方向感 + 可打断
+   ------------------------------------------------------------
+   1. 为什么是「小位移 + 交叉淡化」而不是整页推挤：
+      页面共用同一张渐变底，交叉淡化时不会露出"两张页面叠着"的破绽；
+      整页 100% 推挤需要给每页不透明底，还会让顶栏里的玻璃模糊
+      每帧重新采样（低端机上必掉帧），代价不值。24px 的位移足以
+      传达"往左还是往右"，剩下的交给淡入淡出。
+   2. 为什么用 transition 而不是 keyframes：transition 天然可打断 ——
+      切页过程中再切一次，位移从当前实际位置平滑接续；
+      keyframes 只能从头重播，打断时先跳回起点，一看就廉价。
+   3. leave 页绝对定位叠在 enter 页之下（enter 保持文档流撑住高度），
+      两页同时动画，总时长只有一段。
+   ============================================================ */
+.page-slide-left-enter-active,
+.page-slide-right-enter-active,
+.page-slide-left-leave-active,
+.page-slide-right-leave-active {
+  transition: transform 0.26s var(--ease-out), opacity 0.26s var(--ease-out);
+}
+
+.page-slide-left-enter-active,
+.page-slide-right-enter-active {
+  position: relative;
+  z-index: 2;
+}
+
+.page-slide-left-leave-active,
+.page-slide-right-leave-active,
+.page-fade-leave-active {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  z-index: 1;
+}
+
+/* 前进（往序号大的页去）：新页从右来，旧页往左让 */
+.page-slide-left-enter {
+  transform: translateX(24px);
+  opacity: 0;
+}
+
+.page-slide-left-leave-to {
+  transform: translateX(-24px);
+  opacity: 0;
+}
+
+/* 后退：镜像 */
+.page-slide-right-enter {
+  transform: translateX(-24px);
+  opacity: 0;
+}
+
+.page-slide-right-leave-to {
+  transform: translateX(24px);
+  opacity: 0;
+}
+
+.page-fade-enter-active {
+  transition: opacity 0.22s ease;
+}
+
+.page-fade-enter,
+.page-fade-leave-to {
+  opacity: 0;
+}
+
 /* 触屏设备：不依赖 hover 反馈 */
 @media (hover: none) {
   .btn:hover {
@@ -698,52 +1012,92 @@ body::after {
    ------------------------------------------------------------
    为什么不能只看宽度：1024×768（横屏）与 768×1024（竖屏）宽度不同但同类问题
    不少；而横屏高度只有 768 时，垂直空间才是真正的瓶颈（顶栏+输入区吃掉一半）。
-   所以横屏矮屏的规则按 max-height 触发，竖屏按 orientation: portrait 触发。
+   所以横屏矮屏的规则按 max-height 触发。
+
+   竖屏规则**不再用 @media (orientation: portrait)**：
+   媒体查询看的是**视口**，软键盘一弹视口高度掉 300px 以上，
+   680×960 的竖屏平板瞬间"变成横屏"——竖屏专属样式会集体失效；
+   而此时 JS（mixins/orientation 按**设备**方向判定）仍认为是竖屏，
+   两侧分叉的后果是抽屉样式消失、侧栏彻底没有入口。
+   方向类由 orientation mixin 写到 <html>（is-portrait / use-drawer），
+   CSS 与 JS 走同一个真相来源；桌面窄窗口也因此行为正确：
+   设备是横屏就永远按横屏走，不会因为窗口窄而突然丢掉侧栏。
    ============================================================ */
 
-/* ---- 平板竖屏（768~1024）：垂直空间充足，水平紧张 ---- */
-@media (orientation: portrait) and (max-width: 1024px) {
-  :root {
-    --gap-md: 14px;
-    --gap-lg: 18px;
-  }
+/* ---- 设备竖屏：垂直空间充足，水平紧张 ---- */
+html.is-portrait {
+  --gap-md: 14px;
+  --gap-lg: 18px;
+}
 
-  /* 侧栏不适合固定占位，改成可横向滚动的顶部条 */
-  .app-sidebar-drawer {
-    position: fixed;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    width: min(320px, 84vw);
-    z-index: 300;
-    padding: var(--gap-md);
-    overflow-y: auto;
-    background: var(--glass-bg-strong);
-    -webkit-backdrop-filter: blur(24px) saturate(1.4);
-    backdrop-filter: blur(24px) saturate(1.4);
-    border-right: 1px solid var(--glass-border);
-    box-shadow: var(--shadow-float);
-    transform: translateX(-102%);
-    transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
-  }
+/* ---- 窄竖屏：侧栏改为抽屉（☰ 唤出 + 左缘侧滑手势） ---- */
+html.use-drawer .app-sidebar-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(320px, 84vw);
+  z-index: 300;
+  padding: var(--gap-md);
+  /* 手柄机型的手势条 / 摄像头挖孔会吃掉底部一段：
+     抽屉滚到底时最后一项不被遮住，靠这个留白兜底 */
+  padding-bottom: calc(var(--gap-md) + env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
+  background: var(--glass-bg-strong);
+  /* 抽屉是整屏高度的大面积模糊，半径降到 16px 明显更省 */
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
+  backdrop-filter: blur(16px) saturate(1.3);
+  border-right: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-float);
+  transform: translateX(-102%);
+  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
 
-  .app-sidebar-drawer.is-open {
-    transform: translateX(0);
-  }
+html.use-drawer .app-sidebar-drawer.is-open {
+  transform: translateX(0);
+}
 
-  .app-drawer-mask {
-    position: fixed;
-    inset: 0;
-    z-index: 299;
-    background: var(--mask);
-    -webkit-backdrop-filter: blur(3px);
-    backdrop-filter: blur(3px);
-  }
+html.use-drawer .app-drawer-mask {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 299;
+  background: var(--mask);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
 
-  /* 竖屏下横向空间宝贵：对话气泡放宽 */
-  .bubble {
-    max-width: 92%;
-  }
+/* ============================================================
+   竖屏底部标签栏的让位
+   ------------------------------------------------------------
+   TabBar（App.vue 挂载）在竖屏窄屏时固定悬浮于底部，六个学生入口
+   全部落进拇指热区。页面根元素按它实际占据的高度让位——
+   判据用 TabBar 自己写入的 html.has-tabbar，而不是各页再判一遍方向：
+   「底栏在不在」与「页面让不让位」必须由同一个来源决定，
+   否则两个判定迟早会在某个机型上分叉（内容被底栏盖住，或白让一块）。
+   ============================================================ */
+/* :not(.toast)：App.vue 里的全局轻提示也是 #app-root 的直接 div 子元素，
+   但它是 fixed 定位，不该跟着让位（Chrome 80 支持简单选择器的 :not） */
+html.has-tabbar #app-root > div:not(.toast) {
+  padding-bottom: calc(82px + env(safe-area-inset-bottom, 0px));
+}
+
+/* ============================================================
+   滚动链截断
+   ------------------------------------------------------------
+   触屏上滚动到边界后默认会把剩余位移"交给"父级（scroll chaining）。
+   竖屏上这很烦：消息滚到顶再一划，整页跟着晃；错题本滚到底再一划，
+   底栏跟着弹。contain 一词截断，里外各滚各的。（Chrome 63+，基线内）
+   ============================================================ */
+.messages,
+.conv-list,
+.list-wrap,
+.form-scroll,
+.grid-wrap {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* ---- 平板横屏矮屏（高度紧张）：压缩一切垂直留白 ---- */
@@ -755,21 +1109,41 @@ body::after {
     --gap-lg: 14px;
     --gap-xl: 20px;
     --radius-xl: 18px;
+    /* 侧栏收窄，把宽度让给正文。
+       必须改变量本身：这里原来写的是 .app-sidebar-narrow { width: 240px }，
+       而这个类全项目没有任何元素引用过 —— 那条规则一直是死的。
+       侧栏宽度统一由 --sidebar-w 提供，改这里才真的生效。 */
+    --sidebar-w: 248px;
   }
 
   .topbar-compact {
     padding: 8px 16px;
   }
 
-  /* 矮屏下侧栏收窄，把宽度让给内容 */
-  .app-sidebar-narrow {
-    width: 240px;
+  /* 输入区下面那行「Enter 发送…」是纯装饰，矮屏上让给消息区 */
+  .composer-foot {
+    display: none;
   }
 }
 
-/* ---- 横屏且宽度足够：双栏并排（学习页、云盘页） ---- */
-@media (orientation: landscape) and (min-width: 900px) {
-  .split-pane {
+/* ---- 极矮屏（如 960×680）：再压一档，保证消息区还有可用高度 ---- */
+@media (orientation: landscape) and (max-height: 700px) {
+  :root {
+    --gap-md: 8px;
+    --gap-lg: 10px;
+    --sidebar-w: 236px;
+  }
+
+  .topbar-compact {
+    padding: 6px 12px;
+  }
+}
+
+/* ---- 横屏且宽度足够：双栏并排（学习页、云盘页） ----
+   宽度走媒体查询（视口），方向走 html 类（设备）：
+   设备竖屏（is-portrait）时即使键盘把视口压成横向比例，也必须保持堆叠 */
+@media (min-width: 900px) {
+  html:not(.is-portrait) .split-pane {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
     gap: var(--gap-md);
@@ -777,8 +1151,16 @@ body::after {
   }
 }
 
-/* ---- 竖屏或窄屏：上下堆叠 ---- */
-@media (orientation: portrait), (max-width: 899px) {
+/* ---- 设备竖屏：上下堆叠 ---- */
+html.is-portrait .split-pane {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 42%) minmax(0, 1fr);
+  gap: var(--gap-md);
+  min-height: 0;
+}
+
+@media (max-width: 899px) {
   .split-pane {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -799,6 +1181,9 @@ body::after {
   border-radius: var(--radius-md);
   background: var(--ink-2);
   gap: 2px;
+}
+html.no-flex-gap .segmented > * + * {
+  margin-left: 2px;
 }
 
 .segmented-item {
@@ -858,6 +1243,33 @@ body::after {
   color: var(--danger);
 }
 
+/* 等待首字的状态提示（对话 / 拍题 / 作文三处共用）
+   为什么不做进度条：假进度一旦被识破，信任损失比不给还大。
+   一个呼吸点 + 一句随等待时长升级的说明，既表明"确实在工作"，
+   也不编造任何它并不知道的信息。 */
+.waiting-hint {
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  line-height: 1.6;
+}
+
+.waiting-dot {
+  width: 7px;
+  height: 7px;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: waitingPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes waitingPulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
 /* 空状态 */
 .empty-hint {
   display: flex;
@@ -870,13 +1282,19 @@ body::after {
   color: var(--text-tertiary);
   font-size: 13.5px;
 }
+html.no-flex-gap .empty-hint > * + * {
+  margin-top: 10px;
+}
 
-/* 进度条（额度、周限额、配额通用） */
+/* 进度条（额度、周限额、配额通用）
+   contain: layout —— 条内宽度的变化（每次额度刷新都会动一次）不向外传播布局，
+   避免整张卡片跟着重排。overflow 已经剪裁，视觉上没有任何变化。 */
 .bar {
   height: 6px;
   border-radius: var(--radius-pill);
   background: var(--ink-2);
   overflow: hidden;
+  contain: layout paint;
 }
 
 .bar-fill {

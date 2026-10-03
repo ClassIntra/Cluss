@@ -1,17 +1,19 @@
 <template>
   <div class="study-page">
-    <AppNav active="study" :show-menu-button="isPortrait" @toggle-sidebar="drawerOpen = !drawerOpen" />
+    <AppNav active="study" :show-menu-button="useDrawer" @toggle-sidebar="toggleDrawer" />
 
     <transition name="fade">
-      <div v-if="drawerOpen" class="app-drawer-mask" @click="drawerOpen = false"></div>
+      <div v-if="drawerOpen" class="app-drawer-mask" @click="closeDrawer"></div>
     </transition>
 
-    <div class="body" :class="{ 'is-portrait': isPortrait }">
+    <!-- 判 useDrawer（竖屏且足够窄）而非 isPortrait，判据与 CSS 的 html.use-drawer 一致 -->
+    <div class="body" :class="{ 'is-portrait': isPortrait, 'use-drawer': useDrawer }">
       <transition name="fade">
         <aside
-          v-show="!isPortrait || drawerOpen"
+          v-show="!useDrawer || drawerOpen"
           class="sidebar app-sidebar-drawer"
           :class="{ 'is-open': drawerOpen }"
+          :style="drawerStyle"
         >
           <div class="mode-card glass">
             <span class="section-label">学习模式</span>
@@ -111,23 +113,38 @@
             <div class="pane-head">
               <span class="section-label">{{ taskKind === 'grade' ? '批改结果' : '解答' }}</span>
               <div class="pane-actions">
-                <select v-model="modelId" class="model-select-sm" :disabled="sending">
+                <!-- 只显示模型名：原来还缀一个「（转述）」，那是系统内部的实现方式
+                     （先用一个能看图的模型把图片转成文字），学生看到只会困惑，
+                     也做不了任何决定。title 里点明这是管理员配好的，省掉"为什么要我选"的迟疑。 -->
+                <select
+                  v-model="modelId"
+                  class="model-select-sm"
+                  :disabled="sending"
+                  title="用哪个 AI 由管理员配置，一般不用改"
+                >
                   <option
                     v-for="m in visionModels"
                     :key="m.id"
                     :value="m.id"
                     :disabled="!m.available"
-                  >{{ m.label }}{{ m.vision_via_relay ? '（转述）' : '' }}</option>
+                  >{{ m.label }}</option>
                 </select>
               </div>
             </div>
 
-            <div ref="scroller" class="pane-body answer-body">
-              <div v-if="!answer" class="empty-hint">
+            <div ref="scroller" class="pane-body answer-body" @scroll="onScrollAnswer">
+              <!-- 已提交但还没出字：给状态文字，而不是让 taskHint 配一个闪烁光标
+                   干等（等久了学生会以为卡死，见 utils/waiting.js） -->
+              <div v-if="!answer && sending" class="waiting-hint">
+                <span class="waiting-dot" aria-hidden="true"></span>{{ waitText }}
+              </div>
+              <div v-else-if="!answer" class="empty-hint">
                 <div class="tiny">{{ taskHint }}</div>
               </div>
-              <div v-else class="md-body" v-html="render(answer)"></div>
-              <span v-if="sending" class="caret"></span>
+              <!-- 渲染预计算好的 answerHtml：在模板里调 render(answer) 会让每次
+                   重渲染都重解析整篇 Markdown（见 mixins/streamFrame） -->
+              <div v-else class="md-body" v-html="answerHtml"></div>
+              <span v-if="sending && answer" class="caret"></span>
             </div>
 
             <div v-if="visionStatus" class="vision-status">
@@ -144,9 +161,12 @@
                 rows="1"
                 :placeholder="taskKind === 'grade' ? '补充说明（选填），如：这是第 3 次作业' : '补充说明（选填），如：只讲第 2 问'"
               ></textarea>
-              <button class="btn btn-primary" :disabled="!canSend" @click="start">
-                {{ sending ? '处理中…' : (taskKind === 'grade' ? '开始批改' : '开始解答') }}
-              </button>
+              <button
+                class="btn"
+                :class="sending ? 'btn-stop' : 'btn-primary'"
+                :disabled="!sending && !canSend"
+                @click="sending ? stop() : start()"
+              >{{ sending ? '停止生成' : (taskKind === 'grade' ? '开始批改' : '开始解答') }}</button>
             </div>
           </section>
         </div>
@@ -172,16 +192,22 @@ import Segmented from '@/components/Segmented.vue';
 import CloudPicker from '@/components/CloudPicker.vue';
 import { renderMarkdown } from '@/utils/markdown';
 import { readSseStream, postStream } from '@/utils/sse';
+import waiting from '@/mixins/waiting';
+import streamFrame from '@/mixins/streamFrame';
+import orientation from '@/mixins/orientation';
 
 export default {
   name: 'StudyView',
   components: { AppNav, Segmented, CloudPicker },
+  mixins: [waiting, streamFrame, orientation],
   data: function() {
     return {
       taskKind: 'solve',
       paperMode: 'single',
       attachments: [],
       answer: '',
+      // 预渲染的 HTML（流式时按帧节流更新），见 mixins/streamFrame
+      answerHtml: '',
       note: '',
       sending: false,
       streamError: '',
@@ -193,8 +219,13 @@ export default {
       capability: { available: false, max_images: 4, vision_models: [] },
       pickerOpen: false,
       uploading: false,
-      drawerOpen: false,
-      isPortrait: false
+      // useDrawer / drawerOpen / drawerDragX 由 mixins/orientation 提供。
+      // 不要在这里再声明一份 —— 同名 data 会覆盖 mixin 的同名项，
+      // 结果是"mixin 里的逻辑改了 A，界面上看的是 B"，这种错很难查。
+      // 学生是否停在底部：不在底部时不要硬把视图拽回去，否则他想翻历史会被打断
+      atBottom: true,
+      // 用户主动点了停止
+      stopped: false
     };
   },
   computed: {
@@ -265,8 +296,6 @@ export default {
       this.isPortrait = window.innerHeight >= window.innerWidth;
       if (!this.isPortrait) this.drawerOpen = false;
     },
-
-    render: function(text) { return renderMarkdown(text); },
 
     loadCapability: function() {
       var self = this;
@@ -424,7 +453,22 @@ export default {
       this.$nextTick(function() {
         var el = self.$refs.scroller;
         if (el) el.scrollTop = el.scrollHeight;
+        self.atBottom = true;
       });
+    },
+
+    // 学生往上翻着看时不要继续把他拽回底部；回到贴底才恢复自动跟随
+    onScrollAnswer: function() {
+      var el = this.$refs.scroller;
+      if (!el) return;
+      this.atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    },
+
+    // 中断当前生成：收尾统一放在流式 promise 的 finally 里
+    stop: function() {
+      if (!this.sending) return;
+      this.stopped = true;
+      if (this._abort) this._abort.abort();
     },
 
     start: function() {
@@ -432,9 +476,20 @@ export default {
       if (!this.canSend) return;
 
       this.answer = '';
+      this.answerHtml = '';
       this.streamError = '';
       this.visionStatus = '';
       this.sending = true;
+      this.stopped = false;
+      this.atBottom = true;
+      // 批改要逐题核对，等待更久，文案分开给（见 utils/waiting.js）
+      this.startWaiting(this.taskKind === 'grade' ? 'grade' : 'study');
+
+      // 渲染 + 跟随滚动合并成一次"上色"，交给 rAF 节流（见 mixins/streamFrame）
+      var paint = function() {
+        self.answerHtml = renderMarkdown(self.answer);
+        if (self.atBottom) self.scrollAnswer();
+      };
 
       var controller = new AbortController();
       this._abort = controller;
@@ -466,8 +521,11 @@ export default {
             else if (st.stage === 'vision_done') self.visionStatus = '';
           },
           onDelta: function(text) {
+            // 第一个字一到就撤掉等待提示，别让它和正文并存
+            if (self.waitText) self.stopWaiting();
             self.answer += text;
-            self.scrollAnswer();
+            // 合并到一帧渲染一次（见 mixins/streamFrame）
+            self.scheduleFrame(paint);
           },
           onDone: function(done) {
             self.visionStatus = '';
@@ -497,6 +555,17 @@ export default {
       }).then(function() {
         self.sending = false;
         self._abort = null;
+        // 无论成功、报错还是中断，都要撤掉等待提示，并把渲染补完
+        self.stopWaiting();
+        self.cancelFrame();
+        paint();
+
+        if (self.stopped) {
+          self.stopped = false;
+          // 一个字都没生成就停了：给个明确交代，否则学生看着空白不知道发生了什么
+          if (!self.answer) self.answer = '（已停止生成）';
+          return;
+        }
         if (!self.answer && !self.streamError) {
           self.streamError = '未收到内容，请重试';
         }
@@ -513,6 +582,9 @@ export default {
   height: var(--app-height);
   padding: var(--gap-md);
   gap: var(--gap-md);
+}
+html.no-flex-gap .study-page > * + * {
+  margin-top: var(--gap-md);
 }
 
 .body {
@@ -533,6 +605,9 @@ export default {
   gap: var(--gap-md);
   min-height: 0;
 }
+html.no-flex-gap .sidebar > * + * {
+  margin-top: var(--gap-md);
+}
 
 /* ---------- 模式卡 ---------- */
 .mode-card {
@@ -542,6 +617,9 @@ export default {
   padding: 16px;
   border-radius: var(--radius-lg);
   flex-shrink: 0;
+}
+html.no-flex-gap .mode-card > * + * {
+  margin-top: 8px;
 }
 
 .mode-card .section-label:not(:first-child) {
@@ -589,6 +667,11 @@ export default {
   padding: 8px 10px;
   border-radius: var(--radius-sm);
   cursor: pointer;
+  /* 按下是即时的（见 global.css 的触屏手感段），松开要柔和回落 */
+  transition: background var(--transition);
+}
+html.no-flex-gap .hist-item > * + * {
+  margin-left: 6px;
 }
 
 .hist-item:hover {
@@ -617,7 +700,7 @@ export default {
   width: 20px;
   height: 20px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-2xs);
   background: transparent;
   color: var(--text-tertiary);
   font-size: 15px;
@@ -640,7 +723,7 @@ export default {
   width: 26px;
   height: 26px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-tertiary);
   font-size: 15px;
@@ -682,11 +765,17 @@ export default {
   margin-bottom: 10px;
   flex-shrink: 0;
 }
+html.no-flex-gap .pane-head > * + * {
+  margin-left: var(--gap-sm);
+}
 
 .pane-actions {
   display: flex;
   gap: 6px;
   align-items: center;
+}
+html.no-flex-gap .pane-actions > * + * {
+  margin-left: 6px;
 }
 
 .pane-body {
@@ -708,6 +797,9 @@ export default {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+html.no-flex-gap .pane-foot > * + * {
+  margin-left: 8px;
 }
 
 .pane-foot-action {
@@ -748,7 +840,10 @@ export default {
 
 .upload-btn input[type="file"] {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   opacity: 0;
   cursor: pointer;
 }
@@ -854,6 +949,9 @@ export default {
   font-size: 12.5px;
   flex-shrink: 0;
   width: fit-content;
+}
+html.no-flex-gap .vision-status > * + * {
+  margin-left: 8px;
 }
 
 .spinner {

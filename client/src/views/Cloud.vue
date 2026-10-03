@@ -176,14 +176,19 @@ export default {
 
     remove: function(f) {
       var self = this;
-      if (!window.confirm('确定删除「' + f.name + '」？删除后无法恢复。')) return;
-
-      this.$http.delete('/cloud/files/' + f.hash).then(function(r) {
-        if (r.data.code !== 200) throw new Error(r.data.message || '删除失败');
-        self.files = self.files.filter(function(x) { return x.hash !== f.hash; });
-        self.loadQuota();
-      }).catch(function(err) {
-        self.$store.dispatch('toast', { message: err.message || '删除失败', type: 'error' });
+      this.$store.dispatch('confirm', {
+        message: '确定删除「' + f.name + '」？删除后无法恢复。',
+        confirmText: '删除',
+        danger: true
+      }).then(function(ok) {
+        if (!ok) return;
+        self.$http.delete('/cloud/files/' + f.hash).then(function(r) {
+          if (r.data.code !== 200) throw new Error(r.data.message || '删除失败');
+          self.files = self.files.filter(function(x) { return x.hash !== f.hash; });
+          self.loadQuota();
+        }).catch(function(err) {
+          self.$store.dispatch('toast', { message: err.message || '删除失败', type: 'error' });
+        });
       });
     },
 
@@ -218,6 +223,11 @@ export default {
   padding: var(--gap-md);
   gap: var(--gap-md);
 }
+html.no-flex-gap .cloud-page > * + * {
+  margin-top: var(--gap-md);
+}
+
+
 
 .body {
   flex: 1;
@@ -226,6 +236,11 @@ export default {
   flex-direction: column;
   gap: var(--gap-md);
 }
+html.no-flex-gap .body > * + * {
+  margin-top: var(--gap-md);
+}
+
+
 
 .toolbar {
   display: flex;
@@ -237,6 +252,11 @@ export default {
   flex-shrink: 0;
   flex-wrap: wrap;
 }
+html.no-flex-gap .toolbar > * + * {
+  margin-left: var(--gap-md);
+}
+
+
 
 .toolbar-left {
   display: flex;
@@ -244,12 +264,22 @@ export default {
   gap: 10px;
   flex-wrap: wrap;
 }
+html.no-flex-gap .toolbar-left > * + * {
+  margin-left: 10px;
+}
+
+
 
 .toolbar-right {
   display: flex;
   align-items: center;
   gap: 8px;
 }
+html.no-flex-gap .toolbar-right > * + * {
+  margin-left: 8px;
+}
+
+
 
 .upload-btn {
   position: relative;
@@ -265,7 +295,10 @@ export default {
 
 .upload-btn input[type="file"] {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   opacity: 0;
   cursor: pointer;
 }
@@ -340,6 +373,11 @@ export default {
   padding: 10px;
   background: var(--ink-1);
 }
+html.no-flex-gap .card-text > * + * {
+  margin-top: 8px;
+}
+
+
 
 .card-text-icon {
   font-size: 13px;
@@ -365,6 +403,11 @@ export default {
   gap: 6px;
   padding: 8px 10px;
 }
+html.no-flex-gap .card-foot > * + * {
+  margin-left: 6px;
+}
+
+
 
 .card-meta {
   flex: 1;
@@ -383,12 +426,17 @@ export default {
   gap: 2px;
   flex-shrink: 0;
 }
+html.no-flex-gap .card-actions > * + * {
+  margin-left: 2px;
+}
+
+
 
 .icon-btn {
   width: 26px;
   height: 26px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-tertiary);
   font-size: 15px;
@@ -412,7 +460,10 @@ export default {
 /* ---------- 预览 ---------- */
 .preview-mask {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   z-index: 400;
   display: flex;
   flex-direction: column;
@@ -424,6 +475,11 @@ export default {
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
+html.no-flex-gap .preview-mask > * + * {
+  margin-top: var(--gap-md);
+}
+
+
 
 .preview-img {
   max-width: 94vw;
@@ -437,6 +493,11 @@ export default {
   align-items: center;
   gap: var(--gap-md);
 }
+html.no-flex-gap .preview-bar > * + * {
+  margin-left: var(--gap-md);
+}
+
+
 
 .preview-name {
   color: var(--surface-3);

@@ -1,17 +1,19 @@
 <template>
   <div class="writing-page">
-    <AppNav active="writing" :show-menu-button="isPortrait" @toggle-sidebar="drawerOpen = !drawerOpen" />
+    <AppNav active="writing" :show-menu-button="useDrawer" @toggle-sidebar="toggleDrawer" />
 
     <transition name="fade">
-      <div v-if="drawerOpen" class="app-drawer-mask" @click="drawerOpen = false"></div>
+      <div v-if="drawerOpen" class="app-drawer-mask" @click="closeDrawer"></div>
     </transition>
 
-    <div class="body" :class="{ 'is-portrait': isPortrait }">
+    <!-- 判 useDrawer（竖屏且足够窄）而非 isPortrait，判据与 CSS 的 html.use-drawer 一致 -->
+    <div class="body" :class="{ 'is-portrait': isPortrait, 'use-drawer': useDrawer }">
       <transition name="fade">
         <aside
-          v-show="!isPortrait || drawerOpen"
+          v-show="!useDrawer || drawerOpen"
           class="sidebar app-sidebar-drawer"
           :class="{ 'is-open': drawerOpen }"
+          :style="drawerStyle"
         >
           <!-- 用途 -->
           <div class="panel glass">
@@ -119,9 +121,12 @@
             <span class="tiny muted">
               {{ mode === 'grade' ? '可以直接粘贴，也可以拍手写稿' : '图片作为题目素材（选填）' }}
             </span>
-            <button class="btn btn-primary" :disabled="!canSend" @click="start">
-              {{ sending ? '生成中…' : actionLabel }}
-            </button>
+            <button
+              class="btn"
+              :class="sending ? 'btn-stop' : 'btn-primary'"
+              :disabled="!sending && !canSend"
+              @click="sending ? stop() : start()"
+            >{{ sending ? '停止生成' : actionLabel }}</button>
           </div>
         </section>
 
@@ -130,7 +135,12 @@
           <div class="result-head">
             <span class="section-label">{{ resultLabel }}</span>
             <div class="result-actions">
-              <select v-model="modelId" class="model-select-sm" :disabled="sending">
+              <select
+                v-model="modelId"
+                class="model-select-sm"
+                :disabled="sending"
+                title="用哪个 AI 由管理员配置，一般不用改"
+              >
                 <option v-for="m in models" :key="m.id" :value="m.id" :disabled="!m.available">
                   {{ m.label }}
                 </option>
@@ -140,12 +150,17 @@
             </div>
           </div>
 
-          <div ref="scroller" class="result-body">
-            <div v-if="!result" class="empty-hint">
+          <div ref="scroller" class="result-body" @scroll="onScrollResult">
+            <!-- 已提交但还没出字：给状态文字，而不是让空状态配一个闪烁光标干等 -->
+            <div v-if="!result && sending" class="waiting-hint">
+              <span class="waiting-dot" aria-hidden="true"></span>{{ waitText }}
+            </div>
+            <div v-else-if="!result" class="empty-hint">
               <div class="tiny">{{ emptyHint }}</div>
             </div>
-            <div v-else class="md-body" v-html="render(result)"></div>
-            <span v-if="sending" class="caret"></span>
+            <!-- 渲染预计算好的 resultHtml（见 mixins/streamFrame） -->
+            <div v-else class="md-body" v-html="resultHtml"></div>
+            <span v-if="sending && result" class="caret"></span>
           </div>
 
           <div v-if="visionStatus" class="vision-status">
@@ -182,6 +197,9 @@ import AttachmentChips from '@/components/AttachmentChips.vue';
 import CloudPicker from '@/components/CloudPicker.vue';
 import { renderMarkdown } from '@/utils/markdown';
 import { readSseStream, postStream } from '@/utils/sse';
+import waiting from '@/mixins/waiting';
+import streamFrame from '@/mixins/streamFrame';
+import orientation from '@/mixins/orientation';
 
 var GENRES = {
   zh: ['记叙文', '议论文', '说明文', '散文', '读后感', '书信', '演讲稿', '通知'],
@@ -196,6 +214,7 @@ var STYLES = {
 export default {
   name: 'WritingView',
   components: { AppNav, Segmented, AttachmentChips, CloudPicker },
+  mixins: [waiting, streamFrame, orientation],
   data: function() {
     return {
       mode: 'generate',
@@ -205,6 +224,8 @@ export default {
       wordLimit: '',
       draft: '',
       result: '',
+      // 预渲染的 HTML（流式时按帧节流更新），见 mixins/streamFrame
+      resultHtml: '',
       attachments: [],
       pieces: [],
       openedId: 0,
@@ -217,8 +238,11 @@ export default {
       visionStatus: '',
       conversationId: '',
       pickerOpen: false,
-      drawerOpen: false,
-      isPortrait: false
+      // isPortrait / useDrawer / drawerOpen / drawerDragX 由 mixins/orientation 提供
+      // 学生往上翻着看时不要继续把他拽回底部；回到贴底才恢复自动跟随
+      atBottom: true,
+      // 用户主动点了停止
+      stopped: false
     };
   },
   computed: {
@@ -299,27 +323,15 @@ export default {
     }
   },
   mounted: function() {
-    this.checkOrientation();
-    window.addEventListener('resize', this.checkOrientation);
-    window.addEventListener('orientationchange', this.checkOrientation);
-
+    // 方向与抽屉手势由 mixins/orientation 统一处理
     this.$store.dispatch('auth/fetchWallet').catch(function() {});
     this.loadModels();
     this.loadPieces();
   },
   beforeDestroy: function() {
-    window.removeEventListener('resize', this.checkOrientation);
-    window.removeEventListener('orientationchange', this.checkOrientation);
     if (this._abort) this._abort.abort();
   },
   methods: {
-    checkOrientation: function() {
-      this.isPortrait = window.innerHeight >= window.innerWidth;
-      if (!this.isPortrait) this.drawerOpen = false;
-    },
-
-    render: function(text) { return renderMarkdown(text); },
-
     modeLabel: function(m) {
       return { generate: '范文', grade: '批改', outline: '提纲' }[m] || m;
     },
@@ -368,16 +380,22 @@ export default {
 
     removePiece: function(p) {
       var self = this;
-      if (!window.confirm('确定删除这篇记录？')) return;
-      this.$http.delete('/writing/pieces/' + p.id).then(function(r) {
-        if (r.data.code !== 200) throw new Error(r.data.message || '删除失败');
-        self.pieces = self.pieces.filter(function(x) { return x.id !== p.id; });
-        if (self.openedId === p.id) {
-          self.openedId = 0;
-          self.result = '';
-        }
-      }).catch(function(err) {
-        self.$store.dispatch('toast', { message: err.message || '删除失败', type: 'error' });
+      this.$store.dispatch('confirm', {
+        message: '确定删除这篇记录「' + (p.title || '未命名') + '」？删除后无法恢复。',
+        confirmText: '删除',
+        danger: true
+      }).then(function(ok) {
+        if (!ok) return;
+        self.$http.delete('/writing/pieces/' + p.id).then(function(r) {
+          if (r.data.code !== 200) throw new Error(r.data.message || '删除失败');
+          self.pieces = self.pieces.filter(function(x) { return x.id !== p.id; });
+          if (self.openedId === p.id) {
+            self.openedId = 0;
+            self.result = '';
+          }
+        }).catch(function(err) {
+          self.$store.dispatch('toast', { message: err.message || '删除失败', type: 'error' });
+        });
       });
     },
 
@@ -434,7 +452,22 @@ export default {
       this.$nextTick(function() {
         var el = self.$refs.scroller;
         if (el) el.scrollTop = el.scrollHeight;
+        self.atBottom = true;
       });
+    },
+
+    // 判断是否贴着底部：留 48px 容差，手指滑动时轻微偏移不该算"离开底部"
+    onScrollResult: function() {
+      var el = this.$refs.scroller;
+      if (!el) return;
+      this.atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    },
+
+    // 中断当前生成：真正的收尾放在流式 promise 的 finally 里，这里只负责发出信号
+    stop: function() {
+      if (!this.sending) return;
+      this.stopped = true;
+      if (this._abort) this._abort.abort();
     },
 
     start: function() {
@@ -442,10 +475,21 @@ export default {
       if (!this.canSend) return;
 
       this.result = '';
+      this.resultHtml = '';
       this.streamError = '';
       this.visionStatus = '';
       this.saved = false;
       this.sending = true;
+      this.stopped = false;
+      this.atBottom = true;
+      // 成文与批改都可能等很久，文案按场景分开（见 utils/waiting.js）
+      this.startWaiting(this.mode === 'grade' ? 'grade' : 'writing');
+
+      // 渲染 + 跟随滚动合并成一次"上色"，交给 rAF 节流（见 mixins/streamFrame）
+      var paint = function() {
+        self.resultHtml = renderMarkdown(self.result);
+        if (self.atBottom) self.scrollResult();
+      };
 
       var controller = new AbortController();
       this._abort = controller;
@@ -473,8 +517,11 @@ export default {
             else if (st.stage === 'vision_done') self.visionStatus = '';
           },
           onDelta: function(text) {
+            // 第一个字一到就撤掉等待提示，别让它和正文并存
+            if (self.waitText) self.stopWaiting();
             self.result += text;
-            self.scrollResult();
+            // 合并到一帧渲染一次（见 mixins/streamFrame）
+            self.scheduleFrame(paint);
           },
           onDone: function() {
             self.visionStatus = '';
@@ -495,6 +542,17 @@ export default {
       }).then(function() {
         self.sending = false;
         self._abort = null;
+        // 无论成功、报错还是中断，都要撤掉等待提示，并把渲染补完
+        self.stopWaiting();
+        self.cancelFrame();
+        paint();
+
+        if (self.stopped) {
+          self.stopped = false;
+          // 一个字都没生成就停了：给个明确交代，否则学生看着空白不知道发生了什么
+          if (!self.result) self.result = '（已停止生成）';
+          return;
+        }
         if (!self.result && !self.streamError) {
           self.streamError = '未收到内容，请重试';
         }
@@ -552,6 +610,9 @@ export default {
   padding: var(--gap-md);
   gap: var(--gap-md);
 }
+html.no-flex-gap .writing-page > * + * {
+  margin-top: var(--gap-md);
+}
 
 .body {
   display: grid;
@@ -571,6 +632,9 @@ export default {
   gap: var(--gap-md);
   min-height: 0;
 }
+html.no-flex-gap .sidebar > * + * {
+  margin-top: var(--gap-md);
+}
 
 /* ---------- 参数面板 ---------- */
 .panel {
@@ -581,6 +645,9 @@ export default {
   border-radius: var(--radius-lg);
   flex-shrink: 0;
   overflow-y: auto;
+}
+html.no-flex-gap .panel > * + * {
+  margin-top: 8px;
 }
 
 .panel .section-label:not(:first-child) {
@@ -636,6 +703,9 @@ export default {
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
+html.no-flex-gap .hist-item > * + * {
+  margin-left: 6px;
+}
 
 .hist-item:hover {
   background: var(--ink-2);
@@ -667,7 +737,7 @@ export default {
   width: 20px;
   height: 20px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-2xs);
   background: transparent;
   color: var(--text-tertiary);
   font-size: 15px;
@@ -695,7 +765,7 @@ export default {
   width: 26px;
   height: 26px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-tertiary);
   font-size: 15px;
@@ -744,12 +814,18 @@ export default {
   flex-shrink: 0;
   flex-wrap: wrap;
 }
+html.no-flex-gap .editor-head, .result-head > * + * {
+  margin-left: var(--gap-sm);
+}
 
 .editor-actions,
 .result-actions {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+html.no-flex-gap .editor-actions, .result-actions > * + * {
+  margin-left: 6px;
 }
 
 .upload-btn {
@@ -766,7 +842,10 @@ export default {
 
 .upload-btn input[type="file"] {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   opacity: 0;
   cursor: pointer;
 }
@@ -802,6 +881,9 @@ export default {
   justify-content: space-between;
   gap: var(--gap-sm);
   margin-top: 10px;
+}
+html.no-flex-gap .editor-foot > * + * {
+  margin-left: var(--gap-sm);
 }
 
 .model-select-sm {
@@ -848,6 +930,9 @@ export default {
   font-size: 12.5px;
   flex-shrink: 0;
   width: fit-content;
+}
+html.no-flex-gap .vision-status > * + * {
+  margin-left: 8px;
 }
 
 .spinner {

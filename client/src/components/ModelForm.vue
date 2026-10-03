@@ -221,7 +221,10 @@ export default {
 <style scoped>
 .modal-mask {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   z-index: 350;
   display: flex;
   align-items: center;
@@ -255,7 +258,7 @@ export default {
 
 .modal-sub code {
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: var(--radius-2xs);
   background: var(--ink-2);
   font-size: 11.5px;
 }
@@ -288,6 +291,11 @@ export default {
   border-radius: var(--radius-md);
   background: var(--ink-1);
 }
+html.no-flex-gap .switch-list > * + * {
+  margin-top: 9px;
+}
+
+
 
 .switch-row {
   display: flex;
@@ -297,6 +305,11 @@ export default {
   line-height: 1.5;
   cursor: pointer;
 }
+html.no-flex-gap .switch-row > * + * {
+  margin-left: 9px;
+}
+
+
 
 .switch-row input {
   margin-top: 3px;
@@ -311,6 +324,11 @@ export default {
   padding-top: var(--gap-md);
   border-top: 1px solid var(--ink-2);
 }
+html.no-flex-gap .modal-actions > * + * {
+  margin-left: 10px;
+}
+
+
 
 .spacer {
   flex: 1;

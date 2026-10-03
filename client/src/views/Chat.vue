@@ -2,20 +2,21 @@
   <div class="chat-page">
     <AppNav
       active="chat"
-      :show-menu-button="isPortrait"
-      @toggle-sidebar="drawerOpen = !drawerOpen"
+      :show-menu-button="useDrawer"
+      @toggle-sidebar="toggleDrawer"
     />
 
     <transition name="fade">
-      <div v-if="drawerOpen" class="app-drawer-mask" @click="drawerOpen = false"></div>
+      <div v-if="drawerOpen" class="app-drawer-mask" @click="closeDrawer"></div>
     </transition>
 
-    <div class="body" :class="{ 'is-portrait': isPortrait }">
+    <div class="body" :class="{ 'use-drawer': useDrawer }">
       <transition name="fade">
         <aside
-          v-show="!isPortrait || drawerOpen"
+          v-show="!useDrawer || drawerOpen"
           class="sidebar app-sidebar-drawer"
           :class="{ 'is-open': drawerOpen }"
+          :style="drawerStyle"
         >
           <!-- 额度卡 -->
           <div class="wallet-card glass">
@@ -28,32 +29,48 @@
 
             <template v-else>
               <div class="wallet-amount">
-                <span class="wallet-symbol">¥</span>
                 <span class="wallet-value" :class="{ 'wallet-empty': !wallet.is_allocated || availableValue <= 0 }">
-                  {{ availableValue.toFixed(2) }}
+                  {{ availableValue }}
                 </span>
+                <span class="wallet-unit">积分</span>
               </div>
 
-              <div class="bar wallet-bar">
-                <div class="bar-fill" :style="{ width: wallet.used_percent + '%' }"></div>
+              <!-- 进度条只在余量偏低时出现，且画的是**剩余**量。
+                   反过来的做法（常驻、画已用量、从 0 涨到 100%）在心理学上是错的：
+                   视觉上永远在"逼近上限"，每次打开对话页都在提醒学生"你在花钱"。
+                   充裕时那条数字本身就够了，不需要额外的消耗暗示。 -->
+              <div v-if="lowBalance" class="bar wallet-bar">
+                <div class="bar-fill remaining-fill" :style="{ width: remainingPercent + '%' }"></div>
               </div>
 
-              <div class="tiny muted">已用 ¥{{ wallet.used_yuan }} / 共 ¥{{ wallet.allocated_yuan }}</div>
+              <!-- 说「额度」而不是「共」：可用值里含同步容错（防止别班刚充值、
+                   本班还没同步到就误拒），偶尔会比额度略大。写「共」会读起来自相矛盾。 -->
+              <div class="tiny muted">已用 {{ wallet.used_points }} 积分 · 额度 {{ wallet.allocated_points }} 积分</div>
 
               <div v-if="!wallet.is_allocated" class="alert alert-warning wallet-alert">
-                尚未开通额度，请联系管理员充值
+                还没有开通，请联系管理员充值
               </div>
               <div v-else-if="availableValue <= 0" class="alert alert-danger wallet-alert">
-                余额已用完，请联系管理员充值
+                积分已用完，请联系管理员充值
+              </div>
+              <!-- 提前预警，而不是等他被拦下才知道。
+                   突如其来的拒绝会让人困惑甚至恼火；有余量时先打个招呼，
+                   学生就能自己安排（预期效应）。语气刻意用 info 而非 danger ——
+                   只是提醒，不是告警。 -->
+              <div v-else-if="lowBalance" class="alert alert-info wallet-alert">
+                积分不多了，用完前记得联系管理员
               </div>
 
-              <div v-if="!wallet.weekly_unlimited" class="weekly">
+              <!-- 周限额同理：只在快用完时出现。
+                   常驻会持续提示"你被限额管着"，属于典型的心理抗拒触发点 ——
+                   而周限额只是防滥用的护栏，不该成为每天挂在学生眼前的标语。 -->
+              <div v-if="lowWeekly" class="weekly">
                 <div class="weekly-head">
-                  <span class="tiny muted">本周额度</span>
-                  <span class="tiny muted">剩 ¥{{ wallet.weekly_remaining_yuan }}</span>
+                  <span class="tiny muted">本周可用</span>
+                  <span class="tiny muted">剩 {{ wallet.weekly_remaining_points }} 积分</span>
                 </div>
                 <div class="bar weekly-bar">
-                  <div class="bar-fill weekly-fill" :style="{ width: wallet.weekly_percent + '%' }"></div>
+                  <div class="bar-fill weekly-fill" :style="{ width: weeklyRemainingPercent + '%' }"></div>
                 </div>
               </div>
             </template>
@@ -63,7 +80,20 @@
           <div class="conv-panel glass">
             <div class="conv-head">
               <span class="section-label">对话记录</span>
-              <button class="icon-btn" title="新建对话" @click="newConversation">＋</button>
+              <span class="conv-head-tools">
+                <button
+                  class="icon-btn"
+                  title="复制整个对话（可粘贴到笔记）"
+                  :disabled="!messages.length"
+                  @click="exportConversation"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="4" y="4" width="12" height="12" rx="2" />
+                    <rect x="8" y="8" width="12" height="12" rx="2" />
+                  </svg>
+                </button>
+                <button class="icon-btn" title="新建对话" @click="newConversation">＋</button>
+              </span>
             </div>
             <div class="conv-list">
               <div v-if="!conversations.length" class="conv-empty tiny muted">还没有对话</div>
@@ -117,7 +147,7 @@
               v-for="(m, idx) in messages"
               :key="idx"
               class="msg"
-              :class="m.role === 'user' ? 'msg-user' : 'msg-assistant'"
+              :class="[m.role === 'user' ? 'msg-user' : 'msg-assistant', { 'is-enter': m.enter }]"
             >
               <div v-if="m.role === 'assistant'" class="msg-avatar">
                 <ClussLogo :size="26" />
@@ -138,13 +168,22 @@
                     </div>
                   </div>
 
-                  <div v-if="m.role === 'assistant' && m.content" class="md-body" v-html="render(m.content)"></div>
+                  <!-- 渲染的是预计算好的 m.html，不是 render(m.content)。
+                       在模板里调用渲染函数，意味着**任何**一次重渲染都会把所有历史消息
+                       重新解析一遍（marked + KaTeX + DOMPurify），流式时每来一个字就全量重算，
+                       几十条消息的会话直接卡死。改成只解析"变了的那一条"。 -->
+                  <div v-if="m.role === 'assistant' && m.content" class="md-body" v-html="m.html"></div>
+                  <!-- 还没出第一个字时给状态文字，而不是只留一个闪烁光标：
+                       光标不说明任何事，等超过 8 秒学生就会以为卡死 -->
+                  <div v-else-if="m.role === 'assistant' && m.streaming" class="waiting-hint">
+                    <span class="waiting-dot" aria-hidden="true"></span>{{ waitText }}
+                  </div>
                   <div
                     v-else-if="m.role === 'assistant' && m.stopped && !m.streaming"
                     class="stopped-hint"
                   >已停止生成</div>
                   <div v-else-if="m.role === 'user'" class="user-text">{{ m.content }}</div>
-                  <span v-if="m.streaming" class="caret"></span>
+                  <span v-if="m.streaming && m.content" class="caret"></span>
                 </div>
 
                 <!-- 消息操作：恒显（平板没有 hover），靠低对比让位给正文 -->
@@ -177,7 +216,7 @@
               v-if="!atBottom && messages.length"
               class="scroll-bottom"
               type="button"
-              @click="scrollToBottom"
+              @click="scrollToBottom(true)"
             >回到底部 ↓</button>
           </transition>
         </div>
@@ -205,7 +244,17 @@
             ></textarea>
 
             <div class="composer-actions">
-              <select v-model="modelId" class="model-select" :disabled="sending">
+              <!-- 只有一个可选模型时整个下拉没有意义（选谁都是它），
+                   留着只会占地方，且没配模型时会缩成一条空缝 —— 直接不渲染。
+                   学生只看到可用的模型（服务端已过滤），不会遇到"选中的这个不能用"。
+                   不可用原因是给管理员看的，管理员仍能看到带后缀的完整列表。 -->
+              <select
+                v-if="models.length > 1"
+                v-model="modelId"
+                class="model-select"
+                :disabled="sending"
+                title="用哪个 AI 由管理员配置，一般不用改"
+              >
                 <option v-for="m in models" :key="m.id" :value="m.id" :disabled="!m.available">
                   {{ m.label }}{{ m.available ? '' : '（' + m.unavailable_reason + '）' }}
                 </option>
@@ -247,6 +296,9 @@ import AttachmentChips from '@/components/AttachmentChips.vue';
 import CloudPicker from '@/components/CloudPicker.vue';
 import { renderMarkdown } from '@/utils/markdown';
 import { readSseStream } from '@/utils/sse';
+import waiting from '@/mixins/waiting';
+import streamFrame from '@/mixins/streamFrame';
+import orientation from '@/mixins/orientation';
 
 var CHIPS = {
   study: ['这道题的思路是什么？', '帮我检查一下我的解法', '只给提示，别给答案', '这个公式我没看懂'],
@@ -256,6 +308,7 @@ var CHIPS = {
 export default {
   name: 'ChatView',
   components: { AppNav, ClussLogo, Segmented, AttachmentChips, CloudPicker },
+  mixins: [waiting, streamFrame, orientation],
   data: function() {
     return {
       conversations: [],
@@ -269,8 +322,7 @@ export default {
       visionStatus: '',
       pickerOpen: false,
       attachments: [],
-      drawerOpen: false,
-      isPortrait: false,
+      // isPortrait / useDrawer / drawerOpen / drawerDragX 由 mixins/orientation 提供
       // 用户是否停在底部：不在底部时不要硬把视图拽回去，否则他想翻记录会被打断
       atBottom: true,
       // 刚复制过的消息下标，用于把「复制」短暂变成「已复制」
@@ -315,8 +367,33 @@ export default {
           ? '我会直接给出完整步骤与答案，并点明考点。'
           : '我不直接给答案，会先带你理清思路，再一步步给提示。');
     },
+    // 学生端只看积分：整数、无货币符号，理解成"我还有多少可用"而不是"我在花钱"
     availableValue: function() {
-      return this.wallet ? Number(this.wallet.available_yuan || 0) : 0;
+      return this.wallet ? Number(this.wallet.available_points || 0) : 0;
+    },
+    // 余量是否偏低。判断依据刻意用「剩余」而不是「已用」：
+    // 已用 70% 听起来像"消耗了不少"，剩余 30% 才是需要行动的信号。
+    // 阈值 30% 是留出反应时间 —— 到 10% 才提醒，学生往往来不及处理。
+    lowBalance: function() {
+      if (!this.wallet || !this.wallet.is_allocated) return false;
+      var total = Number(this.wallet.allocated_points || 0);
+      if (total <= 0) return false;
+      return this.availableValue / total <= 0.3;
+    },
+    remainingPercent: function() {
+      if (!this.wallet) return 0;
+      return Math.max(0, 100 - Number(this.wallet.used_percent || 0));
+    },
+    // 周限额是否接近用完（同样按「剩余」判断，阈值与总额度一致）
+    lowWeekly: function() {
+      if (!this.wallet || this.wallet.weekly_unlimited) return false;
+      var quota = Number(this.wallet.weekly_quota_points || 0);
+      if (quota <= 0) return false;
+      return Number(this.wallet.weekly_remaining_points || 0) / quota <= 0.3;
+    },
+    weeklyRemainingPercent: function() {
+      if (!this.wallet) return 0;
+      return Math.max(0, 100 - Number(this.wallet.weekly_percent || 0));
     },
     canAsk: function() {
       if (!this.wallet) return true;
@@ -327,8 +404,8 @@ export default {
     },
     composerPlaceholder: function() {
       if (!this.wallet) return '说说你卡在哪一步…';
-      if (!this.wallet.is_allocated) return '账号尚未开通额度，请联系管理员充值';
-      if (this.availableValue <= 0) return '余额已用完，请联系管理员充值';
+      if (!this.wallet.is_allocated) return '账号还没有开通，请联系管理员充值';
+      if (this.availableValue <= 0) return '积分已用完，请联系管理员充值';
       return '说说你卡在哪一步…';
     },
     attachmentHashes: function() {
@@ -336,28 +413,18 @@ export default {
     }
   },
   mounted: function() {
-    this.checkOrientation();
-    window.addEventListener('resize', this.checkOrientation);
-    window.addEventListener('orientationchange', this.checkOrientation);
-
+    // 方向与抽屉手势由 mixins/orientation 统一处理（三个页面共用）
     this.$store.dispatch('auth/fetchProfile').catch(function() {});
     this.loadWallet();
     this.loadModels();
     this.loadConversations();
   },
   beforeDestroy: function() {
-    window.removeEventListener('resize', this.checkOrientation);
-    window.removeEventListener('orientationchange', this.checkOrientation);
     clearTimeout(this._copyTimer);
+    // 等待提示的定时器与挂起的渲染帧分别由 mixins/waiting、mixins/streamFrame 清理
     if (this._abort) this._abort.abort();
   },
   methods: {
-    checkOrientation: function() {
-      this.isPortrait = window.innerHeight >= window.innerWidth;
-      if (!this.isPortrait) this.drawerOpen = false;
-    },
-
-    render: function(text) { return renderMarkdown(text); },
 
     modeLabel: function(c) {
       if (c.mode === 'daily') return '日常对话';
@@ -395,9 +462,16 @@ export default {
         if (r.data.code !== 200) return;
         var data = r.data.data;
         self.conversationId = id;
+        // html 一次性算好：这些消息之后不会再变，
+        // 留在模板里每次重渲染都重解析才是真的贵
         self.messages = (data.messages || []).map(function(m) {
           return {
-            role: m.role, content: m.content, attachments: m.attachments || [], streaming: false
+            role: m.role,
+            content: m.content,
+            html: m.role === 'assistant' ? renderMarkdown(m.content) : '',
+            attachments: m.attachments || [],
+            streaming: false,
+            enter: false
           };
         });
         if (data.conversation) {
@@ -470,11 +544,20 @@ export default {
       el.style.height = Math.min(el.scrollHeight, 160) + 'px';
     },
 
-    scrollToBottom: function() {
+    // smooth 只给"回到底部"按钮用。
+    // 流式跟随必须用瞬跳 —— 平滑滚动是异步动画，新内容还在不断追加，
+    // 会和动画互相追尾，越滚越落后。
+    scrollToBottom: function(smooth) {
       var self = this;
       this.$nextTick(function() {
         var el = self.$refs.scroller;
-        if (el) el.scrollTop = el.scrollHeight;
+        if (!el) return;
+        if (smooth && el.scrollTo) {
+          try { el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }
+          catch (e) { el.scrollTop = el.scrollHeight; }
+        } else {
+          el.scrollTop = el.scrollHeight;
+        }
         self.atBottom = true;
       });
     },
@@ -489,33 +572,65 @@ export default {
     copyMessage: function(text, idx) {
       var self = this;
       if (!text) return;
-
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(function() {
-          self.markCopied(idx);
-        }).catch(function() {
-          self.fallbackCopy(text, idx);
-        });
-        return;
-      }
-      this.fallbackCopy(text, idx);
+      this.copyText(text).then(function(ok) {
+        if (ok) self.markCopied(idx);
+        else self.$store.dispatch('toast', { message: '复制失败，请长按选中文本', type: 'error' });
+      });
     },
 
-    // 旧内核（部分平板 WebView）没有 navigator.clipboard，退回选中 + execCommand
-    fallbackCopy: function(text, idx) {
-      var ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', '');
-      ta.style.position = 'fixed';
-      ta.style.top = '-1000px';
-      document.body.appendChild(ta);
-      ta.select();
-      var ok = false;
-      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
-      document.body.removeChild(ta);
+    // 把当前会话的全部内容按"我 / AI"的格式拼成纯文本复制出去。
+    // 学生想把讲解存进笔记软件，逐条复制太繁琐；这是唯一一次性的出口。
+    exportConversation: function() {
+      var self = this;
+      if (!this.messages.length) return;
 
-      if (ok) this.markCopied(idx);
-      else this.$store.dispatch('toast', { message: '复制失败，请长按选中文本', type: 'error' });
+      var title = '';
+      for (var i = 0; i < this.conversations.length; i++) {
+        if (this.conversations[i].id === this.conversationId) {
+          title = this.conversations[i].title;
+          break;
+        }
+      }
+
+      var lines = ['【Cluss 对话】' + (title || '未命名对话'), ''];
+      this.messages.forEach(function(m) {
+        if (!m.content) return;
+        lines.push(m.role === 'user' ? '我：' + m.content : 'AI：' + m.content);
+        lines.push('');
+      });
+      var text = lines.join('\n').trim();
+
+      this.copyText(text).then(function(ok) {
+        if (ok) self.$store.dispatch('toast', { message: '已复制对话全文，可粘贴到笔记', type: 'success' });
+        else self.$store.dispatch('toast', { message: '复制失败，请重试', type: 'error' });
+      });
+    },
+
+    // 统一的剪贴板出口：优先 navigator.clipboard，旧内核退回 execCommand。
+    // resolve true = 成功；调用方决定给什么反馈
+    copyText: function(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text).then(function() {
+          return true;
+        }).catch(function() {
+          return fallbackCopy(text);
+        });
+      }
+      return Promise.resolve(fallbackCopy(text));
+
+      function fallbackCopy(t) {
+        var ta = document.createElement('textarea');
+        ta.value = t;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+        document.body.removeChild(ta);
+        return ok;
+      }
     },
 
     markCopied: function(idx) {
@@ -573,11 +688,22 @@ export default {
       this.visionStatus = '';
       this.stopped = false;
 
-      this.messages.push({ role: 'user', content: content, attachments: atts || [], streaming: false });
-      var assistant = { role: 'assistant', content: '', attachments: [], streaming: true };
+      // enter: 只有本轮新加的消息才播进场动画（历史消息不播，见样式里的说明）
+      this.messages.push({
+        role: 'user', content: content, attachments: atts || [], streaming: false, enter: true
+      });
+      // 助手消息不设 enter：它在原地"长出来"，出现这一步已经由等待提示承担了
+      var assistant = { role: 'assistant', content: '', html: '', attachments: [], streaming: true };
       this.messages.push(assistant);
       this.sending = true;
+      this.startWaiting('chat');
       this.scrollToBottom();
+
+      // 渲染 + 跟随滚动合并成一次"上色"动作，交给 rAF 节流（见 mixins/streamFrame）
+      var paint = function() {
+        assistant.html = renderMarkdown(assistant.content);
+        if (self.atBottom) self.scrollToBottom();
+      };
 
       var controller = new AbortController();
       this._abort = controller;
@@ -622,12 +748,17 @@ export default {
             else if (st.stage === 'vision_done') self.visionStatus = '';
           },
           onDelta: function(text) {
+            // 第一个字一到就撤掉等待提示，别让它和正文并存
+            if (self.waitText) self.stopWaiting();
             assistant.content += text;
-            // 用户上滚看历史时不抢滚动位置，只在底部时才跟随
-            if (self.atBottom) self.scrollToBottom();
+            // 交给 rAF 合并渲染与跟随滚动（见 mixins/streamFrame）
+            self.scheduleFrame(paint);
           },
           onDone: function(done) {
             assistant.streaming = false;
+            // 收尾补一次完整渲染：合并期间到达的最后几个字不能丢
+            self.cancelFrame();
+            paint();
             self.visionStatus = '';
             self.loadWallet();
             self.loadConversations();
@@ -650,6 +781,10 @@ export default {
       }).then(function() {
         self.sending = false;
         self._abort = null;
+        // 无论成功、报错还是中断，都要撤掉等待提示，并把渲染补完
+        self.stopWaiting();
+        self.cancelFrame();
+        paint();
 
         if (self.stopped) {
           self.stopped = false;
@@ -675,6 +810,9 @@ export default {
   padding: var(--gap-md);
   gap: var(--gap-md);
 }
+html.no-flex-gap .chat-page > * + * {
+  margin-top: var(--gap-md);
+}
 
 .body {
   display: grid;
@@ -684,8 +822,8 @@ export default {
   min-height: 0;
 }
 
-/* 竖屏：侧栏变成抽屉，主区占满 */
-.body.is-portrait {
+/* 抽屉模式：侧栏脱离栅格，主区占满 */
+.body.use-drawer {
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -694,6 +832,9 @@ export default {
   flex-direction: column;
   gap: var(--gap-md);
   min-height: 0;
+}
+html.no-flex-gap .sidebar > * + * {
+  margin-top: var(--gap-md);
 }
 
 /* ---------- 额度卡 ---------- */
@@ -714,7 +855,7 @@ export default {
   width: 26px;
   height: 26px;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-tertiary);
   font-size: 15px;
@@ -732,9 +873,14 @@ export default {
   align-items: baseline;
   gap: 3px;
 }
+html.no-flex-gap .wallet-amount > * + * {
+  margin-left: 3px;
+}
 
-.wallet-symbol {
-  font-size: 15px;
+/* 单位跟在数字后面（中文习惯：2000 积分），比前缀的 ¥ 更像"余量"而不是"标价" */
+.wallet-unit {
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text-secondary);
 }
 
@@ -751,6 +897,12 @@ export default {
 
 .wallet-bar {
   margin: 10px 0 6px;
+}
+
+/* 余量条用暖色：它只在余量偏低时出现，颜色与"该留意了"的语义一致。
+   默认的蓝色渐变是"中性进度"的语言，放在这里会削弱提醒力度。 */
+.remaining-fill {
+  background: linear-gradient(90deg, var(--warning), var(--danger-grad-a));
 }
 
 .wallet-alert {
@@ -774,8 +926,10 @@ export default {
   height: 5px;
 }
 
+/* 同样只在快用完时出现，用与余额条一致的暖色：两种"紧张"用同一套视觉语言，
+   学生不需要分辨紫色和琥珀色分别代表什么。 */
 .weekly-fill {
-  background: linear-gradient(90deg, var(--purple-a), var(--purple));
+  background: linear-gradient(90deg, var(--warning), var(--danger-grad-a));
 }
 
 /* ---------- 会话列表 ---------- */
@@ -796,6 +950,31 @@ export default {
   flex-shrink: 0;
 }
 
+.conv-head-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+html.no-flex-gap .conv-head-tools > * + * {
+  margin-left: 4px;
+}
+/* 导出按钮的线性图标：跟随 currentColor，与文字类图标按钮（＋ ↻ ×）同灰度 */
+.icon-btn svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .conv-list {
   overflow-y: auto;
   flex: 1;
@@ -810,6 +989,11 @@ export default {
   margin-bottom: 2px;
   border-radius: var(--radius-sm);
   cursor: pointer;
+  /* 按下是即时的（见 global.css 的触屏手感段），松开要柔和回落 */
+  transition: background var(--transition);
+}
+html.no-flex-gap .conv-item > * + * {
+  margin-left: 6px;
 }
 
 .conv-item:hover {
@@ -853,7 +1037,7 @@ export default {
   width: 20px;
   height: 20px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-2xs);
   background: transparent;
   color: var(--text-tertiary);
   font-size: 15px;
@@ -884,6 +1068,9 @@ export default {
   min-height: 0;
   gap: var(--gap-sm);
 }
+html.no-flex-gap .main > * + * {
+  margin-top: var(--gap-sm);
+}
 
 .mode-bar {
   display: flex;
@@ -893,6 +1080,9 @@ export default {
   border-radius: var(--radius-lg);
   flex-shrink: 0;
   flex-wrap: wrap;
+}
+html.no-flex-gap .mode-bar > * + * {
+  margin-left: var(--gap-sm);
 }
 
 .mode-hint {
@@ -971,6 +1161,9 @@ export default {
   margin-top: var(--gap-md);
   max-width: 540px;
 }
+html.no-flex-gap .chips-wrap > * + * {
+  margin-left: 8px;
+}
 
 .chip-suggest {
   padding: 8px 14px;
@@ -993,12 +1186,32 @@ export default {
   display: flex;
   gap: 10px;
   margin-bottom: var(--gap-md);
-  animation: msgIn 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+html.no-flex-gap .msg > * + * {
+  margin-left: 10px;
+}
+
+/* 进场动画**只给本轮新增的消息**（.is-enter）。
+   原来的写法让所有消息都带 animation，打开历史会话时几十条一起动 ——
+   既嘈杂（一次涌出几十条）又浪费（低端机上几十个合成层同时动）。
+   历史消息是从库里读出来的既有内容，不该"表演一次出场"。 */
+.msg.is-enter {
+  animation: msgIn var(--dur-slow) var(--ease-out);
+}
+
+/* 用户消息从右侧来、助手消息从下方来：方向本身在提示"这是谁说的" */
+.msg-user.is-enter {
+  animation-name: msgInRight;
 }
 
 @keyframes msgIn {
-  from { opacity: 0; transform: translateY(8px); }
+  from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes msgInRight {
+  from { opacity: 0; transform: translateX(12px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
 .msg-user {
@@ -1020,6 +1233,9 @@ export default {
   min-width: 0;
   max-width: min(760px, 84%);
 }
+html.no-flex-gap .msg-col > * + * {
+  margin-top: 6px;
+}
 
 .msg-user .msg-col {
   align-items: flex-end;
@@ -1036,6 +1252,9 @@ export default {
   gap: 6px;
   opacity: 0.5;
   transition: opacity var(--transition);
+}
+html.no-flex-gap .msg-tools > * + * {
+  margin-left: 6px;
 }
 
 .msg:hover .msg-tools,
@@ -1061,6 +1280,21 @@ export default {
   color: var(--accent);
 }
 
+/* 竖屏触控：复制 / 重新生成在平板上是纯触摸操作，
+   3px 内边距的点击面积太小，放宽到一指高度；
+   气泡同步放宽（必须写在本组件里才能盖过上面的 max-width: 100%，
+   放在 global.css 里会被这里的 scoped 规则压住，是条死规则）。
+   判据用 html.is-portrait（设备方向）而不是媒体查询（视口比例）：
+   弹键盘会把视口压成横向比例，媒体查询会在打字中途突然回跳 */
+html.is-portrait .tool-btn {
+  padding: 8px 14px;
+  font-size: 12.5px;
+}
+
+html.is-portrait .bubble {
+  max-width: 92%;
+}
+
 .bubble {
   max-width: 100%;
   padding: 12px 16px;
@@ -1076,13 +1310,17 @@ export default {
   box-shadow: 0 8px 20px var(--accent-glow);
 }
 
+/* 助手气泡**刻意不用 backdrop-filter**。
+   它在消息列表里，一段对话可能几十个 —— 每个气泡都是一层实时模糊，
+   滚动时全部要重新采样背景，低端平板必然掉帧。
+   气泡背景本来就接近不透明（--glass-bg-strong 是 0.88~0.9），
+   去掉模糊视觉上几乎看不出，但滚动会明显顺很多。
+   规则：**列表内的元素不用背景模糊**，这是结构性的决定，不是性能开关。 */
 .bubble-assistant {
   background: var(--glass-bg-strong);
   border: 1px solid var(--glass-border);
   border-bottom-left-radius: 6px;
   box-shadow: var(--shadow-card);
-  -webkit-backdrop-filter: blur(18px);
-  backdrop-filter: blur(18px);
   min-width: 56px;
 }
 
@@ -1092,11 +1330,14 @@ export default {
   gap: 6px;
   margin-bottom: 8px;
 }
+html.no-flex-gap .bubble-attachments > * + * {
+  margin-left: 6px;
+}
 
 .mini-attach {
   width: 56px;
   height: 56px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--surface-on-accent);
 }
@@ -1156,6 +1397,9 @@ export default {
   font-size: 12.5px;
   width: fit-content;
 }
+html.no-flex-gap .vision-status > * + * {
+  margin-left: 8px;
+}
 
 .spinner {
   width: 13px;
@@ -1183,6 +1427,9 @@ export default {
   flex-direction: column;
   gap: 8px;
 }
+html.no-flex-gap .composer-wrap > * + * {
+  margin-top: 8px;
+}
 
 .composer {
   display: flex;
@@ -1190,6 +1437,9 @@ export default {
   gap: 10px;
   padding: 10px 10px 10px 12px;
   border-radius: var(--radius-xl);
+}
+html.no-flex-gap .composer > * + * {
+  margin-left: 10px;
 }
 
 .attach-btn {
@@ -1212,6 +1462,8 @@ export default {
 
 .composer-input {
   flex: 1;
+  /* 允许被压缩：否则 textarea 的固有宽度会把右侧的模型选择框挤出画面 */
+  min-width: 0;
   max-height: 160px;
   padding: 6px 0;
   border: none;
@@ -1234,8 +1486,12 @@ export default {
   gap: 8px;
   flex-shrink: 0;
 }
+html.no-flex-gap .composer-actions > * + * {
+  margin-left: 8px;
+}
 
 .model-select {
+  min-width: 96px;
   max-width: 170px;
   padding: 8px 10px;
   border: 1px solid var(--ink-3);
@@ -1263,6 +1519,36 @@ export default {
 
   .model-select {
     max-width: 120px;
+  }
+}
+
+/* 极矮屏（960×680 横屏）：把非内容区的垂直占用再压一档，
+   省下来的高度全给消息区。顶栏与输入框一旦吃掉大半屏，
+   一次回答就只剩三四行可见，学生只能不停滚动。 */
+@media (orientation: landscape) and (max-height: 700px) {
+  .mode-bar {
+    padding: 6px 10px;
+  }
+
+  .composer {
+    padding: 8px 8px 8px 10px;
+  }
+
+  .empty-state {
+    padding: 16px 20px;
+  }
+
+  .empty-title {
+    margin: 10px 0 4px;
+    font-size: 19px;
+  }
+
+  .chips-wrap {
+    margin-top: var(--gap-sm);
+  }
+
+  .msg {
+    margin-bottom: var(--gap-sm);
   }
 }
 </style>

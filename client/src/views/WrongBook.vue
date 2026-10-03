@@ -13,10 +13,21 @@
           </option>
         </select>
         <div class="toolbar-right">
+          <button
+            class="btn btn-sm"
+            :class="quizMode ? 'btn-primary' : 'btn-ghost'"
+            title="先自己想，再点开核对答案与错因"
+            @click="toggleQuiz"
+          >{{ quizMode ? '退出自测' : '自测模式' }}</button>
           <button class="btn btn-sm btn-ghost" @click="exportCsv">导出 CSV</button>
           <button class="btn btn-sm btn-ghost" @click="load(1)">刷新</button>
           <button class="btn btn-sm btn-primary" @click="openCreate">手动添加</button>
         </div>
+      </div>
+
+      <!-- 自测进行中的提示：一句话说清玩法，不占常驻空间 -->
+      <div v-if="quizMode" class="alert alert-info quiz-hint">
+        自测中：题干下面先不给答案，想好了再点「看答案」。做完一条就顺手标记掌握与否。
       </div>
 
       <!-- 计数条 -->
@@ -80,19 +91,28 @@
                 <div class="row-text md-body" v-html="render(q.student_answer)"></div>
               </div>
 
-              <div v-if="q.correct_answer" class="item-row">
-                <span class="row-label">正确解法</span>
-                <div class="row-text md-body" v-html="render(q.correct_answer)"></div>
-              </div>
+              <!-- 自测模式下这三块是"要背对答案想"的部分，先藏住；
+                   我的笔记常写着答案要点，一起藏，避免漏题 -->
+              <template v-if="!quizMode || revealed[q.id]">
+                <div v-if="q.correct_answer" class="item-row">
+                  <span class="row-label">正确解法</span>
+                  <div class="row-text md-body" v-html="render(q.correct_answer)"></div>
+                </div>
 
-              <div v-if="q.reason" class="item-row">
-                <span class="row-label">错因</span>
-                <div class="row-text reason md-body" v-html="render(q.reason)"></div>
-              </div>
+                <div v-if="q.reason" class="item-row">
+                  <span class="row-label">错因</span>
+                  <div class="row-text reason md-body" v-html="render(q.reason)"></div>
+                </div>
 
-              <div v-if="q.note" class="item-row">
-                <span class="row-label">我的笔记</span>
-                <div class="row-text md-body" v-html="render(q.note)"></div>
+                <div v-if="q.note" class="item-row">
+                  <span class="row-label">我的笔记</span>
+                  <div class="row-text md-body" v-html="render(q.note)"></div>
+                </div>
+              </template>
+              <div v-else-if="quizHasAnswer(q)" class="item-row">
+                <button class="btn btn-sm btn-primary quiz-reveal" @click="reveal(q.id)">
+                  想好了，看答案与错因
+                </button>
               </div>
 
               <div v-if="q.image_hash" class="item-image">
@@ -211,6 +231,10 @@ export default {
       subjects: [],
       counts: { pending: 0, mastered: 0, total: 0 },
       selected: [],
+      // 自测模式：藏起正确解法 / 错因 / 笔记，学生先想再看。
+      // revealed 记录本页哪些条目已翻开；翻页或改筛选时清空
+      quizMode: false,
+      revealed: {},
       page: 1,
       totalPages: 1,
       loading: false,
@@ -244,12 +268,28 @@ export default {
   methods: {
     render: function(text) { return renderMarkdown(text); },
 
+    toggleQuiz: function() {
+      this.quizMode = !this.quizMode;
+      this.revealed = {};
+    },
+
+    reveal: function(id) {
+      // 列表数据是响应式的，但新键要 $set 才能被侦测到
+      this.$set(this.revealed, id, true);
+    },
+
+    // 这条错题有没有需要藏的内容：三者全空时不用给翻看按钮
+    quizHasAnswer: function(q) {
+      return !!(q.correct_answer || q.reason || q.note);
+    },
+
     load: function(page) {
       var self = this;
       this.loading = true;
       this.error = '';
       this.page = page || 1;
       this.selected = [];
+      this.revealed = {};
 
       return this.$http.get('/wrong-book', {
         params: {
@@ -292,28 +332,45 @@ export default {
       var self = this;
       if (!this.selected.length) return;
 
-      if (action === 'delete' && !window.confirm('确定删除选中的 ' + this.selected.length + ' 条错题？')) {
+      var run = function() {
+        self.$http.post('/wrong-book/batch', { ids: self.selected, action: action }).then(function(r) {
+          if (r.data.code !== 200) throw new Error(r.data.message || '操作失败');
+          self.$store.dispatch('toast', { message: r.data.message, type: 'success' });
+          self.load(self.page);
+        }).catch(function(err) {
+          self.$store.dispatch('toast', { message: err.message || '操作失败', type: 'error' });
+        });
+      };
+
+      if (action === 'delete') {
+        this.$store.dispatch('confirm', {
+          message: '确定删除选中的 ' + this.selected.length + ' 条错题？删除后无法恢复。',
+          confirmText: '删除',
+          danger: true
+        }).then(function(ok) {
+          if (ok) run();
+        });
         return;
       }
 
-      this.$http.post('/wrong-book/batch', { ids: this.selected, action: action }).then(function(r) {
-        if (r.data.code !== 200) throw new Error(r.data.message || '操作失败');
-        self.$store.dispatch('toast', { message: r.data.message, type: 'success' });
-        self.load(self.page);
-      }).catch(function(err) {
-        self.$store.dispatch('toast', { message: err.message || '操作失败', type: 'error' });
-      });
+      run();
     },
 
     remove: function(q) {
       var self = this;
-      if (!window.confirm('确定删除这条错题？')) return;
-      this.$http.delete('/wrong-book/' + q.id).then(function(r) {
-        if (r.data.code !== 200) throw new Error(r.data.message || '删除失败');
-        self.load(self.page);
-        self.loadSubjects();
-      }).catch(function(err) {
-        self.$store.dispatch('toast', { message: err.message || '删除失败', type: 'error' });
+      this.$store.dispatch('confirm', {
+        message: '确定删除这条错题？删除后无法恢复。',
+        confirmText: '删除',
+        danger: true
+      }).then(function(ok) {
+        if (!ok) return;
+        self.$http.delete('/wrong-book/' + q.id).then(function(r) {
+          if (r.data.code !== 200) throw new Error(r.data.message || '删除失败');
+          self.load(self.page);
+          self.loadSubjects();
+        }).catch(function(err) {
+          self.$store.dispatch('toast', { message: err.message || '删除失败', type: 'error' });
+        });
       });
     },
 
@@ -382,6 +439,7 @@ export default {
     },
 
     download: function(url, filename) {
+      var self = this;
       var token = this.$store.state.auth.token;
       fetch(url, {
         headers: token ? { Authorization: 'Bearer ' + token } : {},
@@ -399,7 +457,7 @@ export default {
         document.body.removeChild(a);
         URL.revokeObjectURL(objUrl);
       }).catch(function() {
-        window.alert('导出失败，请重试');
+        self.$store.dispatch('toast', { message: '导出失败，请重试', type: 'error' });
       });
     },
 
@@ -418,6 +476,12 @@ export default {
   padding: var(--gap-md);
   gap: var(--gap-md);
 }
+html.no-flex-gap .wrong-page > * + * {
+  margin-top: var(--gap-md);
+}
+
+
+
 
 .body {
   flex: 1;
@@ -426,6 +490,12 @@ export default {
   flex-direction: column;
   gap: var(--gap-md);
 }
+html.no-flex-gap .body > * + * {
+  margin-top: var(--gap-md);
+}
+
+
+
 
 .toolbar {
   display: flex;
@@ -436,6 +506,12 @@ export default {
   flex-shrink: 0;
   flex-wrap: wrap;
 }
+html.no-flex-gap .toolbar > * + * {
+  margin-left: var(--gap-md);
+}
+
+
+
 
 .subject-select {
   max-width: 160px;
@@ -448,6 +524,12 @@ export default {
   display: flex;
   gap: 8px;
 }
+html.no-flex-gap .toolbar-right > * + * {
+  margin-left: 8px;
+}
+
+
+
 
 .stat-row {
   display: flex;
@@ -456,6 +538,12 @@ export default {
   flex-shrink: 0;
   flex-wrap: wrap;
 }
+html.no-flex-gap .stat-row > * + * {
+  margin-left: var(--gap-md);
+}
+
+
+
 
 .stat {
   display: flex;
@@ -464,6 +552,12 @@ export default {
   padding: 10px 16px;
   border-radius: var(--radius-lg);
 }
+html.no-flex-gap .stat > * + * {
+  margin-left: 6px;
+}
+
+
+
 
 .stat-num {
   font-size: 20px;
@@ -484,10 +578,25 @@ export default {
   border-radius: var(--radius-lg);
   margin-left: auto;
 }
+html.no-flex-gap .bulk > * + * {
+  margin-left: 8px;
+}
+
+
+
 
 .danger-text:hover {
   color: var(--danger);
   background: var(--danger-tint);
+}
+
+.quiz-hint {
+  flex-shrink: 0;
+}
+
+.quiz-reveal {
+  /* 按钮替代被藏起的内容块：对齐行首，弱化成"行动入口"而不是装饰 */
+  margin-top: 2px;
 }
 
 .list-wrap {
@@ -503,6 +612,12 @@ export default {
   flex-direction: column;
   gap: var(--gap-md);
 }
+html.no-flex-gap .items > * + * {
+  margin-top: var(--gap-md);
+}
+
+
+
 
 .item {
   display: flex;
@@ -512,6 +627,12 @@ export default {
   border-radius: var(--radius-md);
   background: var(--surface-1);
 }
+html.no-flex-gap .item > * + * {
+  margin-left: 10px;
+}
+
+
+
 
 /* 已掌握的整条降饱和，一眼能和待复习区分开 */
 .item.is-mastered {
@@ -534,6 +655,12 @@ export default {
   flex-wrap: wrap;
   margin-bottom: 10px;
 }
+html.no-flex-gap .item-top > * + * {
+  margin-left: 6px;
+}
+
+
+
 
 .item-time {
   margin-left: auto;
@@ -544,6 +671,12 @@ export default {
   gap: 10px;
   margin-bottom: 8px;
 }
+html.no-flex-gap .item-row > * + * {
+  margin-left: 10px;
+}
+
+
+
 
 .row-label {
   width: 64px;
@@ -572,6 +705,12 @@ export default {
   gap: 8px;
   margin-bottom: 8px;
 }
+html.no-flex-gap .item-image > * + * {
+  margin-left: 8px;
+}
+
+
+
 
 .item-image img {
   width: 96px;
@@ -588,6 +727,12 @@ export default {
   padding-top: 8px;
   border-top: 1px solid var(--ink-2);
 }
+html.no-flex-gap .item-actions > * + * {
+  margin-left: 8px;
+}
+
+
+
 
 .pager {
   display: flex;
@@ -596,11 +741,20 @@ export default {
   gap: var(--gap-md);
   margin-top: var(--gap-md);
 }
+html.no-flex-gap .pager > * + * {
+  margin-left: var(--gap-md);
+}
+
+
+
 
 /* ---------- 弹窗 ---------- */
 .modal-mask {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   z-index: 350;
   display: flex;
   align-items: center;
@@ -658,6 +812,12 @@ export default {
   font-size: 13px;
   cursor: pointer;
 }
+html.no-flex-gap .switch-row > * + * {
+  margin-left: 8px;
+}
+
+
+
 
 .modal-actions {
   display: flex;
@@ -667,11 +827,20 @@ export default {
   padding-top: var(--gap-md);
   border-top: 1px solid var(--ink-2);
 }
+html.no-flex-gap .modal-actions > * + * {
+  margin-left: 10px;
+}
+
+
+
 
 /* ---------- 预览 ---------- */
 .preview-mask {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   z-index: 400;
   display: flex;
   align-items: center;
