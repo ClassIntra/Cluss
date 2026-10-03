@@ -228,11 +228,77 @@ function sourceLabel(s) {
   return SOURCE_LABELS[s] || s || '对话';
 }
 
+// ---- 学生端视图 ----
+//
+// 学生要知道的是「我用了多少、花在什么上」，不是「系统跑了多少 token」。
+// token 数、缓存命中率、模型 id、实例名这些全是实现细节：学生看不懂，
+// 也不需要据此做任何决定，摆在界面上只会让他觉得自己在看一张运维报表。
+//
+// 关键取舍：**在服务端就裁掉，而不是靠前端"记得别显示"**。
+// 前端能拿到就迟早会有人渲染出来 —— 和积分那层的道理完全一样。
+// 管理端走 /api/admin/*，拿到的仍是完整字段。
+function studentGroupRow(r) {
+  var key = r.key;
+  return {
+    key: key,
+    // 分组名：来源类分组翻译成中文（对话/拍题/批改），日期类直接用
+    label: SOURCE_LABELS[key] || r.label || key,
+    calls: r.calls || 0,
+    cost_points: config.microToPoints(r.cost_micro || 0),
+    image_count: r.image_count || 0
+  };
+}
+
+function studentTotals(t) {
+  var v = t || {};
+  return {
+    calls: v.calls || 0,
+    cost_points: config.microToPoints(v.cost_micro || 0),
+    image_count: v.image_count || 0
+  };
+}
+
+function studentRecordRow(r) {
+  return {
+    id: r.id,
+    created_at: r.created_at,
+    source: r.source || 'chat',
+    source_label: sourceLabel(r.source),
+    // 会话标题就是学生当初那句提问的前 20 字，比"模型名"有用得多
+    title: r.conversation_title || '',
+    cost_points: config.microToPoints(r.cost_micro || 0),
+    image_count: r.image_count || 0,
+    estimated: r.estimated ? 1 : 0
+  };
+}
+
 // 明细导出为 CSV（带 BOM，Excel 打开不乱码）
-function recordsToCsv(items) {
+//
+// opts.unit: 'yuan'（管理台，默认）| 'points'（学生端）
+// 两种口径的列**完全不同**，不只是换个单位：
+//   管理台要的是能对账的完整台账（模型、各类 token、估算标记）；
+//   学生要的是"我做了什么、用了多少" —— 把 token 列给他，等于发一张看不懂的报表。
+function recordsToCsv(items, opts) {
+  var points = (opts && opts.unit) === 'points';
+  var esc = function(s) { return String(s || '').replace(/"/g, '""').replace(/[\r\n]+/g, ' '); };
+
+  if (points) {
+    var simple = ['时间,类型,内容,消耗积分'];
+    for (var i = 0; i < items.length; i++) {
+      var s = items[i];
+      simple.push([
+        String(s.created_at || '').replace('T', ' ').slice(0, 19),
+        esc(s.source_label || sourceLabel(s.source)),
+        '"' + esc(s.title) + '"',
+        (s.estimated ? '约' : '') + (s.cost_points || 0)
+      ].join(','));
+    }
+    return '\ufeff' + simple.join('\n');
+  }
+
   var lines = ['时间,用户,学号,类型,模型,输入Token,输出Token,缓存命中,总Token,图片数,费用(元),是否估算'];
-  for (var i = 0; i < items.length; i++) {
-    var r = items[i];
+  for (var j = 0; j < items.length; j++) {
+    var r = items[j];
     lines.push([
       String(r.created_at || '').replace('T', ' ').slice(0, 19),
       String(r.user_name || '').replace(/,/g, '，'),
@@ -257,5 +323,9 @@ module.exports = {
   records: records,
   recordsToCsv: recordsToCsv,
   sourceLabel: sourceLabel,
-  SOURCE_LABELS: SOURCE_LABELS
+  SOURCE_LABELS: SOURCE_LABELS,
+  // 学生端视图（服务端裁剪，前端拿不到技术字段）
+  studentGroupRow: studentGroupRow,
+  studentTotals: studentTotals,
+  studentRecordRow: studentRecordRow
 };

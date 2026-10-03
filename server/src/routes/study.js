@@ -92,10 +92,31 @@ router.get('/records', auth.requireAuth, function(req, res) {
   var limit = Math.min(Math.max(1, parseInt(req.query.limit, 10) || 20), 100);
   var offset = (page - 1) * limit;
 
+  // 关键词搜索：题目标题或会话里任意一条消息的正文。
+  // 学生翻记录最常见的动作是"记得大概做过某道题，想找回来"——
+  // 只按标题搜会漏掉大半（标题是自动生成的题面摘要，未必含关键词）。
+  var q = String(req.query.q || '').trim().slice(0, 50);
+  var like = '';
+  if (q) {
+    // LIKE 通配符按字面匹配，得先转义；ESCAPE '\' 声明转义符
+    like = '%' + q.replace(/[\\%_]/g, '\\$&') + '%';
+  }
+
   // 类型筛选用 HAVING：需要先聚合出 indeed_grade 才能判断
   var having = '';
   if (type === 'grade') having = 'HAVING grade_count > 0';
   else if (type === 'solve') having = 'HAVING grade_count = 0';
+
+  var whereSql = 'WHERE c.user_id = ?';
+  var params = [req.user.user_id];
+  if (like) {
+    whereSql += [
+      ' AND (c.title LIKE ? ESCAPE \'\\\'',
+      '   OR EXISTS (SELECT 1 FROM ai_messages sm',
+      '              WHERE sm.conversation_id = c.id AND sm.content LIKE ? ESCAPE \'\\\'))'
+    ].join('\n');
+    params.push(like, like);
+  }
 
   var baseSql = [
     'SELECT c.id AS conversation_id, c.title, c.model_id, c.created_at, c.updated_at,',
@@ -104,18 +125,19 @@ router.get('/records', auth.requireAuth, function(req, res) {
     'FROM ai_conversations c',
     'JOIN ai_messages m ON m.conversation_id = c.id',
     '  AND m.role = \'user\' AND m.source IN (\'solve\', \'grade\')',
-    'WHERE c.user_id = ?',
+    whereSql,
     'GROUP BY c.id',
     having
   ].join('\n');
 
   var countSql = 'SELECT COUNT(*) AS c FROM (' + baseSql + ')';
   var countStmt = db.prepare(countSql);
-  var total = (countStmt.get(req.user.user_id) || {}).c || 0;
+  // 参数个数随 q 变化，用 apply 展开；原生绑定方法必须以 stmt 自身为 this
+  var total = (countStmt.get.apply(countStmt, params) || {}).c || 0;
 
   var listSql = baseSql + '\nORDER BY c.updated_at DESC LIMIT ? OFFSET ?';
   var listStmt = db.prepare(listSql);
-  var rows = listStmt.all(req.user.user_id, limit, offset);
+  var rows = listStmt.all.apply(listStmt, params.concat([limit, offset]));
 
   // 逐会话补齐「缩略图」与「摘要」
   // 为什么不在主查询里 JOIN：这两个字段分别来自 attachments(JSON) 与

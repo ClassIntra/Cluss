@@ -183,7 +183,17 @@ function pickUsage(info) {
   return info.hasImage ? USAGE_VISION : USAGE_TEXT;
 }
 
+// 最近一次收到的请求。用途：验证脚本可以断言「模型到底收到了什么」，
+// 而不是只看「有没有返回 200」——提示词改动是否真的生效，只能这样验。
+var lastRequest = null;
+
 var server = http.createServer(function(req, res) {
+  // GET /__last：回放最近一次请求（messages 原样返回）
+  if (req.method === 'GET' && req.url.indexOf('/__last') === 0) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify(lastRequest || {}));
+  }
+
   if (req.method !== 'POST') {
     res.writeHead(404);
     return res.end('not found');
@@ -196,6 +206,7 @@ var server = http.createServer(function(req, res) {
     try { payload = JSON.parse(body); } catch (e) {}
 
     var messages = payload.messages || [];
+    lastRequest = { at: new Date().toISOString(), model: payload.model || '', messages: messages };
     var info = detectKind(messages, payload);
     var reply = pickReply(info);
     var usage = pickUsage(info);

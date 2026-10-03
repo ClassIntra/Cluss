@@ -40,6 +40,31 @@ function microToYuan(micro) {
   return Math.round(Number(micro)) / 1000000;
 }
 
+// ---- 积分：只是「元」的展示层 ----
+//
+// 为什么不直接给学生看「元」：学生端一旦出现 ¥，提问前就会开始算「这值不值」，
+// 而学习恰恰需要低心理门槛地提问。¥0.0037 这种小数对中学生也不构成任何直觉。
+// 积分是整数、没有货币符号，学生理解成「我还有多少可用次数」而不是「我在花钱」。
+//
+// 底层结算**完全不变**：分配、扣费、对账仍然全部走微元整数运算，
+// 积分只在「给学生看的接口」上换算一次。管理员那边看到的依旧是元。
+//
+// 默认 1 元 = 100 积分（即 1 积分 = 1 分钱）：
+//   - 积分数量级够大：20 元 = 2000 积分，学生有"够用"的感觉
+//   - 换算比例简单：管理员心算无负担
+// 这个比例可配，但注意改动会让学生看到的积分总额整体变化，
+// 建议只在学期初调整，中途改会让学生觉得"积分莫名其妙变了"。
+var pointsPerYuan = num(process.env.CLUSS_POINTS_PER_YUAN, 100);
+if (!(pointsPerYuan > 0)) pointsPerYuan = 100;
+
+function microToPoints(micro) {
+  return Math.round(Number(micro) * pointsPerYuan / 1000000);
+}
+
+function yuanToPoints(yuan) {
+  return Math.round(Number(yuan) * pointsPerYuan);
+}
+
 var mode = readMode();
 
 module.exports = {
@@ -47,6 +72,13 @@ module.exports = {
   mode: mode,
   port: num(process.env.PORT, 9101),
   instanceId: String(process.env.CLUSS_INSTANCE_ID || 'cluss-local').trim(),
+
+  // 版本号唯一来源：本 package.json 的 version 字段。
+  // 发版只改这里（+ client/package.json 同步），/api/health 与前端"关于"都读它。
+  version: require('../../package.json').version,
+
+  // 生产标记：NODE_ENV=production 时切紧凑日志等行为
+  isProd: process.env.NODE_ENV === 'production',
 
   jwt: {
     secret: requireEnv('JWT_SECRET'),
@@ -99,6 +131,12 @@ module.exports = {
     .map(function(s) { return s.trim(); })
     .filter(function(s) { return s !== ''; }),
 
+  points: {
+    perYuan: pointsPerYuan
+  },
+
   yuanToMicro: yuanToMicro,
-  microToYuan: microToYuan
+  microToYuan: microToYuan,
+  microToPoints: microToPoints,
+  yuanToPoints: yuanToPoints
 };

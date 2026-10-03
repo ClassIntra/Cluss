@@ -4,11 +4,13 @@
 // 前置：mock 上游（node scripts/mock-ai-server.js）与 Cluss 服务端均已启动
 
 require('dotenv').config();
-var axios = require('axios');
+var http = require('./lib/http');
 var FormData = require('form-data');
 var db = require('../src/utils/db');
 
-var BASE = 'http://127.0.0.1:' + (process.env.PORT || 9101);
+// 目标地址统一走 lib/target：只允许本机实例（除非显式 ALLOW_REMOTE=1），
+// http/https 且不内嵌凭据 —— 这些脚本会清数据改配置，指向错对象是危险操作
+var BASE = require('./lib/target').resolve(process.env.PORT || 9101);
 var MOCK = 'http://127.0.0.1:9200';
 
 function makePngBuffer() {
@@ -36,7 +38,7 @@ function makeQuestionImage() {
 }
 
 function login(account, password) {
-  return axios.post(BASE + '/api/auth/login', { account: account, password: password })
+  return http.postJson(BASE + '/api/auth/login', { account: account, password: password })
     .then(function(r) {
       if (r.data.code !== 200) throw new Error(r.data.message);
       return r.data.data.token;
@@ -76,7 +78,7 @@ function configureModels() {
 }
 
 function createStudent() {
-  return axios.post(BASE + '/api/auth/register', {
+  return http.postJson(BASE + '/api/auth/register', {
     net_name: 'demo', real_name: '演示同学', enrollment_year: '2025',
     class_no: '3', password: 'test1234', confirm_password: 'test1234'
   }).then(function(r) {
@@ -88,7 +90,7 @@ function createStudent() {
 
 function topup(userId, token) {
   return login('999999', 'admin12345').then(function(adminToken) {
-    return axios.put(BASE + '/api/admin/users/' + userId + '/quota',
+    return http.putJson(BASE + '/api/admin/users/' + userId + '/quota',
       { quota_yuan: 100, weekly_yuan: 50, reason: '演示充值' },
       { headers: { Authorization: 'Bearer ' + adminToken } }
     );
@@ -102,7 +104,7 @@ function uploadImage(student) {
   return makeQuestionImage().then(function(buf) {
     var form = new FormData();
     form.append('file', buf, { filename: '数学题.png', contentType: 'image/png' });
-    return axios.post(BASE + '/api/cloud/upload', form, {
+    return http.postJson(BASE + '/api/cloud/upload', form, {
       headers: Object.assign({ Authorization: 'Bearer ' + student.token }, form.getHeaders()),
       maxBodyLength: Infinity
     });

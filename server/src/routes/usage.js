@@ -8,17 +8,19 @@ var router = express.Router();
 var auth = require('../middleware/auth');
 var stats = require('../services/usage-stats');
 var credit = require('../services/credit');
-var config = require('../config');
 
 // ============================================================
-// GET /api/usage/summary?days=7&group_by=day|model|source
+// GET /api/usage/summary?days=7&group_by=day|source
 // ============================================================
 router.get('/summary', auth.requireAuth, function(req, res) {
   var win = stats.resolveWindow(req.query);
   var groupBy = String(req.query.group_by || 'day');
 
-  // 学生端只允许这三种分组；user / instance 是管理端语义
-  if (['day', 'model', 'source'].indexOf(groupBy) < 0) groupBy = 'day';
+  // 学生端只允许这两种分组。
+  // user / instance 是管理端语义自不必说；「按模型」对学生也没有任何决策价值 ——
+  // 他不能选模型价格、也分不清 deepseek-chat 和别的有什么区别，
+  // 摆出这一栏只是让人觉得自己在看运维面板。
+  if (['day', 'source'].indexOf(groupBy) < 0) groupBy = 'day';
 
   var data = stats.summary({
     userId: req.user.user_id,
@@ -28,19 +30,10 @@ router.get('/summary', auth.requireAuth, function(req, res) {
     groupBy: groupBy
   });
 
-  // 附带额度概况，前端一个请求就能渲染整页
-  var state = credit.getState(req.user.user_id);
-  data.wallet = {
-    allocated_yuan: config.microToYuan(state.allocated_micro).toFixed(2),
-    used_yuan: config.microToYuan(state.used_micro).toFixed(2),
-    available_yuan: config.microToYuan(state.available_micro).toFixed(2),
-    used_percent: state.used_percent,
-    is_allocated: state.is_allocated,
-    weekly_unlimited: state.weekly_unlimited,
-    weekly_quota_yuan: config.microToYuan(state.weekly_quota_micro).toFixed(2),
-    weekly_used_yuan: config.microToYuan(state.weekly_used_micro).toFixed(2),
-    weekly_percent: state.weekly_percent
-  };
+  // 学生视图：服务端裁剪 + 积分换算（见 usage-stats 的 student* 系列说明）
+  data.totals = stats.studentTotals(data.totals);
+  data.items = data.items.map(stats.studentGroupRow);
+  data.wallet = credit.toPointsView(credit.getState(req.user.user_id));
 
   res.json({ code: 200, message: 'ok', data: data });
 });
@@ -62,6 +55,7 @@ router.get('/records', auth.requireAuth, function(req, res) {
   });
 
   data.window = { from: win.from, to: win.to, days: win.days };
+  data.items = data.items.map(stats.studentRecordRow);
   res.json({ code: 200, message: 'ok', data: data });
 });
 
@@ -83,7 +77,10 @@ router.get('/export.csv', auth.requireAuth, function(req, res) {
 
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="cluss-usage.csv"');
-  res.send(stats.recordsToCsv(data.items));
+  // 学生导出的表也用积分，与页面口径一致（管理台导出走 admin 路由，那边是元）。
+  // 必须先过 studentRecordRow：CSV 里要的是 title / source_label / cost_points，
+  // 原始行只有 conversation_title 与 cost_micro —— 直接传会导出一张"内容和积分都空着"的表。
+  res.send(stats.recordsToCsv(data.items.map(stats.studentRecordRow), { unit: 'points' }));
 });
 
 // ============================================================

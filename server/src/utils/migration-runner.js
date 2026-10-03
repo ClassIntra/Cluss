@@ -1,16 +1,18 @@
-// 迁移引擎：按版本顺序执行 migrations/ 下的迁移文件，记录到 schema_version 表
+// 迁移引擎：按版本顺序执行 migrations/ 下的迁移，记录到 schema_version 表
 //
 // 与 ClassIntra 的策略一致：
-//   - 文件名排序即执行顺序，只执行 version > 当前版本的迁移
+//   - 迁移清单是显式的（migrations/index.js），只执行 version > 当前版本的迁移
 //   - 每个迁移在事务中执行，失败回滚并中止后续迁移
 //   - 所有迁移必须幂等（IF NOT EXISTS / 先检查列再 ADD COLUMN）
 // 这样重复启动、异常中断后重启都安全。
+//
+// 迁移清单走**静态** require（migrations/index.js），不做目录扫描 + 动态加载：
+// 动态 require 会执行"目录里任何 .js"，是一个可被利用的落地点。
 
 var db = require('./db');
-var fs = require('fs');
-var path = require('path');
 
-var MIGRATIONS_DIR = path.join(__dirname, '../migrations');
+// 静态引入：路径是字面量，打包与审查都可靠
+var MIGRATIONS = require('../migrations/index');
 
 function ensureSchemaVersionTable() {
   db.exec([
@@ -29,20 +31,19 @@ function getCurrentVersion() {
   return row.max_version;
 }
 
+// 从显式清单里筛出合法迁移并按版本排序。
+// 模块是仓库内静态引用的（见文件头的说明），这里只做形状校验
 function loadMigrations() {
   var list = [];
-  if (!fs.existsSync(MIGRATIONS_DIR)) return list;
-  var files = fs.readdirSync(MIGRATIONS_DIR).filter(function(f) { return f.endsWith('.js'); });
-  files.sort();
-  for (var i = 0; i < files.length; i++) {
-    var filePath = path.join(MIGRATIONS_DIR, files[i]);
-    var mod = require(filePath);
+  for (var i = 0; i < MIGRATIONS.length; i++) {
+    var mod = MIGRATIONS[i];
     if (!mod || typeof mod.up !== 'function' || typeof mod.version !== 'number') {
-      console.warn('[migration] 跳过无效迁移文件:', files[i], '(缺少 version 或 up)');
+      console.warn('[migration] 跳过无效迁移条目 #' + i + '（缺少 version 或 up）');
       continue;
     }
-    list.push({ version: mod.version, name: mod.name || files[i], up: mod.up, file: files[i] });
+    list.push({ version: mod.version, name: mod.name || ('v' + mod.version), up: mod.up });
   }
+  list.sort(function(a, b) { return a.version - b.version; });
   return list;
 }
 
@@ -63,7 +64,7 @@ function runAll() {
       applied++;
       console.log('[migration] 已应用 v' + m.version + ' ' + m.name);
     } catch (err) {
-      console.error('[migration] v' + m.version + ' (' + m.file + ') 执行失败:', err.message);
+      console.error('[migration] v' + m.version + ' (' + m.name + ') 执行失败:', err.message);
       throw err;
     }
   }

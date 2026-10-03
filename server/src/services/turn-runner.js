@@ -22,6 +22,7 @@ var prompts = require('./prompt-registry');
 var conv = require('./conversation-core');
 var builder = require('./context-builder');
 var vision = require('./vision');
+var userProfile = require('./user-profile');
 var config = require('../config');
 
 var DEFAULT_CONTEXT_BUDGET = 10000;
@@ -131,8 +132,13 @@ function runStreamTurn(ctx) {
 
   var effectiveModelId = String(ctx.modelId || convRow.model_id || ai.getDefaultModelId());
   var model = ai.resolveModel(effectiveModelId);
-  if (!model) {
-    return fail(res, 404, '模型不存在，请选择其他模型');
+  // enabled 必须查：resolveModel 只看"有没有地址和 Key"，已停用的模型照样能解析出来。
+  // 不查的话，客户端只要显式传一个停用模型的 model_id 就能绕开管理员的停用决定。
+  if (!model || !model.enabled) {
+    // 「模型」是系统词汇，学生看到"模型不存在"只会困惑。
+    // 对他来说这就是"AI 突然用不了了"，刷新一下多半就好。
+    console.warn('[Turn] 模型不可用:', effectiveModelId, model ? '（已停用）' : '（不存在）');
+    return fail(res, 404, '这个 AI 暂时不可用，请刷新页面后重试');
   }
 
   // ---- 2) 视觉判定 ----
@@ -142,7 +148,9 @@ function runStreamTurn(ctx) {
   if (hasImages) {
     visionPlan = vision.resolveVisionMode(model);
     if (visionPlan.mode === 'none') {
-      return fail(res, 400, visionPlan.reason || '当前模型不支持看图，请联系管理员配置');
+      // 技术原因（visionPlan.reason）只记日志，给学生的是人话版本
+      console.warn('[Turn] 视觉链路不可用:', visionPlan.reason || '未知');
+      return fail(res, 400, visionPlan.studentReason || '当前用的 AI 看不了图片，请联系管理员');
     }
     var maxImages = vision.maxImagesFor(model);
     if (attachmentHashes.length > maxImages) {
@@ -161,7 +169,10 @@ function runStreamTurn(ctx) {
   }
 
   if (!model.ready) {
-    return fail(res, 503, 'AI 服务未配置完成（' + model.unavailableReason + '），请联系管理员');
+    // 「未配置 Key / 未配置地址」是管理员的排查信息，不是给学生的解释。
+    // 学生在管理台那边看不到、也改不了，界面上一句"暂时不可用"就够了。
+    console.warn('[Turn] AI 服务未就绪:', model.unavailableReason);
+    return fail(res, 503, 'AI 服务暂时不可用，请联系管理员');
   }
 
   // ---- 4) 附件读取与校验（失败可干净返回 400）----
@@ -269,12 +280,28 @@ function runStreamTurn(ctx) {
         }
       }
 
+      // 学生画像：让模型知道他在跟谁说话（年级、薄弱学科、常错类型、最近在问什么）。
+      // 构建失败只降级为空画像，绝不能因此中断对话。
+      var profile = null;
+      try {
+        profile = userProfile.buildProfile(userId);
+      } catch (e) {
+        console.warn('[Turn] 学生画像构建失败（不影响对话）:', e.message);
+      }
+
+      // 余额也交给模型一把：学生问「我还有多少积分」时能直接答，
+      // 不用让他自己去看侧栏。BASE 第 14 条禁止模型主动播报。
+      var walletView = credit.toPointsView(credit.getState(userId));
+
       var systemPrompt = prompts.getSystemPrompt({
         mode: convRow.mode || 'study',
         studyStyle: convRow.study_style || 'guided',
         taskKind: task.kind === 'solve' ? task.paperMode : task.kind,
         writing: task.writing || null,
-        hasAttachment: attachmentMeta.length > 0
+        hasAttachment: attachmentMeta.length > 0,
+        studentProfile: profile,
+        pointsBalance: walletView.available_points,
+        weeklyRemainingPoints: walletView.weekly_unlimited ? null : walletView.weekly_remaining_points
       });
 
       var userContent = content || tasksDefaultText(task);
@@ -311,6 +338,14 @@ function runStreamTurn(ctx) {
         budgetTokens: DEFAULT_CONTEXT_BUDGET
       });
 
+      // 历史被 token 预算裁掉时，明确告诉模型"你看不到更早的内容"。
+      // 不说明的话学生问「刚才那道题」时它会硬编一个答案。
+      // 挂在 system 消息末尾而不是 user 正文里，避免污染存档的用户消息。
+      var contextNote = prompts.buildContextNote(built.stats);
+      if (contextNote && built.messages.length && built.messages[0].role === 'system') {
+        built.messages[0].content += contextNote;
+      }
+
       // ---- 10) 流式生成 ----
       var promptText = flattenForEstimate(built.messages);
       var handle = ai.chatStream(model, built.messages, {
@@ -339,6 +374,8 @@ function runStreamTurn(ctx) {
                 imageHash: imageHashes.length ? imageHashes[0] : ''
               });
               if (wrongAdded) {
+                // 错题变了，画像缓存立刻失效，下一轮就能带上新的薄弱点
+                userProfile.invalidate(userId);
                 console.log('[Turn] 批改提取错题 %d 道（用户 %s）', wrongAdded, userId);
               }
             }
@@ -374,18 +411,22 @@ function runStreamTurn(ctx) {
           image_count: imageHashes.length
         });
 
-        var state = credit.getState(userId);
+        // 回给前端的额度一律积分口径：这是学生端的流，不带元。
+        // 前端目前并不展示「本次消耗」（刻意不展示：强调消耗会让学生不敢提问），
+        // 数据带上是为了将来要做「积分明细」时不用再改协议。
+        var pointsView = credit.toPointsView(credit.getState(userId));
         sse.send('done', {
           conversation_id: convRow.id,
-          cost_micro: costMicro,
-          cost_yuan: config.microToYuan(costMicro).toFixed(4),
+          cost_points: config.microToPoints(costMicro),
           balance: {
-            available_micro: state.available_micro,
-            available_yuan: config.microToYuan(state.available_micro).toFixed(2),
-            weekly_remaining_yuan: state.weekly_unlimited
-              ? null : config.microToYuan(state.weekly_remaining_micro).toFixed(2)
+            available_points: pointsView.available_points,
+            weekly_remaining_points: pointsView.weekly_unlimited
+              ? null : pointsView.weekly_remaining_points
           },
-          estimated: usage.estimated === 1,
+          // 免费模型不上报 estimated：用量估算只影响计费，而免费模型不产生费用，
+          // 弹「本次用量为估算值」只会让学生困惑（他既没被扣钱，也无从处理）。
+          // 数据库里仍如实记录 estimated —— 对账要看真话，那是管理端的事。
+          estimated: usage.estimated === 1 && !model.is_free,
           image_count: imageHashes.length,
           vision_mode: visionPlan.mode,
           // 批改时有意义：本次自动收录了几道错题到错题本

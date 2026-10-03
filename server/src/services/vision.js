@@ -54,12 +54,30 @@ function getVisionConfig() {
 }
 
 // ---- 判定本次请求怎么处理图片 ----
+//
+// 每个拒绝分支都带两个理由：
+//   reason        —— 给管理员/日志看的，写清技术原因（为什么不能用）
+//   studentReason —— 给学生看的，只说「现在不能用、找谁」
+//
+// 为什么要分开：「配置的转述模型不可用（未启用、缺 API Key 或不支持视觉）」
+// 这句话学生一个字都看不懂 —— 他没配过 Key，也不知道"转述模型"是什么，
+// 看到只会以为软件坏了。技术原因必须留着排障，但不该出现在学生面前。
 function resolveVisionMode(mc) {
-  if (!mc) return { mode: 'none', relay: null, reason: '模型不存在' };
+  if (!mc) {
+    return {
+      mode: 'none', relay: null,
+      reason: '模型不存在',
+      studentReason: '这个 AI 暂时不可用，请刷新页面后重试'
+    };
+  }
 
   var cfg = getVisionConfig();
   if (!cfg.enabled) {
-    return { mode: 'none', relay: null, disabled: true, reason: '管理员已关闭看图功能' };
+    return {
+      mode: 'none', relay: null, disabled: true,
+      reason: '管理员已关闭看图功能',
+      studentReason: '看图功能暂时关闭了，请联系管理员'
+    };
   }
 
   // 直接支持视觉：最省事，也不需要额外成本
@@ -71,20 +89,25 @@ function resolveVisionMode(mc) {
   var relayId = cfg.relayModelId;
   if (relayId && relayId !== mc.id) {
     var relay = ai.resolveModel(relayId);
-    if (relay && relay.ready && relay.supportsVision) {
+    // enabled 也要判：resolveModel 只看"有没有地址和 Key"，
+    // 停用的模型照样能解析出来 —— 不管它的话，拍题会一路走到
+    // 真正发请求时才失败，而那时错误已经很难解释给学生听了。
+    if (relay && relay.enabled && relay.ready && relay.supportsVision) {
       return { mode: 'relay', relay: relay, maxImages: cfg.maxImages };
     }
     return {
       mode: 'none',
       relay: null,
-      reason: '配置的转述模型不可用（未启用、缺 API Key 或不支持视觉）'
+      reason: '配置的转述模型不可用（未启用、缺 API Key 或不支持视觉）',
+      studentReason: '看图功能暂时不可用，请联系管理员'
     };
   }
 
   return {
     mode: 'none',
     relay: null,
-    reason: '当前模型不支持看图，且管理员未配置转述模型'
+    reason: '当前模型不支持看图，且管理员未配置转述模型',
+    studentReason: '当前用的 AI 看不了图片，请管理员换一个能看图的'
   };
 }
 

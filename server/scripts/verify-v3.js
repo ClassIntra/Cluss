@@ -10,11 +10,13 @@
 // 用法：node scripts/verify-v3.js （需先启动 mock 上游与 Cluss 服务端）
 
 require('dotenv').config();
-var axios = require('axios');
+var http = require('./lib/http');
 var FormData = require('form-data');
 var db = require('../src/utils/db');
 
-var BASE = 'http://127.0.0.1:' + (process.env.PORT || 9101);
+// 目标地址统一走 lib/target：只允许本机实例（除非显式 ALLOW_REMOTE=1），
+// http/https 且不内嵌凭据 —— 这些脚本会清数据改配置，指向错对象是危险操作
+var BASE = require('./lib/target').resolve(process.env.PORT || 9101);
 var MOCK = 'http://127.0.0.1:9200';
 
 var pass = 0, fail = 0;
@@ -51,8 +53,8 @@ function parseSse(raw) {
   return out;
 }
 
-function stream(url, token, body) {
-  return axios.post(url, body, {
+function readSse(url, token, body) {
+  return http.postJson(url, body, {
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
     responseType: 'stream', timeout: 60000,
     validateStatus: function() { return true; }
@@ -69,22 +71,59 @@ function stream(url, token, body) {
 }
 
 function post(url, token, body) {
-  return axios.post(url, body, {
+  return http.postJson(url, body, {
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
     validateStatus: function() { return true; }
   });
 }
 function put(url, token, body) {
-  return axios.put(url, body, {
+  return http.putJson(url, body, {
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
     validateStatus: function() { return true; }
   });
 }
 function del(url, token) {
-  return axios.delete(url, { headers: { Authorization: 'Bearer ' + token }, validateStatus: function() { return true; } });
+  return http.del(url, { headers: { Authorization: 'Bearer ' + token }, validateStatus: function() { return true; } });
 }
 function get(url, token) {
-  return axios.get(url, { headers: token ? { Authorization: 'Bearer ' + token } : {}, validateStatus: function() { return true; } });
+  return http.getJson(url, { headers: token ? { Authorization: 'Bearer ' + token } : {}, validateStatus: function() { return true; } });
+}
+
+// ---- 配置快照 ----
+//
+// 本脚本会改写模型表，**还会把 vision_relay_model_id 强制指向 mock 视觉模型**。
+// 不还原的话，在一台已经配好真实模型的机器上跑一次验证，
+// 线上模型与视觉配置就全被改掉了 —— 而报错只会说"AI 不可用"，
+// 几乎没人会联想到是验证脚本干的。所以自动快照、自动还原。
+var MODEL_SNAPSHOT = null;
+var META_SNAPSHOT = null;
+
+function snapshotConfig() {
+  MODEL_SNAPSHOT = db.prepare('SELECT * FROM ai_models').all();
+  META_SNAPSHOT = db.prepare('SELECT * FROM cluss_meta').all();
+}
+
+function restoreConfig() {
+  if (!MODEL_SNAPSHOT) return;
+
+  var tx = db.transaction(function() {
+    var mCols = Object.keys(MODEL_SNAPSHOT[0] || {});
+    if (mCols.length) {
+      db.prepare('DELETE FROM ai_models').run();
+      var ms = db.prepare('INSERT INTO ai_models (' + mCols.join(',') + ') VALUES (' +
+        mCols.map(function() { return '?'; }).join(',') + ')');
+      MODEL_SNAPSHOT.forEach(function(row) { ms.run(mCols.map(function(c) { return row[c]; })); });
+    }
+    var kCols = Object.keys(META_SNAPSHOT[0] || {});
+    if (kCols.length) {
+      db.prepare('DELETE FROM cluss_meta').run();
+      var ks = db.prepare('INSERT INTO cluss_meta (' + kCols.join(',') + ') VALUES (' +
+        kCols.map(function() { return '?'; }).join(',') + ')');
+      META_SNAPSHOT.forEach(function(row) { ks.run(kCols.map(function(c) { return row[c]; })); });
+    }
+  });
+  tx();
+  console.log('\n[清理] 模型与视觉配置已还原为本脚本运行前的状态');
 }
 
 function setupModels() {
@@ -96,15 +135,41 @@ function setupModels() {
     '  supports_vision = excluded.supports_vision, enabled = 1'
   ].join('\n'));
 
+  // 先清掉所有 is_default，再指定本脚本要用的那个。
+  // 不清的话会留下**两个** is_default=1（比如库里原本有真实默认模型），
+  // 而 getDefaultModelId 遇到多行时选哪个是不确定的 ——
+  // 表现就是"同一个请求有时走 mock、有时走真实模型"，断言会随机失败。
+  db.prepare('UPDATE ai_models SET is_default = 0').run();
+
   stmt.run('deepseek-chat', 'DeepSeek Chat', MOCK, 'mock-key', 'deepseek-chat', 1, 2000, 8000, 200, 0, 1, 0);
   stmt.run('plain-model', '经济型模型', MOCK, 'mock-key', 'plain', 0, 2000, 8000, 200, 0, 0, 10);
   stmt.run('vision-model', '视觉模型', MOCK, 'mock-key', 'vision', 1, 2000, 8000, 200, 0, 0, 11);
 
+  // 只保留"测试用的那个"是默认；其它可能存在的旧默认已经被上面清掉
+  db.prepare('UPDATE ai_models SET is_default = 1 WHERE id = ?').run('deepseek-chat');
+
   db.prepare("INSERT INTO cluss_meta (key, value) VALUES ('vision_relay_model_id', 'vision-model') ON CONFLICT(key) DO UPDATE SET value = 'vision-model'").run();
-  console.log('[setup] 模型已配置');
+  console.log('[setup] 模型已配置（默认模型 = deepseek-chat）');
 }
 
+// 破坏性：清空所有学生账号与业务数据。
+// 库里有真实数据时默认拒绝执行，必须显式加 --force（同 verify-v2 的理由：
+// 曾在一台配好演示数据的机器上无声清空过）。
 function reset() {
+  var force = process.argv.indexOf('--force') >= 0;
+
+  var students = db.prepare('SELECT COUNT(*) c FROM users WHERE is_admin = 0').get().c;
+  var usage = db.prepare('SELECT COUNT(*) c FROM cluss_usage_log').get().c;
+  var convs = db.prepare('SELECT COUNT(*) c FROM ai_conversations').get().c;
+
+  if (!force && (students > 0 || usage > 0)) {
+    console.error('\n[拒绝执行] 这个库里有真实数据：');
+    console.error('    学生账号 ' + students + ' 个、会话 ' + convs + ' 个、用量记录 ' + usage + ' 条');
+    console.error('    本脚本会**全部删除**它们（含额度、错题本、作文、云盘文件），且不可恢复。');
+    console.error('\n    确认要清空后再跑：node scripts/verify-v3.js --force\n');
+    process.exit(1);
+  }
+
   ['cluss_usage_log', 'cluss_credit_log', 'cluss_credit', 'ai_messages', 'ai_conversations',
    'wrong_questions', 'writing_pieces'].forEach(function(t) {
     db.prepare('DELETE FROM ' + t).run();
@@ -112,13 +177,14 @@ function reset() {
   db.prepare('DELETE FROM cloud_user_files').run();
   db.prepare('DELETE FROM cloud_files').run();
   db.prepare('DELETE FROM users WHERE is_admin = 0').run();
-  console.log('[setup] 数据已清空');
+  console.log('[setup] 数据已清空（' + students + ' 个学生账号被删除）');
 }
 
 var studentToken = '', adminToken = '', studentId = '';
 var imgHash = '';
 
 function run() {
+  snapshotConfig();
   reset();
   setupModels();
 
@@ -141,7 +207,7 @@ function run() {
 
     var form = new FormData();
     form.append('file', makePng(), { filename: '作业.png', contentType: 'image/png' });
-    return axios.post(BASE + '/api/cloud/upload', form, {
+    return http.postJson(BASE + '/api/cloud/upload', form, {
       headers: Object.assign({ Authorization: 'Bearer ' + studentToken }, form.getHeaders()),
       maxBodyLength: Infinity
     });
@@ -153,7 +219,7 @@ function run() {
   // ============================================================
   .then(function() {
     section('1. 错题自动提取');
-    return stream(BASE + '/api/study/grade/stream', studentToken, {
+    return readSse(BASE + '/api/study/grade/stream', studentToken, {
       model_id: 'deepseek-chat',
       answer_hashes: [imgHash]
     });
@@ -265,7 +331,7 @@ function run() {
   .then(function() {
     section('3. 解题与批改记录');
     // 再造一条拍题记录，用于验证类型筛选
-    return stream(BASE + '/api/study/solve/stream', studentToken, {
+    return readSse(BASE + '/api/study/solve/stream', studentToken, {
       model_id: 'deepseek-chat', paper_mode: 'single', image_hashes: [imgHash]
     });
   }).then(function() {
@@ -299,7 +365,7 @@ function run() {
   // ============================================================
   .then(function() {
     section('4. 作文：三种用途');
-    return stream(BASE + '/api/writing/generate/stream', studentToken, {
+    return readSse(BASE + '/api/writing/generate/stream', studentToken, {
       language: 'zh', genre: '记叙文', style: '细腻描写', word_limit: 800,
       topic: '以「那一刻我长大了」为题写一篇记叙文'
     });
@@ -313,7 +379,7 @@ function run() {
     ok('带字数标注', text.indexOf('本文共约') !== -1, text.slice(-60));
     global.__essay = text;
   }).then(function() {
-    return stream(BASE + '/api/writing/outline/stream', studentToken, {
+    return readSse(BASE + '/api/writing/outline/stream', studentToken, {
       language: 'zh', genre: '记叙文', word_limit: 600, topic: '我的老师'
     });
   }).then(function(r) {
@@ -322,7 +388,7 @@ function run() {
       .map(function(e) { return e.data.text; }).join('');
     ok('生成提纲成功', !!done && text.indexOf('写作提纲') !== -1, text.slice(0, 40));
 
-    return stream(BASE + '/api/writing/grade/stream', studentToken, {
+    return readSse(BASE + '/api/writing/grade/stream', studentToken, {
       language: 'zh', topic: '那一刻我长大了',
       content: '那天我很感动。妈妈在做饭，我看了很久，突然觉得应该帮她，于是我去帮忙了。'
     });
@@ -334,7 +400,7 @@ function run() {
     ok('批改含润色示例', text.indexOf('润色示例') !== -1);
 
     // 英文生成
-    return stream(BASE + '/api/writing/generate/stream', studentToken, {
+    return readSse(BASE + '/api/writing/generate/stream', studentToken, {
       language: 'en', genre: 'Narrative', word_limit: 150, topic: 'A memorable trip'
     });
   }).then(function(r) {
@@ -400,8 +466,14 @@ function run() {
     return get(BASE + '/api/wallet', studentToken);
   }).then(function(r) {
     var w = r.data.data;
-    ok('余额已扣减', Number(w.used_yuan) > 0, '已用 ¥' + w.used_yuan);
-    console.log('    已用 ¥' + w.used_yuan + ' / 可用 ¥' + w.available_yuan);
+    // 学生端口径是积分，且**不应该有任何金额字段**（见 README「计费单位」）。
+    // 注意：单次消耗不足 1 积分时 used_points 会四舍五入成 0，
+    // 所以这里断言"总额度消耗 > 0"更稳 —— 累计是按微元算的，不会丢账。
+    ok('额度已扣减（按微元累计）', Number(w.allocated_points) - Number(w.available_points) > 0,
+      '额度 ' + w.allocated_points + ' / 可用 ' + w.available_points);
+    ok('学生端额度视图不含金额字段', w.used_yuan === undefined && w.allocated_yuan === undefined);
+    console.log('    额度 ' + w.allocated_points + ' 积分 / 可用 ' + w.available_points +
+      ' 积分（单次消耗低于 1 积分时显示为 0，属正常）');
 
     return get(BASE + '/api/usage/summary?days=7&group_by=source', studentToken);
   }).then(function(r) {
@@ -425,6 +497,8 @@ function run() {
   })
 
   .then(function() {
+    restoreConfig();
+
     section('结果');
     console.log('通过 ' + pass + ' 项，失败 ' + fail + ' 项');
     if (failures.length) {
@@ -434,6 +508,8 @@ function run() {
     process.exit(fail > 0 ? 1 : 0);
   })
   .catch(function(err) {
+    // 中途失败也要还原，否则会留下一份被改成 mock 的模型与视觉配置
+    try { restoreConfig(); } catch (e) { console.error('[清理] 还原失败:', e.message); }
     console.error('\n[脚本异常]', err.message);
     if (err.response) console.error('status', err.response.status, String(err.response.data).slice(0, 300));
     process.exit(1);

@@ -61,7 +61,13 @@ function getModelRow(id) {
 }
 
 function getDefaultModelId() {
-  var row = db.prepare('SELECT id FROM ai_models WHERE is_default = 1 AND enabled = 1 LIMIT 1').get();
+  // ORDER BY 不能省：一旦库里出现**两个** is_default=1（管理台之外的脚本、
+  // 或并发改配置都可能造成），没有排序时返回哪一行是不确定的 ——
+  // 表现就是"同一个请求有时走 mock、有时走真实模型"，极难排查。
+  // 这里用 sort_order + id 定序，保证结果稳定可预期。
+  var row = db.prepare(
+    'SELECT id FROM ai_models WHERE is_default = 1 AND enabled = 1 ORDER BY sort_order ASC, id ASC LIMIT 1'
+  ).get();
   if (row) return row.id;
   var any = db.prepare('SELECT id FROM ai_models WHERE enabled = 1 ORDER BY sort_order ASC LIMIT 1').get();
   return any ? any.id : '';
@@ -97,7 +103,9 @@ function listModelsForClient() {
     if (!visionCapable && vision && vision.enabled && vision.relayModelId) {
       if (vision.relayModelId !== m.id) {
         var relay = resolveModel(vision.relayModelId);
-        if (relay && relay.ready && relay.supportsVision) {
+        // 必须同时看 enabled：停用的转述模型不该再让主模型"看起来能看图"，
+        // 否则学生会看到拍题入口可用、点进去才失败
+        if (relay && relay.enabled && relay.ready && relay.supportsVision) {
           visionCapable = true;
           visionViaRelay = true;
         }

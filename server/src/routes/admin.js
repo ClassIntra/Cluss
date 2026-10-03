@@ -1,6 +1,6 @@
 // 管理端路由（仅中继权威节点使用）
 //
-// 使用场景：学生线下转账 → 老师在中继管理台给账号开通额度 → 下发到各班级节点
+// 使用场景：学生线下转账 → 管理员在中继管理台给账号开通额度 → 下发到各班级节点
 //
 // 关键约定：
 //   1. 所有充值/调整都写 cluss_credit_log（只增不改），operator_id 记录操作人，可追溯
@@ -365,6 +365,9 @@ router.get('/dashboard', auth.requireAuth, auth.requireAdmin, function(req, res)
     data: {
       instance_id: config.instanceId,
       mode: config.mode,
+      // 管理员充值填的是元，学生端看到的是积分。把换算率给到前端，
+      // 好让充值框旁边实时显示"学生将看到 N 积分"—— 管理员不必自己心算。
+      points_per_yuan: config.points.perYuan,
       assign_version: currentAssignVersion(),
       totals: {
         users: totals.user_count,

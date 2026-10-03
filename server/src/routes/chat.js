@@ -11,19 +11,35 @@ var time = require('../utils/time');
 var auth = require('../middleware/auth');
 var ai = require('../services/ai');
 var credit = require('../services/credit');
-var config = require('../config');
 var constants = require('../utils/constants');
 var conv = require('../services/conversation-core');
 var turnRunner = require('../services/turn-runner');
 
 // ============================================================
 // 模型列表
+//
+// 学生端只列出**可用**的模型。
+// 「DeepSeek Chat（未配置 Key）」这种选项对学生毫无意义 —— 他没配过、也配不了，
+// 看到只会以为软件坏了。那是管理员要处理的事，不该出现在学生的界面上。
+// 管理员仍然能看到全部（含不可用的），便于排查。
 // ============================================================
 router.get('/models', auth.requireAuth, function(req, res) {
+  var isAdmin = req.user.is_admin === 1;
+  var all = ai.listModelsForClient();
+  var list = isAdmin ? all : all.filter(function(m) { return m.available; });
+
+  var def = ai.getDefaultModelId();
+  if (!isAdmin) {
+    // 默认模型恰好不可用时自动落到第一个可用的，
+    // 否则学生会遇到"一进来选中的就是个不能用的"
+    var hit = list.filter(function(m) { return m.id === def; });
+    if (!hit.length) def = (list[0] && list[0].id) || '';
+  }
+
   res.json({
     code: 200,
     message: 'ok',
-    data: { models: ai.listModelsForClient(), default_model: ai.getDefaultModelId() }
+    data: { models: list, default_model: def }
   });
 });
 
@@ -143,30 +159,15 @@ router.post('/chat/stream', auth.requireAuth, function(req, res) {
 });
 
 // ============================================================
-// GET /wallet —— 用户额度视图
+// GET /wallet —— 学生端额度视图（积分口径）
+// 管理端有自己的接口（/api/admin/*），那边继续用元对账
 // ============================================================
 router.get('/wallet', auth.requireAuth, function(req, res) {
   var state = credit.getState(req.user.user_id);
-  res.json({
-    code: 200,
-    message: 'ok',
-    data: {
-      unlimited: false,
-      allocated_yuan: config.microToYuan(state.allocated_micro).toFixed(2),
-      used_yuan: config.microToYuan(state.used_micro).toFixed(2),
-      available_yuan: config.microToYuan(state.available_micro).toFixed(2),
-      available_micro: state.available_micro,
-      is_allocated: state.is_allocated,
-      used_percent: state.used_percent,
-      weekly_unlimited: state.weekly_unlimited,
-      weekly_quota_yuan: config.microToYuan(state.weekly_quota_micro).toFixed(2),
-      weekly_used_yuan: config.microToYuan(state.weekly_used_micro).toFixed(2),
-      weekly_remaining_yuan: config.microToYuan(state.weekly_remaining_micro).toFixed(2),
-      weekly_percent: state.weekly_percent,
-      window_days: state.window_days,
-      topup_hint: '联系管理员充值'
-    }
-  });
+  var view = credit.toPointsView(state);
+  view.unlimited = false;
+  view.topup_hint = '联系管理员充值';
+  res.json({ code: 200, message: 'ok', data: view });
 });
 
 module.exports = router;

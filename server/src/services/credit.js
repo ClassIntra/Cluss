@@ -2,7 +2,7 @@
 //
 // ---- 核心模型（决定跨班一致性）----
 // 额度是「分配」而不是「共享账本」：
-//     allocated_micro = 老师给这个账号分配了多少（由中继下发，权威值）
+//     allocated_micro = 管理员给这个账号分配了多少（由中继下发，权威值）
 //     本地消耗        = 本班 cluss_usage_log 里该用户的开销合计
 //     可用余额        = allocated_micro + 同步容错 - 本地消耗
 //
@@ -37,9 +37,18 @@ function sumLocalUsage(userId, days) {
   return (row && row.used) || 0;
 }
 
-// 同步容错仅对「有分配额度」的用户生效：0 分配的人不该凭空获得可用量
+// 同步容错只在「节点模式」下生效。
+//
+// 它的存在理由很具体：节点上的分配值来自中继，**存在同步延迟** ——
+// 学生刚在别处充了值、本班还没拉到，会被误判成"余额不足"。
+// 给它一个小额缓冲，宁可短暂放宽，也不误伤已付款的学生。
+//
+// 但 standalone（以及 relay）模式下分配值是管理员本机直接写的，没有延迟，
+// 容错就变成了纯粹的噪声：学生会看到「可用 10095 / 额度 10000」这种
+// 自相矛盾的数字（实测踩到）。所以只在 node 模式下给。
 function toleranceFor(allocatedMicro) {
   if (!(allocatedMicro > 0)) return 0;
+  if (config.mode !== config.MODES.NODE) return 0;
   return config.relay.toleranceMicro || 0;
 }
 
@@ -78,6 +87,34 @@ function getState(userId) {
   return state;
 }
 
+// 学生端视图：把微元换算成积分。
+//
+// 这个函数是「积分只是展示层」这条设计的落点 —— 唯一的换算点就在这里，
+// 其余所有地方（分配、扣费、中继同步、对账、管理台）继续用微元，一行都不用改。
+//
+// 刻意**不返回**任何元字段：一旦前端能同时拿到元与积分，
+// 迟早会有人把「¥」显示到学生面前，包装就白做了。
+function toPointsView(state) {
+  var s = state || {};
+  return {
+    unit: '积分',
+    // 未开通与「开通了但用完了」是两种完全不同的处境，
+    // 前端要靠 is_allocated 区分文案，不能只看数量
+    is_allocated: !!s.is_allocated,
+    allocated_points: config.microToPoints(s.allocated_micro || 0),
+    used_points: config.microToPoints(s.used_micro || 0),
+    // 可用量向下取整：宁可显示得少一点，也不要出现「显示还有 1 积分却被拦下」
+    available_points: Math.floor(Number(s.available_micro || 0) * config.points.perYuan / 1000000),
+    used_percent: s.used_percent || 0,
+    weekly_unlimited: !!s.weekly_unlimited,
+    weekly_quota_points: config.microToPoints(s.weekly_quota_micro || 0),
+    weekly_used_points: config.microToPoints(s.weekly_used_micro || 0),
+    weekly_remaining_points: Math.floor(Number(s.weekly_remaining_micro || 0) * config.points.perYuan / 1000000),
+    weekly_percent: s.weekly_percent || 0,
+    window_days: s.window_days || WEEK_DAYS
+  };
+}
+
 // 闸门判定：返回 null 表示放行，否则返回给用户看的中文提示
 function checkGate(userId, model) {
   // 免费模型不受额度限制
@@ -86,9 +123,13 @@ function checkGate(userId, model) {
   var uid = String(userId);
   var asg = getAssignment(uid);
 
+  // 提示语一律用**积分**口径，不带 ¥、不带小数。
+  // 被拒绝的那一刻是学生心理最敏感的地方：说「余额 ¥0.00」像在催账，
+  // 说「积分已用完」只陈述状态，下一步也更清楚。
+
   // 1) 尚未分配额度：直接拦，并给出明确指引（最常见的「为什么用不了」）
   if (!(asg.allocated_micro > 0)) {
-    return '你的账号还没有开通额度。请先联系管理员充值，充值后即可使用。';
+    return '你的账号还没有开通，请先联系管理员充值后使用。';
   }
 
   var state = getState(uid);
@@ -96,14 +137,21 @@ function checkGate(userId, model) {
   // 2) 余额闸门
   //    允许余额刚好为 0 时发起（末次请求可能扣成负数），但已经为负就拦
   if (state.available_micro <= 0) {
-    return '你的余额已用完（剩余 ¥' + config.microToYuan(Math.max(0, state.available_micro)).toFixed(2) + '）。' +
-      '请先联系管理员充值后继续使用。';
+    return '你的积分已用完，请联系管理员充值后继续使用。';
   }
 
   // 3) 周限额闸门（防滥用）
+  //
+  // 这条文案改过两处，都是心理层面的：
+  //   a) 原来写「请下周再试」——而且它**不准确**：限额是 7 天滚动窗口，
+  //      今天用满，明天 7 天前那部分就滑出去了，额度是逐日回补的，不是干等到下周。
+  //      给一个更短、真实可期的等待，比"下周再来"少掉很多无力感。
+  //   b) 原来只讲"你被限制了"。补一句**为什么**（防止单个账号占满额度），
+  //      人会更容易接受有理由的限制，也更少把它理解成针对自己（心理抗拒）。
   if (state.weekly_quota_micro > 0 && state.weekly_used_micro >= state.weekly_quota_micro) {
-    return '你本周的使用额度已用完（' + WEEK_DAYS + ' 天内上限 ¥' +
-      config.microToYuan(state.weekly_quota_micro).toFixed(2) + '），请下周再试或联系管理员调整。';
+    return '本周积分已用完（每 ' + WEEK_DAYS + ' 天上限 ' +
+      config.microToPoints(state.weekly_quota_micro) + ' 积分）。这个上限是为了防止单个账号把额度占满，' +
+      '让大家都用得上；额度按天滚动回补，过一两天会自动恢复一些，也可以联系管理员调整。';
   }
 
   return null;
@@ -201,6 +249,7 @@ module.exports = {
   WEEK_DAYS: WEEK_DAYS,
   getAssignment: getAssignment,
   getState: getState,
+  toPointsView: toPointsView,
   checkGate: checkGate,
   recordUsage: recordUsage,
   applyAssignment: applyAssignment,

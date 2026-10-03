@@ -25,7 +25,8 @@ var app = express();
 // 2) 通用中间件
 app.disable('x-powered-by');
 app.use(compression({ level: 6, threshold: 1024 }));
-app.use(morgan('dev'));
+// 生产用 tiny 一行式，开发用 dev 彩色格式
+app.use(morgan(config.isProd ? 'tiny' : 'dev'));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 app.use(cookieParser());
@@ -61,7 +62,8 @@ app.use('/api/wrong-book', require('./routes/wrong-book'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/sync', require('./routes/sync'));
 
-// 健康检查：让学生端排障页/运维能一眼看出实例身份与模式
+// 健康检查：让学生端排障页/运维能一眼看出实例身份、模式与版本。
+// 故意不鉴权、不暴露任何账号/路径信息——监控探针只需要这些字段。
 app.get('/api/health', function(req, res) {
   var sync = require('./services/sync');
   res.json({
@@ -69,9 +71,11 @@ app.get('/api/health', function(req, res) {
     message: 'ok',
     data: {
       service: 'cluss',
+      version: config.version,
       mode: config.mode,
       instance_id: config.instanceId,
       time: new Date().toISOString(),
+      uptime_sec: Math.floor(process.uptime()),
       sync: sync.getStatus(),
       ci_bridge_enabled: require('./services/ci-bridge').isEnabled()
     }
@@ -110,6 +114,7 @@ app.use(function(err, req, res, next) {
 var server = app.listen(config.port, function() {
   console.log('');
   console.log('  Cluss 已启动');
+  console.log('  ├─ 版本     : v' + config.version);
   console.log('  ├─ 模式     : ' + config.mode);
   console.log('  ├─ 实例标识 : ' + config.instanceId);
   console.log('  ├─ 监听端口 : ' + config.port);
