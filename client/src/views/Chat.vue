@@ -95,18 +95,48 @@
                 <button class="icon-btn" title="新建对话" @click="newConversation">＋</button>
               </span>
             </div>
+
+            <!-- 会话多了才露搜索框：新用户列表一屏放得下，不必多一个控件 -->
+            <input
+              v-if="conversations.length > 5"
+              v-model="convQuery"
+              class="input conv-search"
+              type="search"
+              placeholder="搜会话标题…"
+            />
+
             <div class="conv-list">
               <div v-if="!conversations.length" class="conv-empty tiny muted">还没有对话</div>
+              <div v-else-if="!visibleConversations.length" class="conv-empty tiny muted">没有匹配的会话</div>
               <div
-                v-for="c in conversations"
+                v-for="c in visibleConversations"
                 :key="c.id"
                 class="conv-item"
                 :class="{ active: c.id === conversationId }"
                 @click="openConversation(c.id)"
               >
                 <span class="conv-mode-dot" :class="'dot-' + (c.mode || 'study')" :title="modeLabel(c)"></span>
-                <span class="conv-title">{{ c.title }}</span>
-                <button class="conv-del" title="删除" @click.stop="removeConversation(c.id)">×</button>
+
+                <!-- 行内重命名：Enter 保存，Esc 取消；失焦视为保存 -->
+                <input
+                  v-if="renamingId === c.id"
+                  ref="renameInput"
+                  v-model="renameDraft"
+                  class="input conv-rename-input"
+                  maxlength="40"
+                  @click.stop
+                  @keyup.enter="saveRename(c)"
+                  @keyup.esc="cancelRename"
+                  @blur="saveRename(c)"
+                />
+                <span v-else class="conv-title">{{ c.title }}</span>
+
+                <button v-if="renamingId !== c.id" class="conv-del" title="重命名" @click.stop="startRename(c)">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4.5 19.5l.9-3.6L15.9 5.4a2.1 2.1 0 0 1 3 3L8.4 18.9l-3.9.6zM13.9 7.4l3 3" />
+                  </svg>
+                </button>
+                <button v-if="renamingId !== c.id" class="conv-del" title="删除" @click.stop="removeConversation(c.id)">×</button>
               </div>
             </div>
           </div>
@@ -154,7 +184,8 @@
               </div>
               <div class="msg-col">
                 <div class="bubble" :class="m.role === 'user' ? 'bubble-user' : 'bubble-assistant'">
-                  <!-- 用户消息里带过的附件：只显示缩略图占位，不重新加载原图 -->
+                  <!-- 用户消息里带过的附件：只显示缩略图占位，不重新加载原图。
+                       点缩略图看全屏原图（识别错字时学生需要能放大核对） -->
                   <div v-if="m.role === 'user' && m.attachments && m.attachments.length" class="bubble-attachments">
                     <div v-for="a in m.attachments" :key="a.hash" class="mini-attach">
                       <img
@@ -163,6 +194,7 @@
                         :src="'/api/cloud/files/' + a.hash + '?thumb=1'"
                         :alt="a.name"
                         loading="lazy"
+                        @click="previewUrl = '/api/cloud/files/' + a.hash"
                       />
                       <span v-else class="mini-attach-txt">TXT</span>
                     </div>
@@ -276,6 +308,12 @@
       </main>
     </div>
 
+    <transition name="fade">
+      <div v-if="previewUrl" class="preview-mask" @click.self="previewUrl = ''">
+        <img class="preview-img" :src="previewUrl" alt="附件原图" />
+      </div>
+    </transition>
+
     <CloudPicker
       v-if="pickerOpen"
       :max="4"
@@ -331,7 +369,14 @@ export default {
       stopped: false,
       // 会话模式
       mode: 'study',
-      studyStyle: 'guided'
+      studyStyle: 'guided',
+      // 会话搜索（本地过滤，列表本来就只有最近 100 条）
+      convQuery: '',
+      // 行内重命名：renamingId 指向正在改的会话，'' 表示没有在改
+      renamingId: '',
+      renameDraft: '',
+      // 附件全屏预览的原图地址；'' 表示关闭
+      previewUrl: ''
     };
   },
   computed: {
@@ -410,6 +455,14 @@ export default {
     },
     attachmentHashes: function() {
       return this.attachments.map(function(a) { return a.hash; });
+    },
+    // 会话搜索：本地过滤（列表来自 /conversations 的最近 100 条，不必打服务端）
+    visibleConversations: function() {
+      var q = this.convQuery.trim().toLowerCase();
+      if (!q) return this.conversations;
+      return this.conversations.filter(function(c) {
+        return String(c.title || '').toLowerCase().indexOf(q) !== -1;
+      });
     }
   },
   mounted: function() {
@@ -507,6 +560,41 @@ export default {
       }).catch(function(err) {
         self.$store.dispatch('toast', { message: err.message || '删除失败', type: 'error' });
       });
+    },
+
+    // ---- 会话重命名（行内编辑，PATCH /conversations/:id 的 title 字段）----
+    startRename: function(c) {
+      this.renamingId = c.id;
+      this.renameDraft = c.title || '';
+      this.$nextTick(function() {
+        // v-for 里的 ref 是数组，取到当前这条的输入框
+        var el = this.$refs.renameInput;
+        var input = Array.isArray(el) ? el[0] : el;
+        if (input) {
+          input.focus();
+          input.select();
+        }
+      });
+    },
+
+    saveRename: function(c) {
+      // Enter 与 blur 都会触发：第一次执行后 renamingId 已清空，第二次直接跳过
+      if (this.renamingId !== c.id) return;
+      var title = this.renameDraft.trim().slice(0, 40);
+      this.renamingId = '';
+      if (!title || title === c.title) return;
+
+      var self = this;
+      this.$http.patch('/conversations/' + c.id, { title: title }).then(function(r) {
+        if (r.data.code !== 200) throw new Error(r.data.message || '重命名失败');
+        c.title = title;
+      }).catch(function(err) {
+        self.$store.dispatch('toast', { message: err.message || '重命名失败', type: 'error' });
+      });
+    },
+
+    cancelRename: function() {
+      this.renamingId = '';
     },
 
     useChip: function(text) {
@@ -1051,14 +1139,72 @@ html.no-flex-gap .conv-item > * + * {
   opacity: 1;
 }
 
+/* 触屏没有 hover：竖屏触控设备上操作按钮常显（靠低对比让位正文，
+   与桌面"悬停才出现"的克制并存） */
+html.is-portrait .conv-del {
+  opacity: 1;
+}
+
 .conv-del:hover {
   background: var(--danger-tint);
   color: var(--danger);
 }
 
+.conv-del svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 会话搜索：会话多了以后快速定位（本地过滤，不打服务端） */
+.conv-search {
+  margin: 0 0 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+/* 行内重命名输入框：贴着原标题的字号与行高，不引起行高跳动 */
+.conv-rename-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  font-size: 12.5px;
+  border-radius: var(--radius-2xs);
+}
+
 .conv-empty {
   padding: 12px 10px;
   text-align: center;
+}
+
+/* ---------- 附件全屏预览（与错题本同款交互：点图看原图，点空白关） ---------- */
+.preview-mask {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--gap-lg);
+  background: var(--mask-deep);
+  cursor: zoom-out;
+}
+
+.preview-img {
+  max-width: 94vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: var(--radius-md);
 }
 
 /* ---------- 主区 ---------- */
