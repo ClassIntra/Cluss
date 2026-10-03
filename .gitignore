@@ -24,3 +24,7 @@ server/Resources/
 .vscode/
 .idea/
 .DS_Store
+# 工具产物（安全扫描 / 会话工具）
+.mimosa/
+client/.mimosa/
+.workbuddy/
