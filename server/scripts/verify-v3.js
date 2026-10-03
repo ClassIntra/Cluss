@@ -360,6 +360,19 @@ function run() {
   }).then(function(r) {
     ok('按拍题筛选返回 1 条', r.data.data.items.length === 1 && r.data.data.items[0].type === 'solve',
       '实际 ' + r.data.data.items.length);
+
+    // 关键词搜索：批改回复的小结里必含「运动学公式」（mock 固定文案），
+    // 命中的应该是那条批改记录（消息正文走 EXISTS 子查询）
+    return get(BASE + '/api/study/records?type=all&q=' + encodeURIComponent('运动学公式'), studentToken);
+  }).then(function(r) {
+    var items = r.data.data.items || [];
+    ok('按内容关键词搜到批改记录', items.length === 1 && items[0].type === 'grade',
+      '实际 ' + items.length);
+
+    return get(BASE + '/api/study/records?type=all&q=' + encodeURIComponent('zzz不存在的关键词'), studentToken);
+  }).then(function(r) {
+    ok('搜不到时返回 0 条', r.data.data.items.length === 0 && r.data.data.total === 0,
+      '实际 ' + r.data.data.total);
   })
 
   // ============================================================
