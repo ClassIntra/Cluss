@@ -683,10 +683,13 @@ function runStreamTurn(ctx) {
         // 中途断开（done 没到）不应该洗白一个坏模型。
         modelHealth.recordSuccess(effectiveModelId);
         var costMicro = pricing.calcCostMicro(model, usage);
-        credit.recordUsage({
+        var booked = credit.recordUsage({
           user_id: userId,
           conversation_id: convRow.id,
           model_id: effectiveModelId,
+          // 判定「这一轮扣不扣钱」必须用完整的 model 对象（is_free / free_until 都在里面）。
+          // recordUsage 内部要在事务里复核一遍余额，不能只靠发起前的 checkGate。
+          model: model,
           prompt_tokens: usage.prompt_tokens,
           completion_tokens: usage.completion_tokens,
           cache_hit_tokens: usage.cache_hit_tokens,
@@ -699,6 +702,17 @@ function runStreamTurn(ctx) {
           image_count: imageHashes.length
         });
 
+        // 记账被拒：这笔已交付的回答不入账（上游那 token 我方自付）。
+        //
+        // 为什么已经答完了还要报错：学生确实拿到了答案，如果悄悄当成功，
+        // 他会觉得「积分扣了但余额没变」是账坏了，下次对账更难解释。
+        // 但也**不能**改成「把答案撤回」—— 内容已经发到浏览器了。
+        // 所以口径是：内容照给、账照记（真实流水在 usage 侧），
+        // 明确告诉学生这一轮没扣他的积分，并给出下一步。
+        if (booked && booked.ok === false) {
+          console.warn('[Turn] 记账被拒（%s，trace %s）——本轮不扣学生积分', booked.reason, traceId);
+        }
+
         // 回给前端的额度一律积分口径：这是学生端的流，不带元。
         // 前端目前并不展示「本次消耗」（刻意不展示：强调消耗会让学生不敢提问），
         // 数据带上是为了将来要做「积分明细」时不用再改协议。
@@ -706,9 +720,11 @@ function runStreamTurn(ctx) {
         sse.send('done', {
           conversation_id: convRow.id,
           // 用精确口径（保留两位小数）而不是整数取整：
-          // 单轮真实消耗常在 0.3~1.4 积分，取整后多半变成 0，
+          // 单轮真实消耗常在0.3~1.4 积分，取整后多半变成 0，
           // 于是"明明用了一次，返回的消耗是 0"——将来做积分明细时账目对不上。
-          cost_points: config.microToPointsExact(costMicro),
+          // ⚠️ 记账被拒时这一栏报 0：账本上确实没扣，报真实成本只会让学生
+          // 看到「明明没扣款却说用了 1.4 积分」。本轮成本已记在服务端日志里。
+          cost_points: (booked && booked.ok === false) ? 0 : config.microToPointsExact(costMicro),
           balance: {
             available_points: pointsView.available_points,
             weekly_remaining_points: pointsView.weekly_unlimited

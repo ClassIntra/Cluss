@@ -177,7 +177,35 @@ function checkGate(userId, model) {
 // 记录一笔用量（本地即时扣减：余额由聚合推导，这里只落明细）
 // p 可含：source（chat/study/solve/grade/vision_relay）、trace_id、image_count
 // 三个新字段都带默认值，旧调用点不传也不受影响
+//
+// ---- 余额校验为什么要放在这里（而不是只靠 checkGate）----
+// checkGate 只是**发起前**的一次快照判定，而一笔 AI 调用从发起到返回要几十秒。
+// 单次调用期间学生完全可能再开几个并发请求，于是：
+//     请求 A 读余额 1.2 → 放行 →（跑 40 秒）
+//     请求 B 读余额 1.2 → 放行 →（跑 35 秒）
+//     请求 C 读余额 1.2 → 放行 →（跑 30 秒）
+// 三笔各自独立通过闸门、各自真实计费，余额被扣成 -9.4。
+// 单进程下这不是理论风险：学生连按几下重发、或同时开多个会话就能稳定复现。
+//
+// 所以真正的硬约束必须落在**写入点**：在事务内重算一次余额，
+// 扣完会穿底的那笔直接拒绝入账。
+//
+// ⚠️ 这条判据与 checkGate 是**同一个口径**，请勿「统一」也不要「分开」：
+//   checkGate 放行「余额刚好为 0」的末次请求（见那里的注释），这里同样放行
+//   「扣完正好归零」的那一笔 —— 两者必须一致，否则会出现
+//   「闸门放行、记账却拒」的情况：学生拿到了答案却被告知没扣积分。
+//
+//   而这**恰好堵住了并发穿透**：N 个并发请求各自独立进事务时，
+//   第 1 笔把余额扣到 0，第 2 笔进来就变成「扣完为负」而被拒，
+//   净效果是只放行到刚好用尽为止，而不是 N 笔全部穿底。
+//
+// 越界的这笔**不入账**：上游那 token 已经真实花钱了，我方自己承担。
+// 拿「我方承担一次上游调用」换「余额绝不穿底」——后者关系到对账是否可信，
+// 前者的量级是单次调用而不是系统性漏洞。
 function recordUsage(p) {
+  var uid = String(p.user_id);
+  var cost = Number(p.cost_micro || 0);
+
   var stmt = db.prepare([
     'INSERT INTO cluss_usage_log (user_id, conversation_id, model_id, prompt_tokens, completion_tokens,',
     '  cache_hit_tokens, cache_miss_tokens, total_tokens, cost_micro, estimated, origin_instance,',
@@ -185,25 +213,61 @@ function recordUsage(p) {
     'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)'
   ].join('\n'));
 
-  var info = stmt.run(
-    String(p.user_id),
-    String(p.conversation_id || ''),
-    String(p.model_id || ''),
-    Number(p.prompt_tokens || 0),
-    Number(p.completion_tokens || 0),
-    Number(p.cache_hit_tokens || 0),
-    Number(p.cache_miss_tokens || 0),
-    Number(p.total_tokens || 0),
-    Number(p.cost_micro || 0),
-    p.estimated ? 1 : 0,
-    config.instanceId,
-    String(p.source || 'chat'),
-    String(p.trace_id || ''),
-    Number(p.image_count || 0),
-    time.nowUtc()
-  );
+  var tx = db.transaction(function() {
+    // 免费/限免模型不产生扣费，不受余额闸门约束（口径与 checkGate 同一处判定）。
+    // model 对象由调用方传入，判定逻辑只有 pricing.isModelFree 一个出处 ——
+    // 不要在这里凭 cost>0 反推是否免费：限免模型这一轮可能真的算出 0 元。
+    // 两个条件同时成立才需要拦：非免费（会扣钱）且这一轮确实算出了正成本。
+    // 只判前者会误伤「免费模型但仍想留用量明细」的口径，只判后者则漏掉 0 元轮次
+    // 把余额记成负数 —— 后者正是本次要修的漏洞。
+    var willCharge = cost > 0 && p.model && !pricing.isModelFree(p.model);
+    if (willCharge) {
+      var asg = getAssignment(uid);
+      var usedTotal = sumLocalUsage(uid, null);
+      var tolerance = toleranceFor(asg.allocated_micro);
+      var available = Number(asg.allocated_micro || 0) + tolerance - usedTotal;
 
-  return info.lastInsertRowid;
+      // 未分配额度：闸门本该拦住，走到这里说明是并发之外的情况
+      // （例如管理员中途把额度清零），同样不入账，避免继续加深穿底
+      if (!(asg.allocated_micro > 0)) {
+        return { ok: false, reason: 'not_allocated' };
+      }
+      if (available - cost < 0) {
+        return { ok: false, reason: 'exhausted' };
+      }
+
+      // 周限额：同样在写入点兜底，避免并发下多个请求一起冲过周上限
+      var weeklyQuota = Number(asg.weekly_quota_micro || 0);
+      if (weeklyQuota > 0) {
+        var usedWeek = sumLocalUsage(uid, WEEK_DAYS);
+        if (usedWeek + cost > weeklyQuota) {
+          return { ok: false, reason: 'weekly_exhausted' };
+        }
+      }
+    }
+
+    var info = stmt.run(
+      uid,
+      String(p.conversation_id || ''),
+      String(p.model_id || ''),
+      Number(p.prompt_tokens || 0),
+      Number(p.completion_tokens || 0),
+      Number(p.cache_hit_tokens || 0),
+      Number(p.cache_miss_tokens || 0),
+      Number(p.total_tokens || 0),
+      cost,
+      p.estimated ? 1 : 0,
+      config.instanceId,
+      String(p.source || 'chat'),
+      String(p.trace_id || ''),
+      Number(p.image_count || 0),
+      time.nowUtc()
+    );
+
+    return { ok: true, id: info.lastInsertRowid };
+  });
+
+  return tx();
 }
 
 // 由中继下发分配值（含流水幂等写入）

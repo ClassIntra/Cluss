@@ -346,10 +346,14 @@ function recordRelayUsage(relayModel, usages, meta) {
     var cost = pricing.calcCostMicro(relayModel, usage);
     total += cost;
 
-    credit.recordUsage({
+    var booked = credit.recordUsage({
       user_id: meta.userId,
       conversation_id: meta.conversationId,
       model_id: relayModel.id,
+      // 与 turn-runner 同一口径：传入完整 model，recordUsage 内部在事务里
+      // 复核余额。多图转述是**循环里逐张记账**，所以拒的那张之后仍会继续；
+      // 一轮最多几张图（maxImagesFor 限制），穿底幅度有界。
+      model: relayModel,
       prompt_tokens: usage.prompt_tokens,
       completion_tokens: usage.completion_tokens,
       cache_hit_tokens: usage.cache_hit_tokens,
@@ -361,7 +365,11 @@ function recordRelayUsage(relayModel, usages, meta) {
       trace_id: meta.traceId,
       image_count: 1
     });
+    if (booked && booked.ok === false) {
+      console.warn('[Vision] 转述记账被拒（%s，trace %s）——本图不扣学生积分', booked.reason, meta.traceId);
+    }
   }
+  // 返回真实成本：调用方用它算最终记账额，拒记与否不影响上游实际花费
   return total;
 }
 
