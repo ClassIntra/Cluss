@@ -110,11 +110,27 @@ function ensureLocalUser(decoded, source) {
 //   is_class_admin=true，也永远落不到库里 —— 班管进来看不到管理台、/api/admin/* 一律 403。
 //   一句话：本地占号不该对 CI 的权威声明有否决权。
 //
+// ⚠️⚠️ 但「token 由 CI 签发」本身**不是**充分条件，这里有个提权面：
+//   CI_JWT_SECRET 是**对称共享密钥**。任何持有它的一方都能自签一个
+//   { user_id: "任意本地账号", is_admin: 1 } 的 token，Cluss 无法区分真假，
+//   于是会替对方把任意本地账号改成管理员（甚至把真管理员降级）。
+//   密钥一旦从 CI 配置里泄露一次，就等于 Cluss 管理员权限泄露。
+//
+// 所以这里加 viaOwnLogin：**只在"这个人正在用他自己的 CI 账号登录"时**
+// 才同步身份。中间件的通用路径（每个 API 请求都会走）传 false ——
+// 带着 token 调接口不等于在登录，不该改写任何账号的管理标志。
+// 真正的登录路径见 routes/auth.js 的 syncFromClassIntra。
+//
+// 长期正解是 CI 改用 RS256 非对称签名，Cluss 只持有公钥；
+// 在那之前，这个参数是必须有的闸门。
+//
 // 右边界也要留：Cluss 自己签发的 token 不动 is_admin（本地账号的管理权归本地管理台管，
 // 否则管理员在管理台提权的人会被他自己的登录请求打回去）。
-function syncCiAdminFlag(row, decoded, tokenSource) {
+function syncCiAdminFlag(row, decoded, tokenSource, viaOwnLogin) {
   if (!row) return row;
   if (tokenSource !== 'classintra') return row;
+  // 不是本人登录流程 → 不碰管理标志
+  if (!viaOwnLogin) return row;
 
   var want = ciAdminFlag(decoded);
   if ((row.is_admin === 1 ? 1 : 0) === want) return row;
@@ -174,8 +190,11 @@ function syncCiProfile(row, decoded, tokenSource) {
 // 「CI 声明 → 本地账号」的一次性对齐：管理身份 + 身份资料。
 // ⚠️ 只此一个出口。以前 routes/auth.js 的桥登录路径自己写了一份 is_admin 的 SQL，
 // 两边口径一改就漂（同号本地账号该不该认领，就是一个真实踩到的例子）。
+//
+// 这里是**本人登录**流程，所以 viaOwnLogin = true —— 这是全项目唯一允许
+// CI token 改写账号管理标志的地方。
 function syncFromClassIntra(row, decoded) {
-  return syncCiProfile(syncCiAdminFlag(row, decoded, 'classintra'), decoded, 'classintra');
+  return syncCiProfile(syncCiAdminFlag(row, decoded, 'classintra', true), decoded, 'classintra');
 }
 
 function requireAuth(req, res, next) {
@@ -214,8 +233,10 @@ function requireAuth(req, res, next) {
   if (!row) {
     return res.status(401).json({ code: 401, message: '账号不存在，请重新登录' });
   }
-  // 用 token 的签发方（result.source）判断，而不是 row.source —— 见 syncCiAdminFlag 的说明
-  row = syncCiAdminFlag(row, decoded, result.source);
+  // 携带 ClassIntra token 的请求也会走这里，但**不是登录流程**，
+  // 所以 viaOwnLogin 传 false：带着 token 调 API 不等于在登录，
+  // 不该让任意一次请求改写账号的管理标志或身份资料。
+  row = syncCiAdminFlag(row, decoded, result.source, false);
   row = syncCiProfile(row, decoded, result.source);
 
   // 班管带 CI token 进来时，按节流把**本班名册**同步进来（只增不删，失败静默）。

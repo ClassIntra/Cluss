@@ -141,7 +141,7 @@
             <div class="sidebar-search">
               <i class="fa-solid fa-magnifying-glass sidebar-search-icon"></i>
               <input
-                v-model="searchQuery"
+                v-model="searchInput"
                 type="text"
                 placeholder="搜索笔记..."
                 class="sidebar-search-input"
@@ -1140,7 +1140,12 @@
 <script>
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
-import hljs from 'highlight.js';
+// ⚠️ 用 hljs-lite（core 版 + 按需注册），不是全量包：
+//   全量包带进约 190 种语言的定义，而这个页面只用到
+//   getLanguage / highlight / highlightAuto 三个 API。
+//   换 core 版后 Notes 单页实测省下 300KB+ 原始体积，
+//   对低端安卓平板是一次实打实的首屏收益。详见 utils/hljs-lite.js。
+import hljs from '@/utils/hljs-lite';
 import katex from 'katex';
 import mermaid from 'mermaid';
 import 'highlight.js/styles/github-dark.min.css';
@@ -1329,6 +1334,7 @@ export default {
       moreMenuOpen: false,
       viewMode: 'split',
       isResizing: false,
+      searchInput: '',
       searchQuery: '',
       tagFilter: '',
       isMobile: window.innerWidth <= 768,
@@ -1461,7 +1467,13 @@ showFileMenuModal: false,
     },
     filteredFiles: function() {
       var self = this;
-      var result = self.files;
+      // ⚠️ 必须先slice 再过滤/排序。
+      //   原来直接 `var result = self.files`：无搜索词、无标签、无文件夹过滤时
+      //   result 与 data.files 是**同一个数组引用**，下面的 result.sort()
+      //   就地打乱了data.files 本身。后果是笔记列表的顺序被这个 computed 的
+      //   求值时机污染 —— 表现为你选了「按时间排序」，结果顺序却随
+      //   别的筛选条件进出而变，且完全不可预测。
+      var result = self.files.slice();
       if (self.searchQuery) {
         var q = self.searchQuery.toLowerCase();
         if (q.indexOf('#') === 0) {
@@ -1623,6 +1635,23 @@ showFileMenuModal: false,
     }
   },
   watch: {
+    // 搜索输入防抖：输入框绑 searchInput，这里等 200ms 静默后才落到 searchQuery。
+    //
+    // 为什么要分两个变量：filteredFiles 的匹配范围**包含笔记正文**，
+    // 每敲一个键就要把所有笔记的完整正文 toLowerCase + indexOf 一遍
+    // （50篇 × 平均 5KB = 每键扫描 250KB 文本）。低端平板上这是可感知的卡顿，
+    // 表现为"打字时整个页面顿一下"。
+    //
+    // 而 searchQuery 全文件有 6 处引用（含空状态文案与高亮定位），
+    // 让它只在防抖后更新，这 6 处一行都不用改 —— 副作用最小的做法。
+    searchInput: function(val) {
+      var self = this;
+      if (this._searchDebounce) clearTimeout(this._searchDebounce);
+      this._searchDebounce = setTimeout(function() {
+        self._searchDebounce = null;
+        self.searchQuery = val;
+      }, 200);
+    },
     activeFile: function() {
       var self = this;
       self.$nextTick(function() {
@@ -1667,6 +1696,12 @@ showFileMenuModal: false,
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
   },
   beforeDestroy: function() {
+    // 搜索防抖定时器：不清的话组件销毁后它仍会触发，
+    // 往已销毁的实例上写 searchQuery（Vue 2 里这会静默失败但留下悬空定时器）
+    if (this._searchDebounce) {
+      clearTimeout(this._searchDebounce);
+      this._searchDebounce = null;
+    }
     window.removeEventListener('resize', this.onResize);
     window.removeEventListener('keydown', this.onGlobalKeydown);
     window.removeEventListener('beforeunload', this.forceSave);
@@ -1731,7 +1766,15 @@ showFileMenuModal: false,
       mermaid.initialize({
         startOnLoad: false,
         theme: isDark ? 'dark' : 'default',
-        securityLevel: 'loose',
+        // ⚠️ 这里必须是 'antiscript'，不能是 'loose'。
+//   'loose' 下mermaid 不对标签做任何消毒，而本路径生成的 SVG
+//   是直接 innerHTML 注入的（见 renderMermaidCharts），且**没有**
+//   utils/mermaid.js 的 stripExecutable 兜底。
+//   笔记正文有两个来源都会流到这里：AI 辅助结果（runAssist）与云端导入，
+//   在提示注入场景下可触达 on* 事件属性。
+//   同一文件上方第 1165 行与 utils/mermaid.js 都是 antiscript，
+//   那里的注释写得更直接：「loose 完全不设防，不能给」。
+        securityLevel: 'antiscript',
         fontFamily: 'inherit',
         suppressErrorRendering: true,
         flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },

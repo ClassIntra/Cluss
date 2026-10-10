@@ -368,6 +368,47 @@ function runStreamTurn(ctx) {
     sse.close = function() { closeSse(); releaseTurn(convRow.id, traceId); };
     sse.headers();
 
+// ---- 6.5) 客户端断开 → 立刻中断上游（不等它跑完）----
+    //
+    // ⚠️ 这是踩过的真实事故，与「零产出不记账」是同一类问题的另一半：
+    //   学生在等首字时关掉页面（推理型模型实测可达 14 秒首字，等得不耐烦很常见），
+    //   服务端此前**不会**中断上游：ai.chatStream 返回的 handle.abort 从未被调用，
+    //   res 的 close 回调只置一个标志，那个标志只用于判断锁能否被接管。
+    //   结果是上游继续跑完、token 继续产生、recordUsage 照常记账 ——
+    //   学生什么都没看到，积分照扣。ai.js 的 axios timeout 是 5 分钟，
+    //   意味着一个放弃了的学生可以让这个连接占满 5 分钟。
+    //
+    // 口径与「零产出不记账」一致：**没有交付就不记账**。
+    // 上游已烧掉的那点 token 由我方承担 —— 学生看不到的东西让他付钱，
+    // 是比多花一次上游调用严重得多的问题。
+    //
+    // 三个状态变量声明在这一层（而不是下面的流式段里），因为 close 回调
+    // 与流式段是两兄弟，改的是同一批变量：放错作用域会出现
+    // 「回调改了另一个变量、静默失效」这种最难查的情况。
+    //
+    // 用 res.writableEnded 区分「正常收尾」与「学生跑了」：
+    // 正常收尾也会触发 close，但它先走 sse.close()，那时该标记已置位。
+    var upstreamHandle = null;   // 上游句柄：SSE 写出后才赋值，close 回调要靠它 abort
+    var turnDone = false;         // 本轮是否已收尾：拦掉已排定的落库定时器
+    var flushTimer = null;        // 中间态落库定时器：断开时要清掉
+    var clientGone = false;       // 学生是否中途离开：记账时据此不扣费
+
+    res.on('close', function() {
+      if (res.writableEnded) return;   // 正常收尾，不是断开
+      if (clientGone) return;          // 只处理一次
+      clientGone = true;
+      turnDone = true;                 // 别让已排定的落库定时器再写
+      if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+      console.warn('[Turn] 客户端断开（trace %s），中断上游请求且本轮不计费', traceId);
+      if (upstreamHandle && upstreamHandle.abort) {
+        try { upstreamHandle.abort(); } catch (e) {}
+      }
+      // 立刻放锁：学生可能马上重发同一条会话。
+      // 不放的话他要等 abort 真正生效（下一个 tick）之后才能重试，
+      // 而 abort 是同步调用 controller.abort()，这里放锁是安全的。
+      releaseTurn(convRow.id, traceId);
+    });
+
     sse.send('meta', {
       conversation_id: convRow.id,
       model_id: effectiveModelId,
@@ -576,20 +617,42 @@ function runStreamTurn(ctx) {
         attachments: [], source: source, streaming: 1
       });
 
-      // 增量落库要**节流**：better-sqlite3 是同步写，每个 token 写一次会阻塞
+      // 增量落库要**节流**：better-sqlite3 是同步写，每个token 写一次会阻塞
       // 事件循环，把读取上游那段也一起拖慢 —— 那就本末倒置了。
       // 200ms 一次足够让"切回来看到进度"这件事成立。
+      //
+      // ⚠️ 但节流只降低频率，**不足以**解决问题：onDelta 跑在同一个事件循环上，
+      // 一次同步 UPDATE 执行期间，全班其他人的流式推送全部停摆
+      // （content 是完整累加文本，上下文长了就是几万字符的一次写）。
+      // 这个症状还会误触发 ai.js 的首令牌看门狗，把好模型误判为卡死而熔断。
+      // 所以这里用「定时器 + setImmediate」把写让出当前 tick：
+      //   setTimeout —— 已经是节流，不必同步写
+      //   setImmediate —— 让 onDelta 先返回，再排到下一轮事件循环执行写
       var accText = '';
-      var lastFlushAt = 0;
       var FLUSH_MS = 200;
-      function flushProgress() {
-        var now = Date.now();
-        if (now - lastFlushAt < FLUSH_MS) return;
-        lastFlushAt = now;
-        try { conv.updateMessageContent(assistantMsgId, accText); }
-        catch (e) { /* 中间态落库失败不阻断生成，收尾还会再写一次 */ }
+      // 中间态落库失败的次数：连续失败说明不是偶发，收尾时要走另一条路
+      //（否则这条消息会永远停在 streaming=1，前端每次进来都看到一只转圈的气泡）
+      var flushFailed = 0;
+
+      function scheduleFlush() {
+        if (flushTimer || turnDone) return;
+        flushTimer = setTimeout(function() {
+          flushTimer = null;
+          if (turnDone) return;
+          // 快照当前文本，让出这一 tick 后再写：
+          // 期间 accText 可能继续增长，那部分由下一次调度或收尾兜底。
+          var snapshot = accText;
+          setImmediate(function() {
+            if (turnDone) return;
+            try { conv.updateMessageContent(assistantMsgId, snapshot); }
+            catch (e) { flushFailed++; }
+          });
+        }, FLUSH_MS);
+        if (flushTimer.unref) flushTimer.unref();
       }
 
+      // 句柄同时接到外层，供 res.on('close') 回调 abort 用
+      //（ai.js 已经实现了 abort，只是此前从没人调用它）
       var handle = ai.chatStream(model, built.messages, {
         // 让上游按会话复用它那一侧的上下文（详见 buildRequestOptions 里的说明）
         conversationId: convRow.id,
@@ -601,7 +664,7 @@ function runStreamTurn(ctx) {
         onDelta: function(text) {
           accText += text;
           sse.send('delta', { text: text });
-          flushProgress();
+          scheduleFlush();
         },
         // 思维链单独走一条事件：正文之前那段「正在推演」要有去处，
         // 否则推理型模型的首字延迟（实测难题可达 14 秒）全变成干等。
@@ -614,6 +677,7 @@ function runStreamTurn(ctx) {
           console.warn('[Turn] 模型 %s 首令牌超时（trace %s）', effectiveModelId, traceId);
         }
       });
+      upstreamHandle = handle;
 
       return handle.promise.then(function(result) {
         // ---- 11) 错题提取（仅批改）----
@@ -649,10 +713,30 @@ function runStreamTurn(ctx) {
         // 占位消息在第 10 步就写好了，这里只做最后那次 UPDATE。
         // 一个字都没生成（极少见：上游返回成功但内容为空）→ 删掉占位，
         // 免得留下一只空白气泡，比"什么都没发生"更像坏了。
+        //
+        // turnDone 在这里置位：此后不该再有落库定时器跑起来，
+        // 否则已排定的 setImmediate 可能在定稿之后把中间态覆盖回去。
+        turnDone = true;
+        if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+
+        // 学生中途走了：他没看到内容，但服务端可能已经收到了部分结果。
+        // 仍然定稿（下次打开能看到已生成的部分，而不是一只永远转圈的气泡），
+        // 只是**不记账** —— 口径与「零产出不记账」一致：没交付就不收费。
+        // 上游已烧掉的 token 由我方承担。
         if (finalText) {
           conv.updateMessageContent(assistantMsgId, finalText, { streaming: 0 });
         } else {
           conv.deleteMessage(assistantMsgId);
+        }
+
+        // 中间态落库连续失败：收尾这次也大概率写不进去。
+        // 与其留一条永远 streaming=1 的消息（学生每次打开都看到一只
+        // 转圈的气泡，settleStreamingMessages 只能在**下一轮**才收敛它），
+        // 不如现在就删掉 —— 空着比「卡住了」诚实。
+        if (flushFailed >= 3) {
+          console.error('[Turn] 中间态落库连续失败 %d 次（trace %s），删除占位消息避免留下"生成中"气泡',
+            flushFailed, traceId);
+          try { conv.deleteMessage(assistantMsgId); } catch (e) { /* 已尽力 */ }
         }
 
         // ---- 12.5) 零产出 = 失败，**绝不记账** ----
@@ -690,34 +774,42 @@ function runStreamTurn(ctx) {
         // 中途断开（done 没到）不应该洗白一个坏模型。
         modelHealth.recordSuccess(effectiveModelId);
         var costMicro = pricing.calcCostMicro(model, usage);
-        var booked = credit.recordUsage({
-          user_id: userId,
-          conversation_id: convRow.id,
-          model_id: effectiveModelId,
-          // 判定「这一轮扣不扣钱」必须用完整的 model 对象（is_free / free_until 都在里面）。
-          // recordUsage 内部要在事务里复核一遍余额，不能只靠发起前的 checkGate。
-          model: model,
-          prompt_tokens: usage.prompt_tokens,
-          completion_tokens: usage.completion_tokens,
-          cache_hit_tokens: usage.cache_hit_tokens,
-          cache_miss_tokens: usage.cache_miss_tokens,
-          total_tokens: usage.total_tokens,
-          cost_micro: costMicro,
-          estimated: usage.estimated,
-          source: source,
-          trace_id: traceId,
-          image_count: imageHashes.length
-        });
+        var booked = null;
+        if (clientGone) {
+          // 学生中途离开，内容没送达 —— 不记账。
+          // 上游那点 token 我方承担；让他为没看到的东西付钱是不可接受的。
+          console.warn('[Turn] 客户端已断开（trace %s），本轮不扣学生积分（上游成本 %.0f 微元自担）',
+            traceId, costMicro);
+        } else {
+          booked = credit.recordUsage({
+            user_id: userId,
+            conversation_id: convRow.id,
+            model_id: effectiveModelId,
+            // 判定「这一轮扣不扣钱」必须用完整的 model 对象（is_free / free_until 都在里面）。
+            // recordUsage 内部要在事务里复核一遍余额，不能只靠发起前的 checkGate。
+            model: model,
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            cache_hit_tokens: usage.cache_hit_tokens,
+            cache_miss_tokens: usage.cache_miss_tokens,
+            total_tokens: usage.total_tokens,
+            cost_micro: costMicro,
+            estimated: usage.estimated,
+            source: source,
+            trace_id: traceId,
+            image_count: imageHashes.length
+          });
 
-        // 记账被拒：这笔已交付的回答不入账（上游那 token 我方自付）。
-        //
-        // 为什么已经答完了还要报错：学生确实拿到了答案，如果悄悄当成功，
-        // 他会觉得「积分扣了但余额没变」是账坏了，下次对账更难解释。
-        // 但也**不能**改成「把答案撤回」—— 内容已经发到浏览器了。
-        // 所以口径是：内容照给、账照记（真实流水在 usage 侧），
-        // 明确告诉学生这一轮没扣他的积分，并给出下一步。
-        if (booked && booked.ok === false) {
-          console.warn('[Turn] 记账被拒（%s，trace %s）——本轮不扣学生积分', booked.reason, traceId);
+          // 记账被拒：这笔已交付的回答不入账（上游那 token 我方自付）。
+          //
+          // 为什么已经答完了还要报错：学生确实拿到了答案，如果悄悄当成功，
+          // 他会觉得「积分扣了但余额没变」是账坏了，下次对账更难解释。
+          // 但也**不能**改成「把答案撤回」—— 内容已经发到浏览器了。
+          // 所以口径是：内容照给、账照记（真实流水在 usage 侧），
+          // 明确告诉学生这一轮没扣他的积分，并给出下一步。
+          if (booked && booked.ok === false) {
+            console.warn('[Turn] 记账被拒（%s，trace %s）——本轮不扣学生积分', booked.reason, traceId);
+          }
         }
 
         // 回给前端的额度一律积分口径：这是学生端的流，不带元。
@@ -729,9 +821,11 @@ function runStreamTurn(ctx) {
           // 用精确口径（保留两位小数）而不是整数取整：
           // 单轮真实消耗常在0.3~1.4 积分，取整后多半变成 0，
           // 于是"明明用了一次，返回的消耗是 0"——将来做积分明细时账目对不上。
-          // ⚠️ 记账被拒时这一栏报 0：账本上确实没扣，报真实成本只会让学生
-          // 看到「明明没扣款却说用了 1.4 积分」。本轮成本已记在服务端日志里。
-          cost_points: (booked && booked.ok === false) ? 0 : config.microToPointsExact(costMicro),
+          // ⚠️ 记账被拒、或学生中途断开（booked 为 null）时这一栏报 0：
+          //   账本上确实没扣，报真实成本只会让学生看到「明明没扣款却说用了 1.4 积分」。
+          //   本轮真实成本已记在服务端日志里，对账看得到。
+          cost_points: booked && booked.ok === false ? 0
+            : (clientGone ? 0 : config.microToPointsExact(costMicro)),
           balance: {
             available_points: pointsView.available_points,
             weekly_remaining_points: pointsView.weekly_unlimited

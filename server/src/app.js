@@ -36,6 +36,36 @@ app.use('/api/auth/login', rateLimit({ max: 60, windowMs: 60000, message: '登�
 app.use('/api/auth/register', rateLimit({ max: 30, windowMs: 60000, message: '注册请求过于频繁，请稍后再试' }));
 app.use('/api/auth', rateLimit({ max: 300, windowMs: 60000, message: '请求过于频繁，请稍后再试' }));
 
+// 3.5) **产生上游开销的生成端点**限流
+//
+// ⚠️ 这条以前是缺失的，而它是「积分被批量洗空」的另一半路径：
+//   auth 那几条限流只覆盖登录注册，而下面这 7 个端点每一个都会真的
+//   调上游、真的产生 API 费用 —— /api/chat/stream、study 的solve/grade、
+//   writing 的 generate/grade/outline、notes 的 assist。
+//   原来唯一的屏障是 turn-runner 的会话级互斥锁，而它按 conversation_id 加锁：
+//   换几个会话 ID 就绕过去了。
+//
+// 为什么按 user_id 而不是 IP：Cluss 部署在班级局域网，全班共用一个出口 IP。
+// 按 IP 限流的话，一��学生狂刷就把其他人一起挡了 —— 这是误伤，不能接受。
+//
+// 为什么挂在 requireAuth **之后**：keyFn 读的是 req.user，鉴权必须先跑完。
+// 挂早了 req.user 为空，所有人会挤到同一个兜底 key 上，反而比不限更糟。
+//
+// 阈值 12次/分钟：一次正常的解题往返是 1 次请求；学生连续追问、
+// 或反复用「重新生成」在 12 次以内，这个量级不挡正常使用，
+// 但足以让脚本式的批量消耗慢到失去意义（真要刷就得到等很久）。
+var genRateLimit = rateLimit({
+  max: 12,
+  windowMs: 60000,
+  message: '提问有点频繁，慢一点让思路跟上来（每分钟最多 12 次）',
+  keyFn: function(req) {
+    return (req.user && req.user.user_id) || ('ip:' + (req.ip || 'unknown'));
+  }
+});
+app.use(/^\/api\/(chat\/stream|study\/(solve|grade)\/stream|writing\/(generate|grade|outline)\/stream|notes\/assist)$/,
+  require('./middleware/auth').requireAuth,
+  genRateLimit);
+
 // CORS：留空则仅同源（学生浏览器直连本机，不需要跨域）
 if (config.corsOrigins.length) {
   app.use(function(req, res, next) {
