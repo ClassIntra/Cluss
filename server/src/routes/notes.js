@@ -654,8 +654,10 @@ router.post('/assist', auth.requireAuth, function(req, res) {
   var userId = req.user.user_id;
 
   // 相关历史笔记：按标签与关键词找，最多 3 篇（详见 note-assist）
+  // excludeId 走字符串口径：迁移 018 起笔记 id 是客户端生成的字符串，
+  // 经过 Number() 会变成 NaN，正在编辑的那篇就会被当成"相关笔记"读回来。
   var related = noteAssist.buildRelatedNotesText(userId, {
-    excludeId: Number(b.note_id) || 0,
+    excludeId: noteIdFromParam(b.note_id),
     tags: tags,
     title: title,
     content: content

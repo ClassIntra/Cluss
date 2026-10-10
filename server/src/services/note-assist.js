@@ -54,7 +54,13 @@ function extractTerms(text, limit) {
 function findRelatedNotes(userId, opts) {
   var o = opts || {};
   var uid = String(userId);
-  var excludeId = Number(o.excludeId) || 0;
+  // 笔记 id 自迁移 018 起是字符串（'note_xxx'）。原来写 Number(o.excludeId) || 0，
+  // 字符串 id 会变成 NaN → 0，于是 `id != 0` 对每行都成立：正在编辑的那篇
+  // 反而被当成"相关历史笔记"塞回上下文，让模型照着自己的旧稿重写一遍。
+  // 没有 excludeId 时用空串：id 是 TEXT 列，空串不会匹配任何一行。
+  var excludeId = o.excludeId === null || o.excludeId === undefined
+    ? ''
+    : String(o.excludeId).trim().slice(0, 64);
   var tags = Array.isArray(o.tags) ? o.tags.filter(Boolean).map(String) : [];
   var title = String(o.title || '');
   var content = String(o.content || '');

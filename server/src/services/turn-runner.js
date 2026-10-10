@@ -156,7 +156,10 @@ function flattenForEstimate(messages) {
 //   modelId           string
 //   conversation      { id?, mode?, study_style? }
 //   attachmentHashes  [string] 云盘文件 hash（图片与文本混排）
-//   noteIds           [number] 引用的笔记 id（正文取自云盘 .md）
+//   noteIds           [string] 引用的笔记 id（正文取自云盘 .md）
+//     ⚠️ 自迁移 018 起为客户端生成的字符串（'note_<ts>_<rand>'），不是自增整数。
+//        这条链路历史上按 number 归一化，导致字符串 id 全变 NaN 被丢弃
+//        （见 4.5 步注释）—— 已改为字符串口径，不要改回去。
 //     ⚠️ 为什么笔记不走 attachmentHashes：笔记正文虽然也是云盘里的 .md 文件，
 //        但它是"学生自己写的东西"，不是外部资料。走独立通道才能用不同的措辞
 //        注入（"我引用的笔记" vs "附带的文件"），模型对两者的用法完全不同。
@@ -320,9 +323,13 @@ function runStreamTurn(ctx) {
   // ---- 4.5) 笔记引用读取 ----
   // 与附件同阶段（写 SSE 头之前）：笔记不存在/无权访问要能干净返回 400，
   // 不能等到流已经开始了才发现引用的是别人的笔记。
-  var noteIds = Array.isArray(ctx.noteIds)
-    ? ctx.noteIds.map(Number).filter(function(n) { return n > 0; })
-    : [];
+  //
+  // ⚠️ 笔记 id 自迁移 018 起是客户端生成的字符串（'note_<ts>_<rand>'），
+  //    不是自增整数。这里曾经 map(Number)，'note_xxx' 会变成 NaN 而被 filter 掉，
+  //    note_ids 静默变成空数组 —— 笔记正文永远进不了上下文，
+  //    表现就是"引用了笔记但模型完全没反应"。旧路由（notes.js）已统一用
+  //    noteIdFromParam 的字符串口径，这里保持一致。
+  var noteIds = normalizeNoteIds(ctx.noteIds);
   var noteText = '';
   if (noteIds.length) {
     var loadedNotes = loadNoteRefs(userId, noteIds);
@@ -798,6 +805,27 @@ function runStreamTurn(ctx) {
       res.status(500).json({ code: 500, message: '处理失败，请重试' });
     }
   });
+}
+
+// 归一化请求带来的笔记 id 列表
+//
+// 一律按字符串处理（迁移 018 起笔记 id 由客户端生成，见 cloud_notes 表）。
+// 这里只做「取字符串 → 去空白 → 截长 → 去重」，不校验格式：
+// id 是否存在、是否属于本人，由 loadNoteRefs 查库判定 —— 在那里失败才能给出
+// 「引用的笔记不存在或无权访问」这种学生看得懂的话；
+// 在这里猜格式只会把正常 id 误杀。
+function normalizeNoteIds(input) {
+  if (!Array.isArray(input)) return [];
+  var seen = Object.create(null);
+  var out = [];
+  for (var i = 0; i < input.length; i++) {
+    if (input[i] === null || input[i] === undefined) continue;
+    var id = String(input[i]).trim().slice(0, 64);
+    if (!id || seen[id]) continue;
+    seen[id] = true;
+    out.push(id);
+  }
+  return out;
 }
 
 // 读取被引用的笔记

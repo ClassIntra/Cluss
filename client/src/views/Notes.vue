@@ -2763,7 +2763,9 @@ showFileMenuModal: false,
 
       postStream('/api/notes/assist', this.$store.state.auth.token, {
         action: action,
-        note_id: 0,
+        // 传当前笔记的真实 id：服务端靠它把"正在编辑的这一篇"从相关历史笔记里排除。
+        // 之前硬编码 0，等于没排除 —— 模型会把自己正在写的这篇当参照物读回来。
+        note_id: (self.activeFile && self.activeFile.id) || '',
         title: self.activeFile.title || '',
         content: content,
         tags: self.activeFile.tags || []

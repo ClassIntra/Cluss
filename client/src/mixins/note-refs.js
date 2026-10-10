@@ -10,8 +10,16 @@
 
 var MAX_NOTES = 5;
 
+// 笔记 id 自服务端迁移 018 起是客户端生成的字符串（如 'note_1791..._wk479'）。
+// 曾经这里按数字取 id（Number(n.id)），字符串会变成 NaN → 被下面的 filter 全部丢掉，
+// 结果是"选了笔记但什么都没发生"，而且发出去的 note_ids 是空数组。
+// 这里统一按字符串口径，和服务端 notes.js 的 noteIdFromParam 一致。
 function noteKey(n) {
-  return Number(n && n.id) || 0;
+  if (n === null || n === undefined) return '';
+  // 传笔记对象时取它的 id；传裸 id（removeNoteRef 传 n.id）时直接用。
+  // 对象缺 id 必须返回空串，不能落到 String(n) 变成 '[object Object]'。
+  if (typeof n === 'object') return String(n.id === undefined || n.id === null ? '' : n.id).trim().slice(0, 64);
+  return String(n).trim().slice(0, 64);
 }
 
 export default {
@@ -24,14 +32,15 @@ export default {
   },
   computed: {
     noteIds: function() {
-      return this.noteRefs.map(noteKey).filter(function(id) { return id > 0; });
+      return this.noteRefs.map(noteKey).filter(function(id) { return !!id; });
     }
   },
   methods: {
     onNotesPicked: function(notes) {
-      var self = this;
       // 去重：同 id 只留一个（选择器允许多次打开累计）
-      var seen = {};
+      // 用 Object.create(null) 而不是 {}：笔记 id 来自服务端，当成对象键时
+      // 'constructor'/'__proto__' 这类键会落到原型上，导致去重与判断失真。
+      var seen = Object.create(null);
       this.noteRefs = (notes || []).filter(function(n) {
         var id = noteKey(n);
         if (!id || seen[id]) return false;
@@ -48,11 +57,11 @@ export default {
       if ((notes || []).length > MAX_NOTES) {
         this.$store.dispatch('toast', { message: '最多引用 ' + MAX_NOTES + ' 篇笔记', type: 'error' });
       }
-      void self;
     },
 
     removeNoteRef: function(id) {
-      this.noteRefs = this.noteRefs.filter(function(n) { return noteKey(n) !== Number(id); });
+      var target = noteKey(id);
+      this.noteRefs = this.noteRefs.filter(function(n) { return noteKey(n) !== target; });
     },
 
     clearNoteRefs: function() {
