@@ -222,7 +222,7 @@ import Segmented from '@/components/Segmented.vue';
 import AttachmentChips from '@/components/AttachmentChips.vue';
 import CloudPicker from '@/components/CloudPicker.vue';
 import NotePicker from '@/components/NotePicker.vue';
-import { renderMarkdown, renderStream } from '@/utils/markdown';
+import { renderMarkdown, renderStream, ensureKatexIdle, onKatexReady } from '@/utils/markdown';
 import { createStreamPainter } from '@/utils/stream-paint';
 import { appendStreamCaret } from '@/utils/stream-caret';
 import { readSseStream, postStream } from '@/utils/sse';
@@ -359,6 +359,11 @@ export default {
     }
   },
   mounted: function() {
+    // katex 按需加载 + 就绪重绘（与 Chat 同一套，见 markdown.js 的说明）：
+    // 打开历史作文可能在引擎就绪前渲染，到货时把占位换成真公式
+    var self = this;
+    ensureKatexIdle();
+    onKatexReady(function () { if (self.result) self.resultHtml = renderMarkdown(self.result); });
     // 方向与抽屉手势由 mixins/orientation 统一处理
     this.$store.dispatch('auth/fetchWallet').catch(function() {});
     this.loadModels();

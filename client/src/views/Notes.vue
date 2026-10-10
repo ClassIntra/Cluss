@@ -1181,7 +1181,7 @@ import VirtualList from '@/components/VirtualList.vue';
 import api from '@/utils/api';
 import cloudPickerReceiver from '@/mixins/cloud-picker-receiver';
 import orientation from '@/mixins/orientation';
-import LatexRenderer from '@/utils/latex-renderer';
+import LatexRenderer, { ensureKatexIdle, onKatexReady } from '@/utils/latex-renderer';
 // AI 辅助的流式接口（Cluss 特有）：SSE 读流工具
 import { postStream, readSseStream } from '@/utils/sse';
 
@@ -1735,6 +1735,17 @@ showFileMenuModal: false,
     this.loadCloudNotes();
     this.loadCloudFolders();
     this.loadWallet();
+    // katex 按需加载 + 就绪重绘（机制见 utils/markdown.js 的说明）。
+    // 本页通过 latex-renderer 渲染公式；引擎到货前是 <code> 原文占位，
+    // 到货后重算当前预览 —— 仅当前笔记一篇，成本可忽略。
+    // Notes 已有 _renderDebounce（300ms）防抖，这里直接赋值不与之冲突。
+    var self = this;
+    ensureKatexIdle();
+    onKatexReady(function () {
+      if (self.activeFile && self.activeFile.content) {
+        self.renderedContentHtml = self.computeRenderedContent();
+      }
+    });
     window.addEventListener('resize', this.onResize);
     window.addEventListener('keydown', this.onGlobalKeydown);
     window.addEventListener('beforeunload', this.forceSave);

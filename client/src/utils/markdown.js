@@ -1,7 +1,105 @@
 import { marked } from 'marked';
-import katex from 'katex';
 import DOMPurify from 'dompurify';
 import 'katex/dist/katex.min.css';
+
+// ---- katex 按需加载（322KB，曾是首屏最大的一块）----
+//
+// 为什么不能静态 import：Chat 页静态引本文件，katex 就进了对话页的
+// 首屏关键路径 —— 学生一打开页面就要先解析 322KB 的公式引擎，
+// 哪怕首屏一个公式都没有。实测冷加载时间线上 katex 在 56ms 就开始拉，
+// 在低端设备上这段解析要几百毫秒，直接把首屏绘制往后顶
+//（用户实测 LCP 2.74s；内联掉主线程占用后依然如此，瓶颈就是它）。
+//
+// 现在：katex 走动态 import。首屏只出占位（<code> 原文公式），
+// katex 到位后由 onKatexReady 的回调触发整篇重绘 ——
+// 空态首屏完全不等它；带公式的历史只多等几百毫秒且立刻重绘。
+//
+// ⚠️ CSS 保留静态引入（23KB，JS 解析不受它阻塞）：公式一旦出现就必须有
+//   正确的排版，晚到会闪一下无样式的公式。JS 才是那个该让路的。
+var katexRef = null;        // katex 模块本体，加载完成后赋值
+var katexCbs = [];          // 等 katex 的回调（重绘用）
+var katexPromise = null;
+
+// 预加载 katex：在 Chat 挂载后调用。不阻塞任何渲染 ——
+// 空态先画，公式引擎在后台下载，等第一条 AI 回复到的时候早就绪了。
+export function ensureKatex() {
+  if (!katexPromise) {
+    katexPromise = import('katex').then(function (m) {
+      katexRef = m && m.default ? m.default : m;
+      var cbs = katexCbs; katexCbs = [];
+      cbs.forEach(function (cb) { try { cb(); } catch (e) { /* 单个回调失败不连坐 */ } });
+    }).catch(function () {
+      // 加载失败：保持 katexRef = null，renderMath 永远走占位降级，
+      // 公式以 <code> 原文出现 —— 比整页白屏好得多
+    });
+  }
+  return katexPromise;
+}
+
+// 当前 katex 引用（未加载时为 null）。给 latex-renderer 共用同一个加载器，
+// 避免两个模块各拉一份。
+export function getKatex() { return katexRef; }
+
+// 空闲时预加载：给各页的 mounted 用。
+//
+// 为什么封装在这里：四个页面（Chat/Study/Writing/Notes）都需要同一套
+// 「等首屏画完再拉」的门控。⚠️ 门控必须是 **FCP**，不是 requestIdleCallback
+// —— 实测主线程在等 API 响应的空档就会触发 idle（页面首绘要等数据，
+// 实测 idle 在 ~210ms 触发、FCP 在 368ms），katex 255KB 照样抢在首绘前
+// 下载。等真实首绘事件，拿不到就 3 秒兜底（公式可能马上就要用，
+// 页面再慢预拉也不能无限期不跑）。
+export function ensureKatexIdle() {
+  var started = false;
+  function go() {
+    if (started) return;
+    started = true;
+    ensureKatex();
+  }
+  try {
+    new PerformanceObserver(function (l) {
+      l.getEntries().forEach(function (e) {
+        if (e.name === 'first-contentful-paint') go();
+      });
+    }).observe({ type: 'paint', buffered: true });
+  } catch (e) {
+    // 观察器不可用（老内核）：退回 idle 门控，别把 katex 彻底弄没
+    var idle = window.requestIdleCallback || function (fn) { setTimeout(fn, 600); };
+    idle(go);
+    return;
+  }
+  setTimeout(go, 3000);
+}
+
+// katex 就绪（或已就绪）时回调。用于「重绘带公式的已渲染内容」。
+//
+// ⚠️ 这里**故意不触发加载** —— 只登记回调。
+//   曾在这里顺手调 ensureKatex()，结果 Chat 挂载时注册重绘回调
+//   就等于立刻加载 255KB，把「空闲再加载」的门控整个架空
+//   （实测 katex 在首屏绘制前就开拉）。加载时机是调用方的决策：
+//   首屏页挂在空闲回调里，次级页面挂在自己的 mounted 里。
+export function onKatexReady(cb) {
+  if (katexRef) { cb(); return; }
+  katexCbs.push(cb);
+}
+
+// ---------- 公式 ----------
+
+function renderMath(tex, displayMode) {
+  // katex 未就绪：先给原文占位。onKatexReady 的回调会让调用方整篇重绘，
+  // 那时这里走真正的渲染分支。占位用 <code> —— 原文公式可读，不算空白。
+  if (!katexRef) return '<code>' + escapeHtml(tex) + '</code>';
+  try {
+    return katexRef.renderToString(tex, {
+      displayMode: displayMode,
+      throwOnError: false,
+      // 学生端可能有大量公式，strict 关掉避免无意义的警告噪音
+      strict: false,
+      trust: false
+    });
+  } catch (e) {
+    return '<code>' + escapeHtml(tex) + '</code>';
+  }
+}
 
 // Markdown + LaTeX + Mermaid 渲染
 //
@@ -26,20 +124,6 @@ import 'katex/dist/katex.min.css';
 var T = '\u0000';
 
 // ---------- 公式 ----------
-
-function renderMath(tex, displayMode) {
-  try {
-    return katex.renderToString(tex, {
-      displayMode: displayMode,
-      throwOnError: false,
-      // 学生端可能有大量公式，strict 关掉避免无意义的警告噪音
-      strict: false,
-      trust: false
-    });
-  } catch (e) {
-    return '<code>' + escapeHtml(tex) + '</code>';
-  }
-}
 
 function escapeHtml(s) {
   return String(s)

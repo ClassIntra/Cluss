@@ -9,7 +9,17 @@
  *   extractLatex → (body converter) → renderLatexPlaceholders
  * 因此 LaTeX 正文中的 $...$ / $$...$$ / \(...\) / \[...\] 都由 KaTeX 渲染
  */
-import katex from 'katex';
+import { getKatex, ensureKatex, ensureKatexIdle, onKatexReady } from './markdown';
+
+// katex 与 markdown.js 共用同一个懒加载器（255KB，曾是首屏最大的一块）。
+// 本模块只被 Notes 使用，而 Notes 的 chunk 会被 App.vue 空闲预取 ——
+// 若这里静态 import katex，预取 Notes 时依赖清单就会把 255KB 拽下来，
+// 在慢设备上恰好压在首屏绘制的窗口里（实测时间线 katex 于 196ms 开拉、
+// FCP 464ms —— 完全撞在一起）。
+//
+// 未就绪时 renderLatexPlaceholders 给 <code> 原文占位，
+// Notes 挂载了 onKatexReady 重绘钩子，引擎到货后整篇换成真公式。
+export { ensureKatexIdle, onKatexReady };
 
 // ========== 数学公式提取/渲染 ==========
 
@@ -52,9 +62,16 @@ function extractLatex(content) {
 
 function renderLatexPlaceholders(html, placeholders) {
   var keys = Object.keys(placeholders);
+  var katex = getKatex();
   for (var i = 0; i < keys.length; i++) {
     var key = keys[i];
     var info = placeholders[key];
+    // 引擎未就绪：<code> 原文占位（Notes 的 onKatexReady 重绘会换真身）。
+    // 不能整段跳过 —— 占位符 key 若留在 html 里会以乱码原样露出。
+    if (!katex) {
+      html = html.replace(key, '<code class="latex-pending">' + escapeHtml(info.formula) + '</code>');
+      continue;
+    }
     try {
       var rendered = katex.renderToString(info.formula, {
         displayMode: info.displayMode,

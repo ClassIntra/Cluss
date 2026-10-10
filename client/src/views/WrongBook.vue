@@ -310,7 +310,7 @@
 <script>
 import AppNav from '@/components/AppNav.vue';
 import Segmented from '@/components/Segmented.vue';
-import { renderMarkdown } from '@/utils/markdown';
+import { renderMarkdown, ensureKatexIdle, onKatexReady } from '@/utils/markdown';
 import mermaidCharts from '@/mixins/mermaid';
 
 export default {
@@ -363,6 +363,11 @@ export default {
     subject: function() { this.load(1); }
   },
   mounted: function() {
+    // katex 按需加载 + 就绪重绘：列表模板里 v-html="render(q.*)" 直接调方法，
+    // 重绘用 $forceUpdate 最省事（数据没变，只是公式引擎到位了）
+    var self = this;
+    ensureKatexIdle();
+    onKatexReady(function () { self.$forceUpdate(); });
     this.load(1);
     this.loadSubjects();
   },

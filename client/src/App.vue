@@ -86,8 +86,13 @@ export default {
     //   因为在那之前整个卡片区都还是空的。
     //
     // 现在改成两道保险：
-    //   1. 等首屏**真正画完**（requestAnimationFrame 两次）才开始，
-    //      而不是 mounted 就挂上
+    //   1. 等**真实的 FCP**（first-contentful-paint）才开始，
+    //      而不是两次 rAF —— 实测两次 rAF 在 ~100ms 就过了，
+    //      而本页首绘要等 API 回来（实测 464ms），中间主线程一闲下来
+    //      idle 回调就开跑，预取照样撞进首屏窗口
+    //      （时间线上 Notes 的依赖清单把 katex 255KB 在 196ms 拽下来，
+    //      与首屏绘制完全重叠）。FCP 拿不到就每 200ms 重查，
+    //      3 秒兜底 —— 页面再慢预取也不能永远不跑。
     //   2. 逐个串行加载，每个之间让出一次主线程，
     //      且**不设 timeout** —— 忙就等着，宁可晚点预取也不抢首屏
     //      （预取晚 3 秒没人察觉，首屏慢 1.5 秒人人可感）
@@ -118,12 +123,25 @@ export default {
         }
       }
 
-      // 等首屏画完（两次 rAF = 浏览器已经提交了这一帧）再开始
-      requestAnimationFrame(function () {
-        requestAnimationFrame(function () {
-          scheduleIdle(prefetchOne);
-        });
-      });
+      var painted = false;
+      try {
+        new PerformanceObserver(function (l) {
+          l.getEntries().forEach(function (e) {
+            if (e.name === 'first-contentful-paint') painted = true;
+          });
+        }).observe({ type: 'paint', buffered: true });
+      } catch (e) {
+        // 观察器不可用（老内核）：退回旧行为，别把预取彻底弄没
+        painted = true;
+      }
+
+      var waited = 0;
+      function kick() {
+        if (painted || waited >= 3000) { scheduleIdle(prefetchOne); return; }
+        waited += 200;
+        setTimeout(kick, 200);
+      }
+      kick();
     }
   },
   beforeDestroy: function() {

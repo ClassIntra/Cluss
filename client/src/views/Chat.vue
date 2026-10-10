@@ -506,7 +506,7 @@ import CloudPicker from '@/components/CloudPicker.vue';
 import NotePicker from '@/components/NotePicker.vue';
 import ModelSelect from '@/components/ModelSelect.vue';
 import AiPrefs from '@/components/AiPrefs.vue';
-import { renderMarkdown, renderStream } from '@/utils/markdown';
+import { renderMarkdown, renderStream, ensureKatexIdle, onKatexReady } from '@/utils/markdown';
 // 流式增量渲染（冻结已稳定的前缀，每帧只重渲染尾巴）——见 utils/stream-paint
 import { createStreamPainter } from '@/utils/stream-paint';
 import { appendStreamCaret } from '@/utils/stream-caret';
@@ -737,8 +737,16 @@ export default {
     }
   },
   mounted: function() {
+    var self = this;
     // 主输入是否为触摸（决定 Enter 是发送还是换行，见 onComposerKeydown）
     try { this.isTouch = window.matchMedia('(hover: none)').matches; } catch (e) { /* 探测失败按桌面处理 */ }
+
+    // katex 按需加载：不在首屏关键路径上（255KB 曾把首屏绘制往后顶）。
+    // 门控是 FCP 而非 requestIdleCallback —— 实测主线程在等 API 的空档
+    // 就会触发 idle，katex 照样抢在首绘前下载。见 utils/markdown.js。
+    // 引擎到货前公式以 <code> 原文占位，就绪后整篇重绘换真身。
+    ensureKatexIdle();
+    onKatexReady(function () { self._rerenderKatex(); });
 
     // 方向与抽屉手势由 mixins/orientation 统一处理（三个页面共用）
     this.$store.dispatch('auth/fetchProfile').catch(function() {});
@@ -811,6 +819,18 @@ export default {
           try { localStorage.removeItem('cluss_persona'); } catch (e) { /* 忽略 */ }
         }
       });
+    },
+
+    // katex 就绪后的整篇重绘：把「等引擎时的 <code> 原文占位」换成真公式。
+    // 用户消息不走 markdown（html 恒为空串），跳过。
+    _rerenderKatex: function() {
+      var list = this.messages;
+      for (var i = 0; i < list.length; i++) {
+        var m = list[i];
+        if (m.role === 'assistant' && m.content) {
+          m.html = renderMarkdown(m.content);
+        }
+      }
     },
 
     loadWallet: function() {

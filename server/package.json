@@ -22,7 +22,9 @@
     "audit:visual": "node scripts/audit-visual.cjs",
     "audit:sidebar": "node scripts/audit-sidebar-visual.cjs",
     "verify:notes": "node scripts/verify-notes-sidebar.cjs",
-    "perf:cold": "node scripts/measure-cold-load.cjs"
+    "perf:cold": "node scripts/measure-cold-load.cjs",
+    "perf:timeline": "node scripts/trace-timeline.cjs",
+    "verify:katex": "node scripts/verify-katex-lazy.cjs"
   },
   "dependencies": {
     "axios": "^1.19.0",
