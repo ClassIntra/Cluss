@@ -68,8 +68,8 @@ Cluss Cloud 运营者（平台方）
 | `/sync/version` | 节点轮询 | 已实现，返回 `assign_version`；**扩展点：加 `model_config_version`** |
 | `/sync/assignments` | 下发额度 | 已实现，幂等键防重放（`relay:user:alloc:week` 模式） |
 | `/sync/usage` | 上报用量 | 已实现，字段含 学号/模型/token/费用/场景/时间，**不含内容** |
-| `/sync/model-config` | 下发模型 | **待建**（见 §5） |
-| 心跳 last_seen | 上报 | **待建**：节点每次带凭证同步时顺手更新，支撑看板"节点失联"告警 |
+| `/sync/model-config` | 下发模型 | **已实现**（v1：ai_models + ai_sources + 视觉/峰谷整表下发，改一处 1 分钟内全网生效） |
+| 心跳 last_seen | 上报 | **已实现**（cluss_nodes 注册表：同步头顺路心跳，支撑看板在线判定与吊销；组织/校级密钥/`/api/org` 公共服务已落地，见 §4 精简版） |
 
 设计原则不变：**同步失败绝不能影响学生使用**（`services/sync.js` 头注释），
 所有新通道沿用"失败只记日志、下个周期重试"的容错。

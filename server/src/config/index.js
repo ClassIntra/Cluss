@@ -112,6 +112,8 @@ module.exports = {
   relay: {
     url: String(process.env.CLUSS_RELAY_URL || '').trim().replace(/\/+$/, ''),
     secret: String(process.env.CLUSS_SHARED_SECRET || '').trim(),
+    // Cloud 多租户：接入的学校编号（024 迁移）。留空 = 自托管单校（走全局共享密钥）
+    orgId: String(process.env.CLUSS_ORG_ID || '').trim(),
     syncIntervalSec: num(process.env.CLUSS_SYNC_INTERVAL, 60),
     reportIntervalSec: num(process.env.CLUSS_REPORT_INTERVAL, 300),
     toleranceMicro: yuanToMicro(process.env.CLUSS_SYNC_TOLERANCE_YUAN || 1)

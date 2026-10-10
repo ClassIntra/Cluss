@@ -17,6 +17,9 @@ var config = require('../config');
 var constants = require('../utils/constants');
 var initDb = require('../utils/init-db');
 var classRoster = require('../services/class-roster');
+// 模型配置下发（v1）：管理台每改一次模型/源/视觉/峰谷就 bump 版本号，
+// 各班级节点靠 /sync/version 轮询到新版本后整表替换本地配置
+var modelConfig = require('../services/model-config');
 // 必须在**模块级**引入：parsePeakWindowsInput 是顶层函数，它要用 pricing.parseHm。
 // 原先只在各路由处理函数内部 `var pricing = require(...)`，那些是函数作用域的局部量，
 // 顶层函数里根本看不到 —— 结果任何一次「保存峰谷配置」都会 ReferenceError → 500。
@@ -35,6 +38,19 @@ function bumpAssignVersion() {
 
 function currentAssignVersion() {
   return parseInt(initDb.getMeta('assign_version', '0'), 10) || 0;
+}
+
+// node 模式下模型/源/视觉/峰谷配置**只读**（设计文档 §5.3）：
+// 统一下发的意义就在于没有分班差异，留口子会制造「某班的模型悄悄不一样了」
+// 这类难排查问题。本机改了也会在中枢下一次下发时被整表覆盖，不如直接拒绝。
+function requireCanEditModelConfig(req, res, next) {
+  if (config.mode === config.MODES.NODE) {
+    return res.status(403).json({
+      code: 403,
+      message: 'node 模式下模型配置由中继统一下发，本机只读。请到中继管理台修改'
+    });
+  }
+  next();
 }
 
 // 校验金额输入（元 → 微元）
@@ -353,13 +369,102 @@ router.get('/logs', auth.requireAuth, auth.requireAdmin, function(req, res) {
 });
 
 // ============================================================
-// GET /admin/nodes —— 已接入的班级节点（按上报数据聚合）
+// GET /admin/nodes —— 班级节点看板（多班管理主视图）
+//
+// 数据来源两路合并：
+//   · cluss_nodes 注册表（023 迁移）—— 节点身份、心跳（last_seen_at）、
+//     配置到达情况（last_assign_version / last_model_version）、状态；
+//   · cluss_usage_log 按 origin_instance 聚合 —— 每班消耗（老版本节点
+//     不发身份头、不进注册表，但只要报过用量就还能在这里看到一行）。
+// 分配额 vs 上报消耗 = 各班余额推算，分钟级延迟（上报间隔 300s）。
 // ============================================================
+var NODE_ONLINE_WINDOW_SEC = 600; // 心跳新鲜度阈值：同步间隔 60s 的 10 倍宽限
+
 router.get('/nodes', auth.requireAuth, auth.requireAdmin, function(req, res) {
-  var rows = db.prepare([
-    'SELECT origin_instance, COUNT(*) AS calls, SUM(cost_micro) AS cost_micro, MAX(created_at) AS last_at',
-    'FROM cluss_usage_log WHERE origin_instance != \'\' GROUP BY origin_instance ORDER BY cost_micro DESC'
-  ].join('\n')).all();
+  var nowLocal = new Date();
+  var monthStartUtc = time.fmtUtc(new Date(nowLocal.getFullYear(), nowLocal.getMonth(), 1));
+  var nowUtc = time.nowUtc();
+  var onlineCutoff = time.fmtUtc(new Date(Date.now() - NODE_ONLINE_WINDOW_SEC * 1000));
+
+  var usageRows = db.prepare([
+    'SELECT origin_instance,',
+    '  COUNT(*) AS calls,',
+    '  SUM(cost_micro) AS cost_micro,',
+    '  SUM(CASE WHEN created_at >= ? THEN cost_micro ELSE 0 END) AS month_cost_micro,',
+    '  SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS month_calls,',
+    '  MAX(created_at) AS last_at',
+    'FROM cluss_usage_log',
+    "WHERE origin_instance != ''",
+    'GROUP BY origin_instance'
+  ].join('\n')).all(monthStartUtc, monthStartUtc);
+
+  var usageByInstance = {};
+  for (var i = 0; i < usageRows.length; i++) usageByInstance[usageRows[i].origin_instance] = usageRows[i];
+
+  var nodeRows = db.prepare('SELECT * FROM cluss_nodes ORDER BY last_seen_at DESC').all();
+  var orgNames = {};
+  var orgRows = db.prepare('SELECT id, name FROM cluss_orgs').all();
+  for (var oi = 0; oi < orgRows.length; oi++) orgNames[orgRows[oi].id] = orgRows[oi].name;
+  var seen = {};
+  var nodes = [];
+
+  for (var n = 0; n < nodeRows.length; n++) {
+    var r = nodeRows[n];
+    seen[r.instance_id] = true;
+    var u = usageByInstance[r.instance_id] || {};
+    nodes.push({
+      instance_id: r.instance_id,
+      org_id: r.org_id || '',
+      org_name: orgNames[r.org_id] || '',
+      label: r.label,
+      status: r.status,
+      revoked_at: r.revoked_at ? time.toISO(r.revoked_at) : null,
+      online: !!r.last_seen_at && r.last_seen_at >= onlineCutoff,
+      last_seen_at: r.last_seen_at ? time.toISO(r.last_seen_at) : null,
+      last_report_at: r.last_report_at ? time.toISO(r.last_report_at) : null,
+      first_seen_at: r.first_seen_at ? time.toISO(r.first_seen_at) : null,
+      node_version: r.node_version,
+      last_assign_version: r.last_assign_version,
+      last_model_version: r.last_model_version,
+      assign_version_current: currentAssignVersion(),
+      model_version_current: modelConfig.currentModelVersion(),
+      calls: u.calls || 0,
+      cost_micro: u.cost_micro || 0,
+      month_calls: u.month_calls || 0,
+      month_cost_micro: u.month_cost_micro || 0,
+      last_usage_at: u.last_at ? time.toISO(u.last_at) : null,
+      registered: true
+    });
+  }
+
+  // 只报过用量、还没进注册表的老节点（升级前存量）
+  for (var k in usageByInstance) {
+    if (seen[k]) continue;
+    var uo = usageByInstance[k];
+    nodes.push({
+      instance_id: k,
+      label: '',
+      status: 'active',
+      revoked_at: null,
+      online: null,
+      last_seen_at: null,
+      last_report_at: uo.last_at ? time.toISO(uo.last_at) : null,
+      first_seen_at: null,
+      node_version: '',
+      last_assign_version: 0,
+      last_model_version: 0,
+      assign_version_current: currentAssignVersion(),
+      model_version_current: modelConfig.currentModelVersion(),
+      calls: uo.calls || 0,
+      cost_micro: uo.cost_micro || 0,
+      month_calls: uo.month_calls || 0,
+      month_cost_micro: uo.month_cost_micro || 0,
+      last_usage_at: uo.last_at ? time.toISO(uo.last_at) : null,
+      registered: false
+    });
+  }
+
+  nodes.sort(function(a, b) { return b.cost_micro - a.cost_micro; });
 
   res.json({
     code: 200,
@@ -367,16 +472,72 @@ router.get('/nodes', auth.requireAuth, auth.requireAdmin, function(req, res) {
     data: {
       instance_id: config.instanceId,
       mode: config.mode,
-      nodes: rows.map(function(r) {
-        return {
-          instance_id: r.origin_instance,
-          calls: r.calls,
-          cost_yuan: config.microToYuan(r.cost_micro).toFixed(2),
-          last_at: time.toISO(r.last_at)
-        };
-      })
+      now: nowUtc,
+      online_window_sec: NODE_ONLINE_WINDOW_SEC,
+      nodes: nodes
     }
   });
+});
+
+// ---- 节点管理：备注 / 吊销 / 恢复 ----
+// 吊销的边界（v0/v1）：同步请求全部 403，看板里标灰。但凭证仍是全网共享
+// 密钥，被吊销节点换个 instance_id 仍可混入 —— 硬隔离等 v2 节点专属密钥。
+
+function findNodeOr404(req, res) {
+  var instanceId = String(req.params.instanceId || '').trim();
+  if (!instanceId) {
+    res.status(400).json({ code: 400, message: '缺少 instance_id' });
+    return null;
+  }
+  if (instanceId === config.instanceId) {
+    res.status(400).json({ code: 400, message: '不能对中继本机做该操作' });
+    return null;
+  }
+  var row = db.prepare('SELECT * FROM cluss_nodes WHERE instance_id = ?').get(instanceId);
+  if (!row) {
+    res.status(404).json({ code: 404, message: '节点不存在（该班还没接入过）' });
+    return null;
+  }
+  return row;
+}
+
+// PUT /admin/nodes/:instanceId —— 备注（如「高一3班」）
+router.put('/nodes/:instanceId', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var row = findNodeOr404(req, res);
+  if (!row) return;
+
+  var label = String((req.body && req.body.label) || '').trim().slice(0, 60);
+  db.prepare('UPDATE cluss_nodes SET label = ? WHERE instance_id = ?').run(label, row.instance_id);
+  res.json({ code: 200, message: '已保存', data: { instance_id: row.instance_id, label: label } });
+});
+
+// POST /admin/nodes/:instanceId/revoke —— 吊销（淘汰旧机、换电脑）
+router.post('/nodes/:instanceId/revoke', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var row = findNodeOr404(req, res);
+  if (!row) return;
+  if (row.status === 'revoked') {
+    return res.json({ code: 200, message: '该节点已是吊销状态', data: { instance_id: row.instance_id } });
+  }
+
+  db.prepare("UPDATE cluss_nodes SET status = 'revoked', revoked_at = ? WHERE instance_id = ?")
+    .run(time.nowUtc(), row.instance_id);
+  console.log('[Admin] 节点已吊销: %s by %s', row.instance_id, req.user.user_id);
+  res.json({
+    code: 200,
+    message: '已吊销 ' + (row.label || row.instance_id) + '：该节点的同步请求将被拒绝',
+    data: { instance_id: row.instance_id, status: 'revoked' }
+  });
+});
+
+// POST /admin/nodes/:instanceId/restore —— 恢复（吊销错了 / 机器重新启用）
+router.post('/nodes/:instanceId/restore', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var row = findNodeOr404(req, res);
+  if (!row) return;
+
+  db.prepare("UPDATE cluss_nodes SET status = 'active', revoked_at = '' WHERE instance_id = ?")
+    .run(row.instance_id);
+  console.log('[Admin] 节点已恢复: %s by %s', row.instance_id, req.user.user_id);
+  res.json({ code: 200, message: '已恢复', data: { instance_id: row.instance_id, status: 'active' } });
 });
 
 // ============================================================
@@ -911,7 +1072,7 @@ function validateModelInput(body, isCreate) {
   return { ok: true, data: out };
 }
 
-router.post('/models', auth.requireAuth, auth.requireAdmin, function(req, res) {
+router.post('/models', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
   var v = validateModelInput(req.body, true);
   if (!v.ok) return res.status(400).json({ code: 400, message: v.message });
 
@@ -946,11 +1107,12 @@ router.post('/models', auth.requireAuth, auth.requireAdmin, function(req, res) {
   );
 
   console.log('[Admin] 新增模型: %s by %s', d.id, req.user.user_id);
+  var mv = modelConfig.bumpModelVersion();
   var row = db.prepare('SELECT * FROM ai_models WHERE id = ?').get(d.id);
-  res.json({ code: 200, message: '已添加', data: serializeModelForAdmin(row) });
+  res.json({ code: 200, message: '已添加，模型配置版本 ' + mv + '（各班节点将在 1 分钟内自动同步）', data: serializeModelForAdmin(row) });
 });
 
-router.put('/models/:id', auth.requireAuth, auth.requireAdmin, function(req, res) {
+router.put('/models/:id', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
   var id = String(req.params.id || '');
   var row = db.prepare('SELECT * FROM ai_models WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ code: 404, message: '模型不存在' });
@@ -983,16 +1145,17 @@ router.put('/models/:id', auth.requireAuth, auth.requireAdmin, function(req, res
   stmt.run.apply(stmt, params);
 
   console.log('[Admin] 更新模型: %s by %s', id, req.user.user_id);
+  var mv = modelConfig.bumpModelVersion();
   res.json({
     code: 200,
-    message: '已更新',
+    message: '已更新，模型配置版本 ' + mv + '（各班节点将在 1 分钟内自动同步）',
     data: serializeModelForAdmin(db.prepare('SELECT * FROM ai_models WHERE id = ?').get(id))
   });
 });
 
 // 删除：若已被会话引用则改为软禁用
 // 硬删会让历史会话的 model_id 指向不存在的模型，管理台的用量统计就 JOIN 不出名字了
-router.delete('/models/:id', auth.requireAuth, auth.requireAdmin, function(req, res) {
+router.delete('/models/:id', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
   var id = String(req.params.id || '');
   var row = db.prepare('SELECT * FROM ai_models WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ code: 404, message: '模型不存在' });
@@ -1008,6 +1171,7 @@ router.delete('/models/:id', auth.requireAuth, auth.requireAdmin, function(req, 
 
   if (used > 0) {
     db.prepare('UPDATE ai_models SET enabled = 0, is_default = 0 WHERE id = ?').run(id);
+    modelConfig.bumpModelVersion();
     console.log('[Admin] 模型已被 %d 个会话引用，改为禁用: %s', used, id);
     return res.json({
       code: 200,
@@ -1017,11 +1181,12 @@ router.delete('/models/:id', auth.requireAuth, auth.requireAdmin, function(req, 
   }
 
   db.prepare('DELETE FROM ai_models WHERE id = ?').run(id);
+  modelConfig.bumpModelVersion();
   console.log('[Admin] 删除模型: %s by %s', id, req.user.user_id);
   res.json({ code: 200, message: '已删除', data: { soft_disabled: false } });
 });
 
-router.post('/models/:id/set-default', auth.requireAuth, auth.requireAdmin, function(req, res) {
+router.post('/models/:id/set-default', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
   var id = String(req.params.id || '');
   var row = db.prepare('SELECT * FROM ai_models WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ code: 404, message: '模型不存在' });
@@ -1036,6 +1201,7 @@ router.post('/models/:id/set-default', auth.requireAuth, auth.requireAdmin, func
   tx();
 
   console.log('[Admin] 默认模型改为: %s（倍率已重置为 ×1.00）by %s', id, req.user.user_id);
+  modelConfig.bumpModelVersion();
   res.json({ code: 200, message: '已设为默认模型（计费基准，倍率已重置为 ×1.00）', data: { default_model: id } });
 });
 
@@ -1119,7 +1285,7 @@ router.get('/sources', auth.requireAuth, auth.requireAdmin, function(req, res) {
   res.json({ code: 200, message: 'ok', data: { sources: rows.map(serializeSourceForAdmin) } });
 });
 
-router.post('/sources', auth.requireAuth, auth.requireAdmin, function(req, res) {
+router.post('/sources', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
   var v = validateSourceInput(req.body, true);
   if (!v.ok) return res.status(400).json({ code: 400, message: v.message });
 
@@ -1137,6 +1303,7 @@ router.post('/sources', auth.requireAuth, auth.requireAdmin, function(req, res) 
   );
 
   console.log('[Admin] 新增模型源: %s by %s', d.id, req.user.user_id);
+  modelConfig.bumpModelVersion();
   res.json({
     code: 200,
     message: '已添加',
@@ -1144,7 +1311,7 @@ router.post('/sources', auth.requireAuth, auth.requireAdmin, function(req, res) 
   });
 });
 
-router.put('/sources/:id', auth.requireAuth, auth.requireAdmin, function(req, res) {
+router.put('/sources/:id', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
   var id = String(req.params.id || '');
   var row = db.prepare('SELECT * FROM ai_sources WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ code: 404, message: '模型源不存在' });
@@ -1170,6 +1337,7 @@ router.put('/sources/:id', auth.requireAuth, auth.requireAdmin, function(req, re
   stmt.run.apply(stmt, params);
 
   console.log('[Admin] 更新模型源: %s by %s', id, req.user.user_id);
+  modelConfig.bumpModelVersion();
   res.json({
     code: 200,
     message: '已更新',
@@ -1179,7 +1347,7 @@ router.put('/sources/:id', auth.requireAuth, auth.requireAdmin, function(req, re
 
 // 删除源：仍被模型引用时先拦一次（避免一次误点把 N 个模型悄悄变成不可用）；
 // 带 ?force=1 再确认，则把这些模型回退到「自带地址/密钥」后删除源。
-router.delete('/sources/:id', auth.requireAuth, auth.requireAdmin, function(req, res) {
+router.delete('/sources/:id', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
   var id = String(req.params.id || '');
   var row = db.prepare('SELECT * FROM ai_sources WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ code: 404, message: '模型源不存在' });
@@ -1202,6 +1370,7 @@ router.delete('/sources/:id', auth.requireAuth, auth.requireAdmin, function(req,
   tx();
 
   console.log('[Admin] 删除模型源: %s（%d 个模型回退自带配置）by %s', id, used, req.user.user_id);
+  modelConfig.bumpModelVersion();
   res.json({
     code: 200,
     message: used > 0 ? ('已删除，' + used + ' 个模型已回退到自带配置') : '已删除',
@@ -1277,7 +1446,7 @@ router.get('/offpeak', auth.requireAuth, auth.requireAdmin, function(req, res) {
   });
 });
 
-router.put('/offpeak', auth.requireAuth, auth.requireAdmin, function(req, res) {
+router.put('/offpeak', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
   var pricing = require('../services/pricing');
   var b = req.body || {};
 
@@ -1309,6 +1478,8 @@ router.put('/offpeak', auth.requireAuth, auth.requireAdmin, function(req, res) {
     peaks: cfg.peaks.map(function(w) { return minutesToHm(w.startMin) + '-' + minutesToHm(w.endMin); }),
     discount: zhe
   });
+  // 峰谷是节点本地计费口径的一部分（模型级峰窗留空时回退全局），必须随配置下发
+  modelConfig.bumpModelVersion();
 
   var activeNow = pricing.isInOffpeakWindow(cfg);
   res.json({
@@ -1371,7 +1542,7 @@ router.get('/vision', auth.requireAuth, auth.requireAdmin, function(req, res) {
   });
 });
 
-router.put('/vision', auth.requireAuth, auth.requireAdmin, function(req, res) {
+router.put('/vision', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
   var vision = require('../services/vision');
   var b = req.body || {};
   var patch = {};
@@ -1422,6 +1593,8 @@ router.put('/vision', auth.requireAuth, auth.requireAdmin, function(req, res) {
   tx();
 
   console.log('[Admin] 视觉配置更新 by %s: %j', req.user.user_id, patch);
+  // 视觉转述配置随模型配置一起下发（§5.2：relayModelId 不随行节点会引用到不存在的模型）
+  modelConfig.bumpModelVersion();
   var cfg = vision.getVisionConfig();
   res.json({
     code: 200,

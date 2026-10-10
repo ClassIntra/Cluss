@@ -68,6 +68,8 @@
         <div class="form-foot">
           <span class="muted tiny">还没有账号？</span>
           <router-link class="link" to="/register">立即注册</router-link>
+          <span class="muted tiny">·</span>
+          <router-link class="link" to="/org">多班部署 / Cloud 服务</router-link>
         </div>
 
         <!-- 嵌入态：这里必须留一个返回出口。

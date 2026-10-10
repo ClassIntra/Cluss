@@ -36,6 +36,14 @@ var routes = [
     meta: { requiresAuth: true }
   },
   {
+    // Cluss Cloud 公共服务：注册学校 + 学校管理员看板。
+    // 不加 meta：未登录可注册、登录后可看板（页面自管两种状态），
+    // guest/requiresAuth 都会把其中一种状态弹走。
+    path: '/org',
+    name: 'Org',
+    component: function() { return import('@/views/Org.vue'); }
+  },
+  {
     path: '/writing',
     name: 'Writing',
     component: function() { return import('@/views/Writing.vue'); },

@@ -40,3 +40,6 @@ client/public/orient-probe.html
 .mimosa/
 client/.mimosa/
 .workbuddy/
+
+# 云机数据备份（真实账目，禁止入库）
+backups/

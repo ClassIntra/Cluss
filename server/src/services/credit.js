@@ -271,7 +271,8 @@ function recordUsage(p) {
 }
 
 // 由中继下发分配值（含流水幂等写入）
-// p: { user_id, allocated_micro, weekly_quota_micro, assigned_by, idem_key, reason, kind, origin_instance }
+// p: { user_id, allocated_micro, weekly_quota_micro, assigned_by, idem_key, reason, kind, origin_instance, org_id }
+// org_id：Cloud 多租户下标记分配归属学校（024 迁移）；自托管/节点本地恒为 ''
 function applyAssignment(p) {
   var uid = String(p.user_id);
   var allocated = Number(p.allocated_micro || 0);
@@ -286,12 +287,12 @@ function applyAssignment(p) {
 
     var before = getAssignment(uid);
     db.prepare([
-      'INSERT INTO cluss_credit (user_id, allocated_micro, weekly_quota_micro, updated_at, assigned_by)',
-      'VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO cluss_credit (user_id, allocated_micro, weekly_quota_micro, org_id, updated_at, assigned_by)',
+      'VALUES (?, ?, ?, ?, ?, ?)',
       'ON CONFLICT(user_id) DO UPDATE SET allocated_micro = excluded.allocated_micro,',
-      '  weekly_quota_micro = excluded.weekly_quota_micro, updated_at = excluded.updated_at,',
-      '  assigned_by = excluded.assigned_by'
-    ].join('\n')).run(uid, allocated, weekly, time.nowUtc(), String(p.assigned_by || ''));
+      '  weekly_quota_micro = excluded.weekly_quota_micro, org_id = excluded.org_id,',
+      '  updated_at = excluded.updated_at, assigned_by = excluded.assigned_by'
+    ].join('\n')).run(uid, allocated, weekly, String(p.org_id || ''), time.nowUtc(), String(p.assigned_by || ''));
 
     var delta = allocated - Number(before.allocated_micro || 0);
     if (delta !== 0) {

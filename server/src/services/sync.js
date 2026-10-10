@@ -2,7 +2,10 @@
 //
 // 职责：
 //   1. 轻量轮询中继的 assign_version；版本变了才拉全量分配快照（省流量）
-//   2. 把本班的用量明细上报给中继（中继据此做全网对账）
+//   2. 同一次轮询顺路对比 model_config_version，变了拉模型配置快照并整表替换
+//   3. 把本班的用量明细上报给中继（中继据此做全网对账）
+//   4. 每次同步在请求头里顺路心跳（instance_id + 已应用版本号），中继据此
+//      维护节点注册表 —— 不发独立心跳请求，同步本来就够密了
 //
 // 容错原则：**同步失败绝不能影响学生使用**。
 // 所有请求失败只记日志、下次重试；额度沿用本地已有分配，配合同步容错额继续放行。
@@ -10,6 +13,7 @@
 var axios = require('axios');
 var config = require('../config');
 var credit = require('./credit');
+var modelConfig = require('./model-config');
 var db = require('../utils/db');
 var time = require('../utils/time');
 var initDb = require('../utils/init-db');
@@ -24,6 +28,8 @@ var status = {
   last_error_at: null,
   assign_version: 0,
   pulled_at: null,
+  model_version: 0,
+  model_pulled_at: null,
   reported_total: 0,
   pending_usage: 0
 };
@@ -32,11 +38,28 @@ function isEnabled() {
   return config.mode === config.MODES.NODE && !!(config.relay.url && config.relay.secret);
 }
 
+// 身份头：所有同步请求都带，中继据此心跳 + 看配置到达情况。
+// 老中继不认识这些头也没关系（HTTP 头就是给服务器自由裁量的）。
+// X-Cluss-Org：Cloud 多租户的学校编号（留空 = 自托管单校，走全局共享密钥）
 function headers() {
-  return {
+  var h = {
     'Content-Type': 'application/json',
-    'X-Cluss-Secret': config.relay.secret
+    'X-Cluss-Secret': config.relay.secret,
+    'X-Cluss-Instance': config.instanceId,
+    'X-Cluss-Node-Version': config.version,
+    'X-Cluss-Assign-Version': String(localAssignVersion()),
+    'X-Cluss-Model-Version': String(localModelVersion())
   };
+  if (config.relay.orgId) h['X-Cluss-Org'] = config.relay.orgId;
+  return h;
+}
+
+function localAssignVersion() {
+  return parseInt(initDb.getMeta('assign_version', '0'), 10) || 0;
+}
+
+function localModelVersion() {
+  return parseInt(initDb.getMeta('model_config_version', '0'), 10) || 0;
 }
 
 function markError(err) {
@@ -50,52 +73,98 @@ function markOk() {
   status.last_error = '';
 }
 
-// ---- 拉取额度分配 ----
-function pullAssignments(force) {
+// ---- 拉取额度分配快照 ----
+function fetchAssignments() {
+  return axios.get(config.relay.url + '/api/sync/assignments', {
+    timeout: TIMEOUT_MS, headers: headers()
+  }).then(function(resp) {
+    var data = resp.data && resp.data.data;
+    var version = (data && data.assign_version) || 0;
+    var list = (data && data.assignments) || [];
+    var applied = 0;
+
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i];
+      // 只对该节点已存在的用户落地：节点上没有这个账号，分配过来也没有意义
+      var exists = db.prepare('SELECT user_id FROM users WHERE user_id = ?').get(String(a.user_id));
+      if (!exists) continue;
+
+      credit.applyAssignment({
+        user_id: a.user_id,
+        allocated_micro: a.allocated_micro,
+        weekly_quota_micro: a.weekly_quota_micro,
+        assigned_by: a.assigned_by,
+        origin_instance: 'relay',
+        kind: 'topup',
+        reason: '中继下发',
+        // 幂等键由「用户 + 分配值 + 版本」构成：同一次分配重复拉取不会重复记流水
+        idem_key: 'relay:' + a.user_id + ':' + a.allocated_micro + ':' + a.weekly_quota_micro
+      });
+      applied++;
+    }
+
+    initDb.setMeta('assign_version', version);
+    status.assign_version = version;
+    status.pulled_at = time.nowUtc();
+    console.log('[Sync] 已拉取额度分配: 版本 %s，落地 %d 条', version, applied);
+    return { version: version, applied: applied };
+  });
+}
+
+// ---- 拉取模型配置快照并整表替换（§5：不做增量）----
+function fetchModelConfig() {
+  return axios.get(config.relay.url + '/api/sync/model-config', {
+    timeout: TIMEOUT_MS, headers: headers()
+  }).then(function(resp) {
+    var data = (resp.data && resp.data.data) || {};
+    var version = data.model_config_version || 0;
+
+    // 全量快照直接落地；重复拉同一版本无害（整表替换幂等）
+    var result = modelConfig.applySnapshot(data);
+    initDb.setMeta('model_config_version', version);
+    status.model_version = version;
+    status.model_pulled_at = time.nowUtc();
+    console.log('[Sync] 已拉取模型配置: 版本 %s，模型 %d 条，源 %d 条',
+      version, result.applied, result.sources);
+    return { version: version, models: result.applied };
+  });
+}
+
+// ---- 版本轮询：一次 /version 拿两个版本号，按需拉全量 ----
+//
+// force（启动与管理台「立即同步」）：不信任本机版本号残留 —— 比如换了中继、
+// 导入了旧库，版本号碰巧相同就会漏拉。宁可多传两次几 KB 的全量，也不带
+// 陈旧配置上线。
+function pollOnce(force) {
+  if (force) {
+    // 各自兜底：老中继没有 /sync/model-config（404）时，额度分配照常落地，
+    // 不能因为模型配置这一路失败就把启动同步整体标成失败
+    return Promise.all([
+      fetchAssignments().catch(function(err) { markError(err); return null; }),
+      fetchModelConfig().catch(function(err) { markError(err); return null; })
+    ]).then(function() { return { changed: true, forced: true }; });
+  }
+
   return axios.get(config.relay.url + '/api/sync/version', {
     timeout: TIMEOUT_MS, headers: headers()
   }).then(function(resp) {
-    var remoteVersion = (resp.data && resp.data.data && resp.data.data.assign_version) || 0;
-    status.assign_version = remoteVersion;
+    var remote = (resp.data && resp.data.data) || {};
+    var remoteAssign = remote.assign_version || 0;
+    var remoteModel = remote.model_config_version || 0;
+    status.assign_version = remoteAssign;
+    status.model_version = remoteModel;
 
-    var localVersion = parseInt(initDb.getMeta('assign_version', '0'), 10) || 0;
-    if (!force && remoteVersion === localVersion) {
+    var jobs = [];
+    if (remoteAssign !== localAssignVersion()) jobs.push(fetchAssignments());
+    if (remoteModel !== localModelVersion()) jobs.push(fetchModelConfig());
+
+    if (!jobs.length) {
       markOk();
-      return { changed: false, version: remoteVersion };
+      return { changed: false };
     }
-
-    return axios.get(config.relay.url + '/api/sync/assignments', {
-      timeout: TIMEOUT_MS, headers: headers()
-    }).then(function(resp2) {
-      var data = resp2.data && resp2.data.data;
-      var list = (data && data.assignments) || [];
-      var applied = 0;
-
-      for (var i = 0; i < list.length; i++) {
-        var a = list[i];
-        // 只对该节点已存在的用户落地：节点上没有这个账号，分配过来也没有意义
-        var exists = db.prepare('SELECT user_id FROM users WHERE user_id = ?').get(String(a.user_id));
-        if (!exists) continue;
-
-        credit.applyAssignment({
-          user_id: a.user_id,
-          allocated_micro: a.allocated_micro,
-          weekly_quota_micro: a.weekly_quota_micro,
-          assigned_by: a.assigned_by,
-          origin_instance: 'relay',
-          kind: 'topup',
-          reason: '中继下发',
-          // 幂等键由「用户 + 分配值 + 版本」构成：同一次分配重复拉取不会重复记流水
-          idem_key: 'relay:' + a.user_id + ':' + a.allocated_micro + ':' + a.weekly_quota_micro
-        });
-        applied++;
-      }
-
-      initDb.setMeta('assign_version', remoteVersion);
-      status.pulled_at = time.nowUtc();
+    return Promise.all(jobs).then(function() {
       markOk();
-      console.log('[Sync] 已拉取额度分配: 版本 %s，落地 %d 条', remoteVersion, applied);
-      return { changed: true, version: remoteVersion, applied: applied };
+      return { changed: true };
     });
   }).catch(function(err) {
     markError(err);
@@ -163,10 +232,10 @@ function start() {
     config.relay.url, config.relay.syncIntervalSec, config.relay.reportIntervalSec);
 
   // 启动即同步一次，避免第一次使用等一个周期
-  pullAssignments(true).then(function() { return reportUsage(); });
+  pollOnce(true).then(function() { return reportUsage(); });
 
   var pullTimer = setInterval(function() {
-    pullAssignments(false);
+    pollOnce(false);
   }, config.relay.syncIntervalSec * 1000);
   if (pullTimer.unref) pullTimer.unref();
   timers.push(pullTimer);
@@ -190,6 +259,8 @@ function getStatus() {
     relay_url: config.relay.url,
     assign_version: status.assign_version,
     pulled_at: status.pulled_at,
+    model_version: status.model_version,
+    model_pulled_at: status.model_pulled_at,
     last_ok_at: status.last_ok_at,
     last_error: status.last_error,
     last_error_at: status.last_error_at,
@@ -202,7 +273,7 @@ module.exports = {
   isEnabled: isEnabled,
   start: start,
   stop: stop,
-  pullAssignments: pullAssignments,
+  pollOnce: pollOnce,
   reportUsage: reportUsage,
   getStatus: getStatus
 };
