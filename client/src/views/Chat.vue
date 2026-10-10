@@ -1633,12 +1633,6 @@ html.no-flex-gap .chat-page > * + * {
   margin-top: var(--gap-md);
 }
 
-
-
-
-
-
-
 .body {
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
@@ -1661,12 +1655,6 @@ html.no-flex-gap .chat-page > * + * {
 html.no-flex-gap .sidebar > * + * {
   margin-top: var(--gap-md);
 }
-
-
-
-
-
-
 
 /* ---------- 额度卡 ---------- */
 .wallet-card {
@@ -1711,12 +1699,6 @@ html.no-flex-gap .sidebar > * + * {
 html.no-flex-gap .wallet-amount > * + * {
   margin-left: 3px;
 }
-
-
-
-
-
-
 
 /* 单位跟在数字后面（中文习惯：2000 积分），比前缀的 ¥ 更像"余量"而不是"标价" */
 .wallet-unit {
@@ -1800,12 +1782,6 @@ html.no-flex-gap .conv-head-tools > * + * {
   margin-left: 4px;
 }
 
-
-
-
-
-
-
 /* 导出按钮的线性图标：跟随 currentColor，与文字类图标按钮（＋ ↻ ×）同灰度 */
 .icon-btn svg {
   display: block;
@@ -1843,12 +1819,6 @@ html.no-flex-gap .conv-head-tools > * + * {
 html.no-flex-gap .conv-item > * + * {
   margin-left: 6px;
 }
-
-
-
-
-
-
 
 @media (hover: hover) {
 .conv-item:hover {
@@ -2066,12 +2036,6 @@ html.no-flex-gap .main > * + * {
   margin-top: var(--gap-sm);
 }
 
-
-
-
-
-
-
 .mode-bar {
   display: flex;
   align-items: center;
@@ -2084,12 +2048,6 @@ html.no-flex-gap .main > * + * {
 html.no-flex-gap .mode-bar > * + * {
   margin-left: var(--gap-sm);
 }
-
-
-
-
-
-
 
 /* ---------- 无限制开关（仅日常模式） ---------- */
 .free-btn {
@@ -2262,12 +2220,6 @@ html.no-flex-gap .chips-wrap > * + * {
   margin-left: 8px;
 }
 
-
-
-
-
-
-
 .chip-suggest {
   padding: 8px 14px;
   border: 1px solid var(--glass-border);
@@ -2295,12 +2247,6 @@ html.no-flex-gap .chips-wrap > * + * {
 html.no-flex-gap .msg > * + * {
   margin-left: 10px;
 }
-
-
-
-
-
-
 
 /* 进场动画**只给本轮新增的消息**（.is-enter）。
    原来的写法让所有消息都带 animation，打开历史会话时几十条一起动 ——
@@ -2351,12 +2297,6 @@ html.no-flex-gap .msg-col > * + * {
   margin-top: 6px;
 }
 
-
-
-
-
-
-
 .msg-user .msg-col {
   align-items: flex-end;
 }
@@ -2377,12 +2317,6 @@ html.no-flex-gap .msg-tools > * + * {
   margin-left: 6px;
 }
 
-
-
-
-
-
-
 .msg-tools:focus-within {
   opacity: 1;
 }
@@ -2402,6 +2336,24 @@ html.no-flex-gap .msg-tools > * + * {
   color: var(--text-tertiary);
   cursor: pointer;
   transition: color var(--transition), border-color var(--transition), background var(--transition);
+  /* 视觉尺寸保持紧凑（这是消息气泡下方的次级操作，不该跟主操作抢视觉重量），
+     但命中区向上下扩到 40px 可点 —— 原理见 styles/global.css「触控命中区」。
+
+     为什么不用 padding 撑大：那会把气泡下方整行撑高，
+     破坏消息列表的垂直节奏；伪元素只扩「点得到」的范围，不动布局。 */
+  position: relative;
+}
+
+.tool-btn::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 40px;
+  transform: translateY(-50%);
+  background: transparent;
+  z-index: 1;
 }
 
 @media (hover: hover) {
@@ -2466,12 +2418,6 @@ html.no-flex-gap .bubble-attachments > * + * {
   margin-left: 6px;
 }
 
-
-
-
-
-
-
 .mini-attach {
   width: 56px;
   height: 56px;
@@ -2527,12 +2473,6 @@ html.no-flex-gap .vision-status > * + * {
   margin-left: 8px;
 }
 
-
-
-
-
-
-
 .spinner {
   width: 13px;
   height: 13px;
@@ -2563,12 +2503,6 @@ html.no-flex-gap .composer-wrap > * + * {
   margin-top: 8px;
 }
 
-
-
-
-
-
-
 /* 引用的笔记：与附件 chips 分开一行，用不同色调区分"自己写的"与"外部资料" */
 .note-refs {
   display: flex;
@@ -2580,61 +2514,9 @@ html.no-flex-gap .note-refs > * + * {
   margin-left: 6px;
 }
 
-
-
-
-
-
-
 .note-refs-label {
   color: var(--text-tertiary);
   flex-shrink: 0;
-}
-
-.note-ref-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border: 1px solid var(--accent-border-strong);
-  border-radius: var(--radius-pill);
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: 11.5px;
-  max-width: 220px;
-}
-html.no-flex-gap .note-ref-chip > * + * {
-  margin-left: 4px;
-}
-
-
-
-
-
-
-.note-ref-chip > span,
-.note-ref-chip {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.note-ref-x {
-  border: none;
-  background: transparent;
-  color: inherit;
-  font-size: 13px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0;
-  flex-shrink: 0;
-  opacity: 0.7;
-}
-
-@media (hover: hover) {
-.note-ref-x:hover {
-  opacity: 1;
-}
 }
 
 .composer {
@@ -2647,12 +2529,6 @@ html.no-flex-gap .note-ref-chip > * + * {
 html.no-flex-gap .composer > * + * {
   margin-left: 10px;
 }
-
-
-
-
-
-
 
 .attach-btn {
   /* 输入框旁的附件按钮：大屏下同步放大命中区（下限 34 = 原值） */
@@ -2756,12 +2632,6 @@ html.no-flex-gap .composer-actions > * + * {
     opacity: 0.9;
   }
 }
-
-
-
-
-
-
 
 .send-btn {
   padding: 10px 20px;

@@ -755,11 +755,6 @@ html.no-flex-gap .writing-page > * + * {
   margin-top: var(--gap-md);
 }
 
-
-
-
-
-
 .body {
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
@@ -782,11 +777,6 @@ html.no-flex-gap .sidebar > * + * {
   margin-top: var(--gap-md);
 }
 
-
-
-
-
-
 /* ---------- 参数面板 ---------- */
 .panel {
   display: flex;
@@ -800,11 +790,6 @@ html.no-flex-gap .sidebar > * + * {
 html.no-flex-gap .panel > * + * {
   margin-top: 8px;
 }
-
-
-
-
-
 
 .panel .section-label:not(:first-child) {
   margin-top: 6px;
@@ -879,11 +864,6 @@ html.no-flex-gap .panel > * + * {
 html.no-flex-gap .hist-item > * + * {
   margin-left: 6px;
 }
-
-
-
-
-
 
 @media (hover: hover) {
 .hist-item:hover {
@@ -1004,11 +984,6 @@ html.no-flex-gap .editor-head, .result-head > * + * {
   margin-left: var(--gap-sm);
 }
 
-
-
-
-
-
 .editor-actions,
 .result-actions {
   display: flex;
@@ -1018,11 +993,6 @@ html.no-flex-gap .editor-head, .result-head > * + * {
 html.no-flex-gap .editor-actions, .result-actions > * + * {
   margin-left: 6px;
 }
-
-
-
-
-
 
 .upload-btn {
   position: relative;
@@ -1059,56 +1029,9 @@ html.no-flex-gap .note-refs > * + * {
   margin-left: 6px;
 }
 
-
-
-
-
-
 .note-refs-label {
   color: var(--text-tertiary);
   flex-shrink: 0;
-}
-
-.note-ref-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border: 1px solid var(--accent-border-strong);
-  border-radius: var(--radius-pill);
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: 11.5px;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-html.no-flex-gap .note-ref-chip > * + * {
-  margin-left: 4px;
-}
-
-
-
-
-
-
-.note-ref-x {
-  border: none;
-  background: transparent;
-  color: inherit;
-  font-size: 13px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0;
-  flex-shrink: 0;
-  opacity: 0.7;
-}
-
-@media (hover: hover) {
-.note-ref-x:hover {
-  opacity: 1;
-}
 }
 
 .draft-input {
@@ -1147,11 +1070,6 @@ html.no-flex-gap .editor-foot > * + * {
   margin-left: var(--gap-sm);
 }
 
-
-
-
-
-
 .result-body {
   flex: 1;
   overflow-y: auto;
@@ -1187,11 +1105,6 @@ html.no-flex-gap .editor-foot > * + * {
 html.no-flex-gap .vision-status > * + * {
   margin-left: 8px;
 }
-
-
-
-
-
 
 .spinner {
   width: 13px;

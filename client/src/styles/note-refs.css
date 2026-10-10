@@ -1,0 +1,72 @@
+/**
+ * 引用笔记的 chip 样式（对话 / 学习 / 写作三页共用）
+ *
+ * 为什么抽出来：这三页的 chip 此前**各写一份**（Chat.vue / Study.vue /
+ * Writing.vue 里 `.note-ref-chip` 与 `.note-ref-x` 完全相同）。
+ * 「两处各写一份必然漂移」是本项目反复踩过的坑 —— 上一轮给 Chat 补了
+ * 触控命中区，另两页没补，于是同一个控件在不同页手感不同。
+ * 这次一次性收口，以后改只改这里。
+ *
+ * 触控命中区的原理见 styles/global.css 末尾「触控命中区」一节：
+ * **只扩大「点得到」的范围，不改视觉尺寸**。移除引用是高频操作，
+ * 而 × 按钮视觉上就该是 13px 小叉，用 padding 撑大会挤乱整行布局。
+ */
+
+/* ---- chip 本体 ---- */
+.note-ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--accent-border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11.5px;
+  max-width: 220px;
+}
+
+/* ---- 移除按钮 ---- */
+.note-ref-x {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  opacity: 0.7;
+  /* 撑出 40px 命中区；视觉仍是 13px 的小叉 */
+  position: relative;
+}
+
+.note-ref-x::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 40px;
+  height: 40px;
+  transform: translate(-50%, -50%);
+  background: transparent;
+  z-index: 1;
+}
+
+/* 触屏上没有 hover 粘住的问题，用 :active 给按压反馈 */
+.note-ref-x:active {
+  opacity: 1;
+}
+
+@media (hover: hover) {
+  .note-ref-x:hover {
+    opacity: 1;
+  }
+}
+
+/* chip 文字过长时省略号截断，避免长标题把整行撑开 */
+.note-ref-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

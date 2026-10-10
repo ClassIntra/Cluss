@@ -11,6 +11,11 @@ import api from './utils/api';
 import { applyToDom } from './store/theme';
 import { startOrientation } from './utils/device-orientation';
 import './styles/global.css';
+// 跨页面共用的组件样式（目前只有「引用笔记 chip」一组）。
+// 为什么放全局而不是各页 <style scoped>：scoped 会给选择器加属性后缀，
+// 从外部文件 import 进来的样式不会被处理 —— 写在 scoped 里等于没写。
+// 而这三页用的是同一份 mixin，样式也该只有一份。
+import './styles/note-refs.css';
 
 Vue.config.productionTip = false;
 
