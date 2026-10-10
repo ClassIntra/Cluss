@@ -170,38 +170,65 @@
             </button>
           </div>
 
-          <div class="sidebar-file-list scrollbar-thin">
-            <div
-              v-for="file in filteredFiles"
-              :key="file.id"
-              class="file-item"
-              :class="{ active: activeFileId === file.id }"
-              @click="selectFile(file.id)"
-              @contextmenu.prevent="showFileMenu($event, file)"
+          <div class="sidebar-file-list scrollbar-thin" :class="{ 'has-vlist': filteredFiles.length > 30 }">
+            <!--
+              虚拟滚动：只渲染可视区附近的条目。
+
+              为什么必须做：实测 60 篇笔记时，切入本页**每次**都要付
+              75~87ms 的主线程阻塞（不是一次性）—— 全量渲染会产生
+              1621 个 DOM 节点与 726 个事件监听器，每次进出都要
+              创建再销毁一遍。用久了有几百篇笔记时更糟。
+
+              为什么不用现成库：项目基线是 Chrome 80 / Android 9 / 微信 X5，
+              引库要额外做兼容与降级，而这里的核心逻辑只有几十行。
+
+              条目高度是变的（带标签 93px / 不带 69px），所以用
+              VirtualList 的「实测均值 + 自适应修正」而非定高方案 ——
+              定高会让滚动位置越滚越偏。
+            -->
+            <VirtualList
+              v-if="filteredFiles.length > 0"
+              ref="fileList"
+              class="file-list-virtual"
+              :items="filteredFiles"
+              :avg-item-height="81"
+              :overscan="6"
+              :threshold="30"
             >
-              <div class="file-item-main">
-                <div class="file-item-title">
-                  <i v-if="file.type === 'draw'" class="fa-solid fa-palette file-type-icon draw-type" title="画板文件"></i>
-                  <i v-else class="fa-regular fa-note-sticky file-type-icon note-type" title="笔记文件"></i>
-                  <span v-html="highlightSearch(file.title || '未命名笔记')"></span>
+              <template slot-scope="{ items }">
+                <div
+                  v-for="file in items"
+                  :key="file.id"
+                  class="file-item"
+                  :class="{ active: activeFileId === file.id }"
+                  @click="selectFile(file.id)"
+                  @contextmenu.prevent="showFileMenu($event, file)"
+                >
+                  <div class="file-item-main">
+                    <div class="file-item-title">
+                      <i v-if="file.type === 'draw'" class="fa-solid fa-palette file-type-icon draw-type" title="画板文件"></i>
+                      <i v-else class="fa-regular fa-note-sticky file-type-icon note-type" title="笔记文件"></i>
+                      <span v-html="highlightSearch(file.title || '未命名笔记')"></span>
+                    </div>
+                    <div class="file-item-meta">
+                      <i v-if="file.pinned" class="fa-solid fa-thumbtack file-badge-icon" title="已置顶"></i>
+                      <i v-if="file.starred" class="fa-solid fa-star file-badge-icon starred" title="已收藏"></i>
+                      <i v-if="file.cloudSynced" class="fa-solid fa-cloud file-badge-icon" :title="file.cloudVisibility === 'public' ? '已同步(公开)' : '已同步(私密)'" :style="{ color: file.cloudVisibility === 'public' ? 'var(--success)' : 'var(--accent)' }"></i>
+                      <span class="file-item-date">{{ formatDate(file.updatedAt) }}</span>
+                    </div>
+                  </div>
+                  <div v-if="file.tags && file.tags.length" class="file-item-tags">
+                    <span
+                      v-for="tag in file.tags.slice(0, 3)"
+                      :key="tag"
+                      class="file-tag"
+                      @click.stop="tagFilter = tag"
+                    >{{ tag }}</span>
+                  </div>
                 </div>
-                <div class="file-item-meta">
-                  <i v-if="file.pinned" class="fa-solid fa-thumbtack file-badge-icon" title="已置顶"></i>
-                  <i v-if="file.starred" class="fa-solid fa-star file-badge-icon starred" title="已收藏"></i>
-                  <i v-if="file.cloudSynced" class="fa-solid fa-cloud file-badge-icon" :title="file.cloudVisibility === 'public' ? '已同步(公开)' : '已同步(私密)'" :style="{ color: file.cloudVisibility === 'public' ? 'var(--success)' : 'var(--accent)' }"></i>
-                  <span class="file-item-date">{{ formatDate(file.updatedAt) }}</span>
-                </div>
-              </div>
-              <div v-if="file.tags && file.tags.length" class="file-item-tags">
-                <span
-                  v-for="tag in file.tags.slice(0, 3)"
-                  :key="tag"
-                  class="file-tag"
-                  @click.stop="tagFilter = tag"
-                >{{ tag }}</span>
-              </div>
-            </div>
-            <div v-if="filteredFiles.length === 0" class="sidebar-empty">
+              </template>
+            </VirtualList>
+            <div v-else class="sidebar-empty">
               <i class="fa-regular fa-note-sticky"></i>
               <span>{{ searchQuery || tagFilter ? '无匹配笔记' : '暂无笔记' }}</span>
             </div>
@@ -1154,6 +1181,7 @@ import AppNav from '@/components/AppNav.vue';
 import DrawCanvas from '@/components/DrawCanvas.vue';
 import CloudImagePicker from '@/components/CloudImagePicker.vue';
 import Segmented from '@/components/Segmented.vue';
+import VirtualList from '@/components/VirtualList.vue';
 import api from '@/utils/api';
 import cloudPickerReceiver from '@/mixins/cloud-picker-receiver';
 import orientation from '@/mixins/orientation';
@@ -1321,7 +1349,7 @@ var NOTE_TEMPLATES = [
 export default {
   name: 'Notes',
   mixins: [cloudPickerReceiver, orientation],
-  components: { AppNav: AppNav, DrawCanvas: DrawCanvas, CloudImagePicker: CloudImagePicker, Segmented: Segmented },
+  components: { AppNav: AppNav, DrawCanvas: DrawCanvas, CloudImagePicker: CloudImagePicker, Segmented: Segmented, VirtualList: VirtualList },
   data: function() {
     return {
       files: [],
@@ -1635,6 +1663,27 @@ showFileMenuModal: false,
     }
   },
   watch: {
+    // 选中项滚进可视区。
+    //
+    // 虚拟滚动之后，选中的笔记可能落在渲染窗口之外 —— 侧栏看着就是
+    // 「明明选中了却看不到高亮在哪」。activeFileId 有好几处会被改
+    // （selectFile / loadData / deleteFile 后重选 / 撤销恢复），
+    // 逐个调用 scrollToIndex 必然漏，所以在这里统一兜住。
+    //
+    // 只在选中项真的不在可视区时才滚（scrollToIndex 内部已判），
+    // 正常点击列表里的项不会产生多余的滚动动作。
+    activeFileId: function() {
+      var self = this;
+      this.$nextTick(function() {
+        var vl = self.$refs.fileList;
+        if (!vl || !vl.scrollToIndex) return;
+        var idx = -1;
+        for (var i = 0; i < self.filteredFiles.length; i++) {
+          if (self.filteredFiles[i].id === self.activeFileId) { idx = i; break; }
+        }
+        if (idx >= 0) vl.scrollToIndex(idx);
+      });
+    },
     // 搜索输入防抖：输入框绑 searchInput，这里等 200ms 静默后才落到 searchQuery。
     //
     // 为什么要分两个变量：filteredFiles 的匹配范围**包含笔记正文**，
@@ -4303,6 +4352,26 @@ html.no-flex-gap .sidebar-top > * + * {
 .sidebar-file-list {
   flex: 1;
   overflow-y: auto;
+  padding: 4px 12px;
+}
+
+/* 虚拟列表接管滚动后，.sidebar-file-list 自己不能再滚 ——
+   两个可滚容器套在一起会出现双滚动条，且外层那个永远滚不动。
+
+   ⚠️ 这里刻意**不用** `:has(.file-list-virtual)` 来自动判定：
+   :has() 需要 Chrome 105+，而本项目的基线是 Chrome 80 / Android 9 / 微信 X5
+   （见 vite.config.js）。在旧内核上这条规则会被整条忽略，
+   于是又退回双滚动条 —— 而双滚动条的表现是「外层滚不动」，
+   很难被联想到是选择器不兼容。所以改用显式的修饰类 has-vlist。 */
+.sidebar-file-list.has-vlist {
+  overflow-y: hidden;
+}
+
+/* 虚拟列表容器：内边距从 .sidebar-file-list 挪到这里 ——
+   外层若还留着 padding，占位 div（上下两条撑高度的）也会被撑开，
+   导致总高度多出两个 padding，滚动条比例失真。 */
+.file-list-virtual {
+  height: 100%;
   padding: 4px 12px;
 }
 
