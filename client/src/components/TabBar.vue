@@ -193,7 +193,7 @@ export default {
   /* 出现时从底部浮入（只播一次）；transform/opacity 都在合成层 */
   animation: tabbarIn 0.4s var(--ease-out);
   /* 抽屉开合时底栏退让（见 html.drawer-open），也要有过渡 */
-  transition: transform 0.28s var(--ease-out), opacity 0.28s ease;
+  transition: transform var(--dur-slow) var(--ease-out), opacity var(--dur-slow) ease;
 }
 
 @keyframes tabbarIn {
@@ -226,7 +226,7 @@ html.drawer-open .tabbar {
   width: calc((100% - 12px) / 6);
   border-radius: var(--radius-md);
   background: var(--accent-soft);
-  transition: transform 0.28s var(--ease-out), opacity 0.2s ease;
+  transition: transform var(--dur-slow) var(--ease-out), opacity var(--dur-base) ease;
   pointer-events: none;
 }
 

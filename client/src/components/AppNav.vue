@@ -385,6 +385,21 @@ export default {
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
+  /* 嵌入态唯一的「退回 ClassIntra」出口，28px 高在触屏上偏小。
+     命中区向上下扩到 40px，视觉不变 —— 原理见 styles/global.css「触控命中区」。 */
+  position: relative;
+}
+
+.ci-back-btn::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 40px;
+  transform: translateY(-50%);
+  background: transparent;
+  z-index: 1;
 }
 .ci-back-btn i {
   font-size: 11px;
@@ -488,6 +503,22 @@ export default {
   font-family: inherit;
   cursor: pointer;
   transition: background var(--transition), border-color var(--transition);
+}
+
+/* 头像菜单的入口，31px 高在触屏上偏小。
+   命中区向上下扩到 40px —— 原理见 styles/global.css「触控命中区」。
+   ⚠️ z-index 必须低于下方展开的用户菜单（.user-menu），
+   否则撑出来的透明区会盖住菜单项，把菜单点穿。 */
+.user-chip::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 40px;
+  transform: translateY(-50%);
+  background: transparent;
+  z-index: 0;
 }
 
 .user-chip > * + * {

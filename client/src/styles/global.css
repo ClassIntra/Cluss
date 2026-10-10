@@ -68,6 +68,14 @@
   --shadow-float: 0 18px 40px rgba(31, 41, 72, 0.14);
   --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.85);
 
+  /* 代码块：两种主题下都用深色底。
+     这是刻意的 —— 深浅主题都换色会让「这是一段代码」的视觉信号
+     在切换主题时消失，代码块混进正文里认不出来。
+     提到令牌是为了让「代码块底色」这件事只有一处定义，
+     而不是各处写 #1e1e2e（实测 Notes.vue / 记录页 / 画布共 4 处）。 */
+  --code-bg: #1e1e2e;
+  --code-fg: #e8e8e8;
+
   /* 间距节奏 */
   --gap-xs: 6px;
   --gap-sm: 10px;
@@ -1346,7 +1354,7 @@ html.no-flex-gap .chart-viewer-actions > * + * {
 /* ---------- 动效 ---------- */
 .fade-enter-active,
 .fade-leave-active {
-  transition: opacity 0.22s ease;
+  transition: opacity var(--dur-base) ease;
 }
 
 .fade-enter,
@@ -1373,7 +1381,7 @@ html.no-flex-gap .chart-viewer-actions > * + * {
 .page-slide-right-enter-active,
 .page-slide-left-leave-active,
 .page-slide-right-leave-active {
-  transition: transform 0.26s var(--ease-out), opacity 0.26s var(--ease-out);
+  transition: transform var(--dur-slow) var(--ease-out), opacity var(--dur-slow) var(--ease-out);
 }
 
 .page-slide-left-enter-active,
@@ -1437,7 +1445,7 @@ html.no-flex-gap .chart-viewer-actions > * + * {
 }
 
 .page-fade-enter-active {
-  transition: opacity 0.22s ease;
+  transition: opacity var(--dur-base) ease;
 }
 
 .page-fade-enter,
@@ -1515,7 +1523,7 @@ html.use-drawer .app-sidebar-drawer {
   border-right: 1px solid var(--glass-border);
   box-shadow: var(--shadow-float);
   transform: translateX(-102%);
-  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+  transition: transform var(--dur-slow) cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 html.use-drawer .app-sidebar-drawer.is-open {
@@ -1979,7 +1987,7 @@ html.no-flex-gap .empty-hint > * + * {
   height: 100%;
   border-radius: var(--radius-pill);
   background: linear-gradient(90deg, var(--chart-a), var(--chart-b));
-  transition: width 0.4s cubic-bezier(0.32, 0.72, 0, 1);
+  transition: width var(--dur-slow) cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 /* 移动端输入框聚焦时，字号小于 16px 会被 iOS 自动放大整个页面 */

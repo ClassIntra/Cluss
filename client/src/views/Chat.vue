@@ -2613,6 +2613,22 @@ html.no-flex-gap .composer-actions > * + * {
   font-size: 12px;
   line-height: 1.4;
   cursor: pointer;
+  /* 命中区扩到 40px，视觉不变 —— 原理见 styles/global.css「触控命中区」。
+     「深度思考」是学生常开的开关，12px 字号 + 6px 内边距只有 30px 高，
+     在输入框那一行密集控件里很容易点空。 */
+  position: relative;
+}
+
+.think-btn::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 40px;
+  transform: translateY(-50%);
+  background: transparent;
+  z-index: 1;
 }
 .think-btn-on {
   background: var(--accent);

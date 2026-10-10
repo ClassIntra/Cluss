@@ -144,7 +144,7 @@ export default {
 
 .toast-enter-active,
 .toast-leave-active {
-  transition: opacity 0.24s ease, transform 0.24s cubic-bezier(0.32, 0.72, 0, 1);
+  transition: opacity var(--dur-base) ease, transform var(--dur-base) cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 .toast-enter,

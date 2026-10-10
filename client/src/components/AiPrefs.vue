@@ -490,6 +490,21 @@ html.no-flex-gap .row > * + * {
   cursor: pointer;
   /* 按下即时、松开柔和回落（与全站触屏手感一致） */
   transition: color var(--transition), border-color var(--transition), background var(--transition);
+  /* 28px 高在触屏上偏小，而这是人格的「编辑 / 删除」—— 误触代价高。
+     命中区向上下扩到 40px，视觉不变（原理见 styles/global.css「触控命中区」）。 */
+  position: relative;
+}
+
+.mini-btn::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 40px;
+  transform: translateY(-50%);
+  background: transparent;
+  z-index: 1;
 }
 
 @media (hover: hover) {
@@ -500,10 +515,12 @@ html.no-flex-gap .row > * + * {
 }
 }
 
+@media (hover: hover) {
 .mini-btn.is-danger:hover {
   border-color: var(--danger);
   background: var(--danger-tint);
   color: var(--danger);
+}
 }
 
 /* ---------- 编辑器 ---------- */

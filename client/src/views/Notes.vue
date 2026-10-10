@@ -4160,8 +4160,10 @@ html.no-flex-gap .create-menu-item > * + * {
 }
 
 
+@media (hover: hover) {
 .create-menu-item:hover {
   background: var(--bg-base);
+}
 }
 
 .create-menu-item:active {
@@ -4283,8 +4285,10 @@ html.no-flex-gap .sidebar-top > * + * {
   transition: background var(--duration-fast) var(--ease-standard);
 }
 
+@media (hover: hover) {
 .sidebar-new-btn:hover {
   opacity: 0.9;
+}
 }
 
 .sidebar-import-btn {
@@ -4303,10 +4307,12 @@ html.no-flex-gap .sidebar-top > * + * {
   transition: background-color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-standard), opacity var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
 }
 
+@media (hover: hover) {
 .sidebar-import-btn:hover {
   color: var(--accent);
   border-color: var(--accent);
   background: var(--accent-soft);
+}
 }
 
 .tag-filter-bar {
@@ -4337,9 +4343,11 @@ html.no-flex-gap .sidebar-top > * + * {
   background: none;
 }
 
+@media (hover: hover) {
 .tag-filter-clear:hover {
   color: var(--danger);
   background: var(--danger-soft);
+}
 }
 
 .tag-filter-clear:active {
@@ -4383,8 +4391,10 @@ html.no-flex-gap .sidebar-top > * + * {
   margin-bottom: 2px;
 }
 
+@media (hover: hover) {
 .file-item:hover {
   background: var(--accent-soft);
+}
 }
 
 .file-item:active {
@@ -4462,8 +4472,10 @@ html.no-flex-gap .file-item-tags > * + * {
   transition: background var(--duration-fast) var(--ease-standard);
 }
 
+@media (hover: hover) {
 .file-tag:hover {
   background: var(--accent-ring);
+}
 }
 
 .sidebar-empty {
@@ -4873,8 +4885,10 @@ html.no-flex-gap .editor-footer > * + * {
   cursor: pointer;
   white-space: nowrap;
 }
+@media (hover: hover) {
 .assist-menu-item:hover {
   background: var(--bg-base);
+}
 }
 .assist-menu-item:active {
   transform: scale(0.97);
@@ -4945,6 +4959,22 @@ html.no-flex-gap .assist-actions > * + * {
   font-size: var(--font-size-xs, 12px);
   cursor: pointer;
   white-space: nowrap;
+  /* 命中区向上下扩到 40px，视觉不变（原理见 styles/global.css「触控命中区」）。
+     这是 AI 助手的「停止 / 替换正文」—— 「停止」在生成中要点，
+     29px 的目标在平板上容易点空。 */
+  position: relative;
+}
+
+.assist-act-btn::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 40px;
+  transform: translateY(-50%);
+  background: transparent;
+  z-index: 1;
 }
 .assist-act-btn.primary {
   background: var(--accent);
@@ -5065,12 +5095,16 @@ html.no-flex-gap .editor-empty > * + * {
   transition: background var(--duration-fast) var(--ease-standard);
 }
 
+@media (hover: hover) {
 .editor-resizer:hover {
   background: var(--accent-soft);
 }
+}
 
+@media (hover: hover) {
 .editor-resizer:hover .resizer-line {
   background: var(--accent);
+}
 }
 
 .resizer-line {
@@ -5082,8 +5116,10 @@ html.no-flex-gap .editor-empty > * + * {
   transition: background var(--duration-fast) var(--ease-standard), height var(--duration-fast) var(--ease-standard);
 }
 
+@media (hover: hover) {
 .editor-resizer:hover .resizer-line {
   height: 48px;
+}
 }
 
 .preview-header {
@@ -5183,9 +5219,11 @@ html.no-flex-gap .modal-title > * + * {
   transition: background var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard);
 }
 
+@media (hover: hover) {
 .modal-close:hover {
   background: var(--accent-soft);
   color: var(--text-primary);
+}
 }
 
 .modal-close:active {
@@ -5308,9 +5346,11 @@ html.no-flex-gap .tag-list > * + * {
   transition: background-color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-standard), opacity var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
 }
 
+@media (hover: hover) {
 .tag-item:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
 }
 
 .tag-item.active {
@@ -5473,9 +5513,11 @@ html.no-flex-gap .context-menu-item > * + * {
   background: var(--bg-base);
 }
 
+@media (hover: hover) {
 .template-card:hover {
   border-color: var(--accent);
   background: var(--accent-soft);
+}
 }
 
 .template-icon {
@@ -5510,8 +5552,10 @@ html.no-flex-gap .context-menu-item > * + * {
   transition: background var(--duration-fast) var(--ease-standard);
 }
 
+@media (hover: hover) {
 .version-item:hover {
   background: var(--accent-soft);
+}
 }
 
 .version-info {
@@ -5813,8 +5857,10 @@ html.no-flex-gap .annotation-cards-label > * + * {
   transition: background var(--duration-fast) var(--ease-standard);
 }
 
+@media (hover: hover) {
 .resource-picker-item:hover {
   background: var(--bg-base);
+}
 }
 
 .resource-picker-item.is-dir {
@@ -5872,8 +5918,10 @@ html.no-flex-gap .mermaid-chart-actions > * + * {
 }
 
 
+@media (hover: hover) {
 .mermaid-chart-wrapper:hover .mermaid-chart-actions {
   opacity: 1;
+}
 }
 
 .mermaid-edit-btn,
@@ -5892,10 +5940,25 @@ html.no-flex-gap .mermaid-chart-actions > * + * {
   transition: background-color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-standard), opacity var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
 }
 
-.mermaid-edit-btn:hover,
+/* ⚠️ 这两条 hover 必须各自独立成块，不能写成
+   `.a:hover, @media (hover: hover) { .b:hover {} }` ——
+   那是**非法 CSS**：逗号后接 @media 会被 scoped 编译成
+   `@media[data-v-xxx] (hover: hover)`，整条规则静默失效。
+   构建时只报 "Unexpected @media" 警告但仍然通过，很容易被忽略。
+   这是本文件里原本就存在的一处写法错误（此前「编辑图表」的
+   hover 效果其实一直没生效），这次一并修掉。 */
+@media (hover: hover) {
+.mermaid-edit-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+}
+
+@media (hover: hover) {
 .mermaid-zoom-btn:hover {
   color: var(--accent);
   border-color: var(--accent);
+}
 }
 
 .mermaid-edit-btn:active,
@@ -5975,10 +6038,12 @@ html.no-flex-gap .zoom-controls > * + * {
   transition: background-color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-standard), opacity var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
 }
 
+@media (hover: hover) {
 .zoom-ctrl-btn:hover {
   background: var(--accent);
   color: #FFFFFF;
   border-color: var(--accent);
+}
 }
 
 .zoom-ctrl-btn:active {
@@ -6126,11 +6191,22 @@ html.no-flex-gap .chart-tool-btn > * + * {
 }
 
 
-.chart-tool-btn:hover,
+/* :hover 与 :active 必须拆开：
+   合并写（`.x:hover, .x:active {}`）在触屏上点完之后，
+   :hover 会「粘住」—— 按钮一直保持高亮，看起来像坏了。
+   触屏只有 :active 是对的（有按下反馈、松开复原）。 */
 .chart-tool-btn:active {
   color: var(--accent);
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+@media (hover: hover) {
+.chart-tool-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
 }
 
 .chart-preview-empty {
@@ -6272,8 +6348,10 @@ html.no-flex-gap .chart-preview-empty > * + * {
   font-size: var(--font-size-sm);
 }
 
+@media (hover: hover) {
 .command-palette-item:hover {
   background: var(--accent-soft);
+}
 }
 
 .command-palette-label {
@@ -6476,7 +6554,8 @@ html.no-flex-gap .file-item-meta > * + * {
   margin: 8px 0;
   border-radius: var(--radius-sm);
   overflow: hidden;
-  background: #1e1e2e;
+  /* 深浅主题共用同一个深色底 —— 见 global.css 里 --code-bg 的说明 */
+  background: var(--code-bg);
 }
 
 .markdown-body >>> .code-block-inner {
@@ -6563,8 +6642,10 @@ html.no-flex-gap .file-item-meta > * + * {
   color: var(--text-primary);
 }
 
+@media (hover: hover) {
 .markdown-body >>> table.md-table tr:hover td {
   background: var(--accent-soft);
+}
 }
 
 .markdown-body >>> a {
@@ -6572,8 +6653,10 @@ html.no-flex-gap .file-item-meta > * + * {
   text-decoration: none;
 }
 
+@media (hover: hover) {
 .markdown-body >>> a:hover {
   text-decoration: underline;
+}
 }
 
 /* 无超能岛浏览器权限时链接转纯文本样式 */
@@ -6808,8 +6891,10 @@ html.no-flex-gap .cloud-note-item > * + * {
 }
 
 
+@media (hover: hover) {
 .cloud-note-item:hover {
   background: var(--accent-soft);
+}
 }
 
 .cloud-note-info {
@@ -6876,9 +6961,11 @@ html.no-flex-gap .cloud-note-actions > * + * {
   transition: background var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard);
 }
 
+@media (hover: hover) {
 .cloud-action-btn:hover {
   background: var(--accent-soft);
   color: var(--accent);
+}
 }
 
 .cloud-action-btn:active {
@@ -6886,9 +6973,11 @@ html.no-flex-gap .cloud-note-actions > * + * {
   opacity: 0.7;
 }
 
+@media (hover: hover) {
 .cloud-action-btn.danger:hover {
   background: var(--danger-soft);
   color: var(--danger);
+}
 }
 
 .cloud-folder-select {
@@ -6929,8 +7018,10 @@ html.no-flex-gap .cloud-note-actions > * + * {
   border-bottom-color: var(--accent);
 }
 
+@media (hover: hover) {
 .cloud-tab-btn:hover {
   color: var(--accent);
+}
 }
 
 .public-note-item {

@@ -214,6 +214,45 @@ function check(name, ok, detail) {
     check(pages[i][1] + '页 命中区已生效', g.hitUp18 === 'hit', g.hitUp18);
   }
 
+  // ---- 5. 本轮新增的命中区 ----
+  console.log('\n【5】新增命中区（think-btn / mini-btn / ci-back-btn / assist-act-btn）');
+  var NEW_ONES = [
+    { cls: 'think-btn', label: '深度思考开关' },
+    { cls: 'mini-btn', label: '人格编辑/删除' },
+    { cls: 'ci-back-btn', label: '退回 ClassIntra' },
+    { cls: 'assist-act-btn', label: '停止/替换正文' }
+  ];
+  for (var k = 0; k < NEW_ONES.length; k++) {
+    var spec = NEW_ONES[k];
+    var got2 = await E(`
+      (function(){
+        var prev = document.getElementById('probe-new');
+        if (prev) prev.remove();
+        var host = document.createElement('div');
+        host.id = 'probe-new';
+        host.style.cssText = 'position:fixed;left:180px;top:180px;z-index:99999;background:#fff;padding:24px;';
+        host.innerHTML = '<button class="${spec.cls}" id="pn">测试</button>';
+        document.body.appendChild(host);
+        var el = document.getElementById('pn');
+        if (!el) { return JSON.stringify({ err: 'not-rendered' }); }
+        var r = el.getBoundingClientRect();
+        var cx = r.left + r.width/2, cy = r.top + r.height/2;
+        function hit(dy){
+          var t = document.elementFromPoint(cx, cy + dy);
+          return t && (t === el || t.contains(el)) ? 'hit' : (t ? (t.className||t.tagName) : 'null');
+        }
+        var out = { h: Math.round(r.height), center: hit(0), up: hit(-12), down: hit(12), upFar: hit(-17) };
+        host.remove();
+        return JSON.stringify(out);
+      })()
+    `);
+    var g2 = JSON.parse(got2);
+    if (g2.err) { console.log('  ! ' + spec.label + ' 未渲染'); fail++; continue; }
+    check(spec.label + ' 命中区已生效(±12px)', g2.center === 'hit' && g2.up === 'hit' && g2.down === 'hit',
+      '中心=' + g2.center + ' 上=' + g2.up + ' 下=' + g2.down);
+    check(spec.label + ' 命中区已到 ±17px', g2.upFar === 'hit', '上17px=' + g2.upFar);
+  }
+
   console.log('\n=== 结果：' + pass + ' 通过 / ' + fail + ' 失败 ===');
   c.ws.close(); ch.kill();
   try { fs.rmSync(prof, { recursive: true, force: true }); } catch (e) {}

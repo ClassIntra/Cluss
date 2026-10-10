@@ -1430,8 +1430,11 @@ html.no-flex-gap .dc-slider-group > * + * {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: #FFFFFF;
-  border: none;
+  /* 用 surface 令牌而不是写死 #fff：深色模式下纯白的滑块手柄会显得刺眼，
+     且与轨道（浅灰）拉不开层次 —— 手指按住时反而看不清自己在拖哪条。
+     见 global.css 的 --surface-1 / --surface-2。 */
+  background: var(--surface-2);
+  border: 1px solid var(--menu-border);
   box-shadow: var(--shadow-sm);
   cursor: pointer;
 }
@@ -1479,7 +1482,8 @@ html.no-flex-gap .dc-anno-tools > * + * {
   flex: 1;
   min-height: 0;
   position: relative;
-  background: #e8e8e8;
+  /* 画布空白区的底色：用 --code-fg（浅灰），深浅主题下都能看清画布边界 */
+  background: var(--code-fg);
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -1559,7 +1563,9 @@ html.no-flex-gap .dc-anno-tools > * + * {
   border: 2px solid var(--border-color);
   border-radius: var(--radius-sm);
   overflow: hidden;
-  background: #fff;
+  /* 缩略图底色跟随主题：它映射的是画布区域，画布底色变了它也该变。
+     写死 #fff 的话深色模式下会出现「深色画布上浮一块纯白缩略图」。 */
+  background: var(--surface-1);
   box-shadow: var(--shadow-md);
   cursor: pointer;
 }

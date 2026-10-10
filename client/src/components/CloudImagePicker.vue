@@ -258,8 +258,28 @@ html.no-flex-gap .picker-header-actions > * + * {
   padding: 4px;
   cursor: pointer;
   transition: color var(--duration-fast) var(--ease-standard);
+  /* 命中区扩到 40px，视觉不变（原理见 styles/global.css「触控命中区」）。
+     这是看图时的「全屏浏览」，触屏上属于高频操作。 */
+  position: relative;
 }
+
+.picker-fullscreen-btn::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 40px;
+  height: 40px;
+  transform: translate(-50%, -50%);
+  background: transparent;
+  z-index: 1;
+}
+
+/* :hover 必须收进 @media (hover: hover) —— 触屏上它会「粘住」，
+   点完图标颜色一直变着，看起来像坏了。这是项目在 global.css 里立过的规矩。 */
+@media (hover: hover) {
 .picker-fullscreen-btn:hover { color: var(--primary-color); }
+}
 .picker-close {
   background: none;
   border: none;
@@ -269,8 +289,10 @@ html.no-flex-gap .picker-header-actions > * + * {
   cursor: pointer;
   transition: color var(--duration-fast) var(--ease-standard);
 }
+@media (hover: hover) {
 .picker-close:hover {
   color: var(--text-primary);
+}
 }
 
 .picker-search {
@@ -417,9 +439,11 @@ html.no-flex-gap .picker-loading, .picker-empty > * + * {
   transition: transform var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
 }
 
+@media (hover: hover) {
 .picker-item:hover {
   transform: scale(1.02);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
 }
 
 .picker-img {
