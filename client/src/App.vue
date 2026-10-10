@@ -66,6 +66,43 @@ export default {
       }, 3200);
     }
   },
+  mounted: function() {
+    this.prefetchRoutes();
+  },
+  methods: {
+    // 空闲时把其余页面的代码先拉下来。
+    //
+    // 为什么需要：所有页面都是异步组件（router 里一律 import()），
+    // 首次点某个标签要现场下载它的 chunk —— Notes 243KB、Chat 41KB，
+    // 在平板的移动网络上这一下就是好几秒的空白，体感就是「点击没反应」。
+    //
+    // 为什么用 requestIdleCallback 而不是 mounted 里直接 import：
+    // 首屏还在渲染、正在跑 mermaid/katex 初始化，这时候抢主线程会把
+    // 首屏也拖慢。空闲回调里做，既不抢首屏，又能保证大部分时候
+    // 在用户点之前就下好了。
+    //
+    // 失败静默：预取是纯优化，取不到就退化成原来的「点的时候再下」，
+    // 不该因为它影响任何功能。
+    prefetchRoutes: function() {
+      var self = this;
+      var run = function() {
+        navItems.forEach(function(item) {
+          if (!item.chunk) return;
+          // import() 失败会返回 rejected promise，这里吞掉即可
+          var p = item.chunk();
+          if (p && p.catch) p.catch(function() {});
+        });
+      };
+
+      if (typeof window.requestIdleCallback === 'function') {
+        var idle = window.requestIdleCallback(run, { timeout: 3000 });
+      } else {
+        // 旧内核（Chrome 80 有 requestIdleCallback，但个别 WebView 壳可能没有）
+        setTimeout(run, 1200);
+      }
+      void self;
+    }
+  },
   beforeDestroy: function() {
     clearTimeout(this._toastTimer);
   }

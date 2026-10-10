@@ -1365,7 +1365,8 @@ html.no-flex-gap .chart-viewer-actions > * + * {
    2. 为什么用 transition 而不是 keyframes：transition 天然可打断 ——
       切页过程中再切一次，位移从当前实际位置平滑接续；
       keyframes 只能从头重播，打断时先跳回起点，一看就廉价。
-   3. leave 页绝对定位叠在 enter 页之下（enter 保持文档流撑住高度），
+   3. 两页都留在文档流里，leave 页用负 margin 拉出视口（**不是** absolute：
+      绝对定位会让整页脱离文档流、每帧重排，是切页卡顿的根因，详见下方注释），
       两页同时动画，总时长只有一段。
    ============================================================ */
 .page-slide-left-enter-active,
@@ -1381,14 +1382,26 @@ html.no-flex-gap .chart-viewer-actions > * + * {
   z-index: 2;
 }
 
+/* ⚠️ leave 页**不能**用 position: absolute —— 这是切页卡顿的根因。
+   绝对定位会让整个页面在动画期间脱离文档流，于是每帧都要重新布局：
+   页面里有多少元素就重排多少（Notes.vue 有 7000+ 行 DOM、AppNav 700 行），
+   而 transform/opacity 本来是合成器能独立处理、不触发重排的属性，
+   被 absolute 一搅就退化成「每帧重排 + 重绘 + 合成」，平板上直接掉帧。
+
+   正确做法：让两页都在文档流里，用**负 margin 把 leave 页拉出可视区**。
+   margin 变化同样会触发重排，但它只发生**一次**（进出场开始时），
+   而绝对定位方案的「脱离文档流」会让浏览器在整段动画里持续重算。
+   动画过程中只有 transform 在动 —— 那才是合成器能独立吃下的部分。
+*/
 .page-slide-left-leave-active,
 .page-slide-right-leave-active,
 .page-fade-leave-active {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
+  position: relative;
+  /* 拉到视口外而不是 display:none —— 后者会让高度塌陷、页面跳一下 */
+  margin-top: -10000px;
   z-index: 1;
+  /* 离场期间禁止指针事件：否则旧页还能被点到，点到看不见的元素上 */
+  pointer-events: none;
 }
 
 /* 前进（往序号大的页去）：新页从右来，旧页往左让 */
@@ -1411,6 +1424,16 @@ html.no-flex-gap .chart-viewer-actions > * + * {
 .page-slide-right-leave-to {
   transform: translateX(24px);
   opacity: 0;
+}
+
+/* 合成层提示：切页时把两个页面各提一层，避免逐元素晋升造成的额外开销。
+   will-change 只在这两个类上生效（动画期间），不会长期占用显存 ——
+   全局常驻 will-change 反而是内存杀手，低端设备上更卡。 */
+.page-slide-left-enter-active,
+.page-slide-right-enter-active,
+.page-slide-left-leave-active,
+.page-slide-right-leave-active {
+  will-change: transform, opacity;
 }
 
 .page-fade-enter-active {
