@@ -62,9 +62,19 @@ function verifyToken(token) {
   }
 
   // 共享密钥兜底：CI 切换签名方式期间联登不会中断
+  //
+  // ⚠️ 这里必须留日志，原因有两个：
+  //   1. 公钥配错时验签会**静默**落到这一支（公钥解析失败也在这被吞掉），
+  //      联登照常工作、无一条报错，运维会一直以为自己已经切到非对称了。
+  //   2. 它是「过渡期能否收尾」的另一半判据：ClassIntra 侧同样会打
+  //      「命中 HS256 兜底」的日志，两边对照就能看出旧 token 是否已清空。
   if (config.ci.jwtSecret) {
     var ciDecoded = verifyWith(token, config.ci.jwtSecret);
-    if (ciDecoded) return { valid: true, data: ciDecoded, source: 'classintra' };
+    if (ciDecoded) {
+      console.warn('[jwt] 命中 CI 共享密钥兜底（过渡期路径）user_id=%s',
+        ciDecoded.user_id || '(未知)');
+      return { valid: true, data: ciDecoded, source: 'classintra' };
+    }
   }
 
   return { valid: false, data: null, source: '' };
