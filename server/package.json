@@ -5,7 +5,19 @@
   "description": "Cluss 服务端（Express + SQLite + JWT）",
   "scripts": {
     "start": "node src/app.js",
-    "dev": "node src/app.js"
+    "dev": "node src/app.js",
+    "verify:points": "node scripts/verify-points.cjs",
+    "verify:pricing": "node scripts/verify-pricing.cjs",
+    "verify:credit-gate": "node scripts/verify-credit-gate.cjs",
+    "verify:jwt": "node scripts/verify-jwt.js",
+    "verify:turn": "node scripts/verify-turn-assembly.cjs",
+    "verify:output": "node scripts/verify-output-experience.cjs",
+    "verify:all": "node scripts/verify-points.cjs && node scripts/verify-pricing.cjs && node scripts/verify-credit-gate.cjs && node scripts/verify-jwt.js && node scripts/verify-turn-assembly.cjs && node scripts/verify-output-experience.cjs",
+    "perf:gate": "node scripts/perf-gate.cjs",
+    "perf:audit": "node scripts/perf-audit.cjs",
+    "perf:stream": "node scripts/perf-stream.cjs",
+    "perf:real-data": "node scripts/perf-real-data.cjs",
+    "perf:nav": "node scripts/measure-nav-perf.cjs"
   },
   "dependencies": {
     "axios": "^1.19.0",
