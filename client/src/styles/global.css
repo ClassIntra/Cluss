@@ -33,7 +33,15 @@
   /* 文字 */
   --text-primary: #1c1d21;
   --text-secondary: #5a6273;
-  --text-tertiary: #8b93a5;
+  /* 辅助文字：#6b7280 是本文件开头设计约定里写明的下限色
+     （"辅助文字降到 #6b7280 但不低于对比度要求"）。
+     但实测本项目的底色不是纯白而是 #eef1f8（--bg-base），
+     #6b7280 在它上面只有 4.28:1，仍差一点到 WCAG AA 的 4.5:1 ——
+     所以再压深一档到 #656c79（4.67:1）。它与 --text-secondary
+     (#5a6273, 5.42:1) 之间仍保持可辨的层次，不会塌成同一级。
+     原先的 #8b93a5 在同底色上只有 2.73:1，平板上整片
+     "分区标题 / 提示文案 / 空态说明"都因此发虚看不清。 */
+  --text-tertiary: #656c79;
   --text-invert: #ffffff;
 
   /* 语义色 */
@@ -131,6 +139,8 @@
   --purple-a: #b9a2ff;
   --purple-soft: #ede8ff;
   --purple-text: #6b4ee6;
+  --pink-soft: #fdeef5;
+  --pink-text: #b0437c;
   --danger-grad-a: #f0a95c;
   --danger-grad-b: #d64545;
   /* 登录/注册品牌区的柔光渐变 */
@@ -149,6 +159,16 @@
   /* Toast：两种主题下都走深底浅字，所以不随主题变 */
   --toast-success-bg: rgba(24, 128, 82, 0.94);
   --toast-error-bg: rgba(190, 52, 52, 0.94);
+
+  /* 图表全屏查看器：和图片全屏预览同理，铺在 --mask-deep 上，
+     两种主题下都是深底浅字，所以也不随主题翻转。 */
+  --viewer-bar-bg: rgba(38, 43, 56, 0.72);
+  --viewer-border: rgba(255, 255, 255, 0.16);
+  --viewer-text: #eef1f7;
+  --viewer-text-dim: rgba(255, 255, 255, 0.6);
+  --viewer-btn-bg: rgba(255, 255, 255, 0.1);
+  --viewer-btn-bg-hover: rgba(255, 255, 255, 0.22);
+  --viewer-accent: #7cb0ff;
 
   /* 视口高度：dvh 会随移动端地址栏收放变化，比 vh 更贴近真实可视区。
      不支持 dvh 的旧内核（Chrome 80 / X5）由下面的 vh 兜底 */
@@ -190,7 +210,7 @@ html[data-theme="dark"] {
 
   --text-primary: #eef1f7;
   --text-secondary: #a8b0c2;
-  --text-tertiary: #737d92;
+  --text-tertiary: #8b93a5;
   /* 注意：深色下主色仍是亮蓝，所以"反色文字"依旧要用白，
      不能跟着主题翻成深色（否则蓝底黑字，按钮会糊） */
   --text-invert: #ffffff;
@@ -232,6 +252,8 @@ html[data-theme="dark"] {
   --purple-a: #c3b0ff;
   --purple-soft: rgba(165, 139, 255, 0.18);
   --purple-text: #c3b0ff;
+  --pink-soft: rgba(240, 138, 186, 0.16);
+  --pink-text: #f2a3c4;
 
   --brand-wash: linear-gradient(150deg, rgba(91, 155, 255, 0.12) 0%, rgba(146, 178, 255, 0.07) 100%);
   /* 深色下光球要压低透明度，否则变成脏斑 */
@@ -346,6 +368,42 @@ html.low-perf .bubble-assistant {
   background: var(--glass-bg-strong);
 }
 
+/* 通用兜底：把组件级的 backdrop-filter 全部关掉。
+   AppNavBar 顶栏、Login / Register 品牌卡、Admin / Cloud / Notes / WrongBook、
+   各类 Picker 与弹窗遮罩……模糊点散落在十几个组件的 scoped 样式里，
+   且 scoped 选择器特异性都高于上面逐条列举的规则，逐个补名单永远会漏。
+   用 * + !important 一次关干净（只关模糊，不动各组件自带的底色）。
+   低端 GPU 上这还有第二个收益：backdrop-filter 的合成层会以较低分辨率光栅化，
+   层里的文字跟着发虚；关掉后文字回到普通绘制路径，恢复锐利。 */
+html.low-perf * {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/* 几块"长期盖在滚动内容之上"的面板：底色半透明（--nav-bg / --glass-bg），
+   关掉模糊后会透出下方滚过的内容，文字压在半明半暗上显脏、显虚。
+   低配下直接给不透明底（弹窗遮罩除外 —— 那是遮罩，本来就该透）。 */
+html.low-perf .app-nav-bar,
+html.low-perf .nav-large-title-area,
+html.low-perf .auth-shell {
+  background: var(--bg-base);
+}
+
+/* 两个 fixed 光球是 560/620px 的大渐变层。在低端 WebView（Android 9）上，
+   视口内的大 fixed 渐变会让合成器反复做整块栅格化 —— 滚动时肉眼可见地掉帧。
+   低配下直接隐藏：背景渐变仍在，只是少一层柔光，无功能损失。 */
+html.low-perf body::before,
+html.low-perf body::after {
+  display: none;
+}
+
+/* background-attachment: fixed 是移动端"滚动重绘背景"的经典陷阱。
+   body 本身不滚动（滚动都发生在内部容器里），降成 scroll 视觉完全一样，
+   却不再把背景钉在视口层上反复重绘。 */
+html.low-perf body {
+  background-attachment: scroll;
+}
+
 .glass-soft {
   background: var(--glass-bg-soft);
   border: 1px solid var(--glass-border-soft);
@@ -381,10 +439,19 @@ html.low-perf .bubble-assistant {
   transition: transform var(--transition), box-shadow var(--transition),
     background var(--transition), color var(--transition);
   -webkit-tap-highlight-color: transparent;
+  /* 按钮文字禁止折行：窄面板里「拍照」「从云盘选择」这类按钮一旦换行
+     （"拍 照"两行）观感即碎。放不下时由外层容器换行或压缩按钮解决。 */
+  white-space: nowrap;
 }
 html.no-flex-gap .btn > * + * {
   margin-left: 8px;
 }
+
+
+
+
+
+
 
 @media (hover: hover) {
 .btn:hover {
@@ -681,6 +748,34 @@ a:focus-visible,
   outline-offset: 2px;
 }
 
+/* 旧内核兜底：Chrome 80 WebView 整个 :focus-visible 伪类都不认识，
+   上面那条规则被**整条丢弃**（不是忽略这一条选择器，是整条失效）。
+   结果点过的按钮会一直挂着 UA 默认焦点环 —— 目标平板上是一圈很扎眼的黄框，
+   触屏又不会自己把焦点移走，于是"所有点过的按钮都带黄框"。
+   由 main.js 的能力探测给 <html> 打 no-focus-visible（见那里的说明）。
+
+   默认**不画环**：触屏点击后不留痕才是正确观感；
+   只有检测到键盘导航（按下 Tab 时挂上的 kbd-focus）才把环还回来，
+   键盘可达性不降级。
+
+   刻意用**通配 :focus** 而不是逐个列 .btn/.tab-item… —— UA 焦点环并不认类名，
+   它只出现在「可聚焦元素」上（button / a[href] / input / select / textarea /
+   [tabindex] / [contenteditable]），而全站可点元素远不止那几个类
+   （另有 .nav-item / .chip-suggest / .segmented-item / .icon-btn / .tool-btn…，
+   以及散落的原生 <button>）—— 按类名列举必然漏，漏掉的照样挂黄框。
+   影响面仅限旧内核（no-focus-visible 只在探测失败时才挂上），
+   且全站没有别处依赖 :focus 的 outline（已 grep 确认），所以通配是安全的。
+   input/select 不受影响：它们的 outline:none 本就在基础规则里，
+   focus 态另有 border + box-shadow 表达。 */
+html.no-focus-visible :focus {
+  outline: none;
+}
+
+html.no-focus-visible.kbd-focus :focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* 顶栏 / 底栏是操作件：长按不应弹出文本选择 */
 .topbar,
 .tabbar {
@@ -726,6 +821,12 @@ html.no-flex-gap .alert > * + * {
   margin-left: 10px;
 }
 
+
+
+
+
+
+
 .alert-danger {
   background: var(--danger-soft);
   color: var(--danger-text);
@@ -765,6 +866,22 @@ html.no-flex-gap .alert > * + * {
 
 .md-body > *:first-child { margin-top: 0; }
 .md-body > *:last-child { margin-bottom: 0; }
+
+/* ---- 流式增量渲染的分段容器（见 utils/stream-paint.js）----
+   流式期间正文被拆成「冻结段 + 尾段」两个子节点：冻结段的内容在生成过程中
+   不再变化，浏览器因此完全不必重建它 —— 实测把长回答的每帧成本从
+   随长度增长（4980 字时 45ms/帧、97 次卡顿）压到恒定（约 12ms/帧、0 次卡顿）。
+
+   display: contents 让这两个容器**自身不生成盒子**，子元素直接参与 .md-body
+   的布局，因此边框/间距/换行表现与不拆时一致；不这么写会多出两层块级盒子，
+   段落间距与气泡内边距都会变。
+
+   代价：.md-body > *:first-child / :last-child 这两条（上面两行）会落到
+   display:contents 的容器上（它没有盒子，margin 无意义），于是真正的首块
+   会多出一次 margin-top。下面两条把它补回来。 */
+.md-stream > .md-part { display: contents; }
+.md-stream > .md-part:first-child > *:first-child { margin-top: 0; }
+.md-stream > .md-part:last-child > *:last-child { margin-bottom: 0; }
 
 .md-body h1,
 .md-body h2,
@@ -903,6 +1020,308 @@ html.no-flex-gap .alert > * + * {
   padding: 2px 0;
 }
 
+/* 表格外层滚动容器：窄屏（手机 / 竖屏平板）上列一多就把气泡撑破，
+   套上后是本表格自己横向滚，不会带着整页一起动。 */
+.md-body .table-wrap {
+  margin: 0.8em 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.md-body .table-wrap > table {
+  margin: 0;
+}
+
+/* ============================================================
+   Mermaid 图表
+   ------------------------------------------------------------
+   结构（由 utils/markdown.js 产出、utils/mermaid.js 填充）：
+     .mermaid-chart-wrapper
+       .mermaid-chart[data-code][data-pending][data-state]
+         → 骨架 / <svg> / .mermaid-error
+   ============================================================ */
+.mermaid-chart-wrapper {
+  position: relative;
+  margin: 0.9em 0;
+  padding: 14px 12px;
+  border-radius: var(--radius-md);
+  background: var(--ink-1);
+  border: 1px solid var(--ink-2);
+  overflow: hidden;
+}
+
+.mermaid-chart {
+  display: block;
+  min-height: 24px;
+  /* 宽图（甘特图、时序图）在窄屏上必须能横向滑，而不是被压成一张看不清的缩略图。
+     只开横向：页面纵向滚动的手势主轴交给浏览器自己判，横向容器不会把它吞掉。
+     overscroll-behavior-x 是不让滑到头时把页面手势（返回上一页）带出来。 */
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+.mermaid-chart svg {
+  display: block;
+  /* 真正的宽度三件套由 utils/mermaid.js 按「这张图自己的自然宽度」写成内联样式：
+       width: 100%            跟随容器
+       max-width: 自然宽       不放大小图
+       min-width: 自然宽×0.6875 不把宽图压到字看不清（改由容器横向滚动）
+     这里只留兜底。为什么必须逐图算：自然宽写在每张图自己的 viewBox / 内联 max-width 上，
+     4 节点流程图是 250，甘特图是 960 —— 想让它们都落在「和正文差不多大」的区间里，
+     只能按各自的自然宽去夹。 */
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+/* 可点开的提示：纯 CSS 画的，不引图标字体，也不往 Markdown 产物里塞 SVG
+   （塞进去就得多过一道净化，还可能被削掉，不值当）。
+   画在 wrapper 上而不是 .mermaid-chart 上 —— 后者现在是横向滚动容器，
+   挂在它里面的角标会跟着内容一起滑走。
+   触屏没有 hover，"光标变 zoom-in"等于没说，所以给一个看得见的展开标记 +
+   一次按压反馈（项目里"按下即时"的纪律同样适用于这里）。 */
+.mermaid-chart-wrapper.is-done {
+  cursor: zoom-in;
+}
+
+.mermaid-chart-wrapper.is-done:active {
+  background: var(--ink-2);
+}
+
+.mermaid-chart-wrapper.is-done::before,
+.mermaid-chart-wrapper.is-done::after {
+  content: '';
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border: 0 solid var(--text-secondary);
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+/* 两个对角括号 = 「可以展开」的通用写法，比原来 9×9 的小折角显眼得多 */
+.mermaid-chart-wrapper.is-done::before {
+  left: 6px;
+  top: 6px;
+  border-left-width: 2px;
+  border-top-width: 2px;
+  border-top-left-radius: 3px;
+}
+
+.mermaid-chart-wrapper.is-done::after {
+  right: 6px;
+  bottom: 6px;
+  border-right-width: 2px;
+  border-bottom-width: 2px;
+  border-bottom-right-radius: 3px;
+}
+
+/* 流式生成中的占位：给一个"在动"的东西，别让人对着空面板等 */
+.mermaid-skeleton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 12px;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+}
+
+html.no-flex-gap .mermaid-skeleton > * + * {
+  margin-left: 8px;
+}
+
+.mermaid-spin {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid var(--ink-4);
+  border-top-color: var(--accent);
+  animation: mermaid-spin 0.8s linear infinite;
+}
+
+@keyframes mermaid-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 渲染失败：说人话 + 把原始定义折起来，学生不用看一屏代码 */
+.mermaid-error {
+  padding: 13px 15px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  text-align: left;
+  font-size: 13px;
+  color: var(--danger-text);
+}
+
+.mermaid-error-title {
+  font-weight: 600;
+}
+
+.mermaid-error-hint {
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.mermaid-error-detail {
+  margin-top: 8px;
+}
+
+.mermaid-error-detail summary {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.mermaid-error-detail pre {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-xs);
+  background: var(--ink-1);
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.mermaid-error-msg {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  word-break: break-word;
+}
+
+/* 深色下 mermaid 的 default 主题出来的图偏亮底，换个底色更服帖。
+   图本身是 SVG，文字颜色由 mermaid theme='dark' 负责。 */
+html[data-theme="dark"] .mermaid-chart-wrapper {
+  background: var(--ink-1);
+}
+
+/* ============================================================
+   图表全屏查看器（utils/mermaid-viewer.js 命令式挂载到 body）
+   ============================================================ */
+.chart-viewer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 500;
+  display: flex;
+  flex-direction: column;
+  background: var(--mask-deep);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.chart-viewer-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* 顶部留出刘海/状态栏高度，横屏平板上按钮别被遮住 */
+  padding: calc(10px + env(safe-area-inset-top, 0px)) 14px 10px;
+  background: var(--viewer-bar-bg);
+  border-bottom: 1px solid var(--viewer-border);
+  color: var(--viewer-text);
+}
+
+html.no-flex-gap .chart-viewer-bar > * + * {
+  margin-left: 12px;
+}
+
+.chart-viewer-tip {
+  font-size: 12.5px;
+  color: var(--viewer-text-dim);
+}
+
+.chart-viewer-actions {
+  display: flex;
+  align-items: center;
+}
+
+html.no-flex-gap .chart-viewer-actions > * + * {
+  margin-left: 8px;
+}
+
+.chart-viewer-btn {
+  /* 44×40：手写 34px 高时实测偏小，横屏平板上拇指点「关闭」容易点到旁边那个「适应」。
+     窄屏（≤560px）会隐藏左侧提示文案，五个按钮加起来 302px，320px 的手机也放得下。 */
+  min-width: 44px;
+  height: 40px;
+  padding: 0 12px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: var(--viewer-btn-bg);
+  color: var(--viewer-text);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+@media (hover: hover) {
+  .chart-viewer-btn:hover {
+    background: var(--viewer-btn-bg-hover);
+  }
+}
+
+.chart-viewer-btn:active {
+  background: var(--viewer-btn-bg-hover);
+}
+
+.chart-viewer-btn.is-close {
+  color: var(--viewer-accent);
+}
+
+.chart-viewer-scale {
+  min-width: 46px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--viewer-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-viewer-stage {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  /* 手势全归我们处理：否则浏览器会先拿去做整页缩放/下拉刷新 */
+  touch-action: none;
+  cursor: grab;
+}
+
+.chart-viewer-stage:active {
+  cursor: grabbing;
+}
+
+.chart-viewer-inner svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+/* 查看器里的图表不该继承正文的字号/颜色限制 */
+.chart-viewer-inner {
+  color: var(--viewer-text);
+}
+
+@media (max-width: 560px) {
+  .chart-viewer-tip {
+    display: none;
+  }
+  .chart-viewer-actions {
+    margin-left: auto;
+  }
+}
+
 /* ---------- 滚动条 ---------- */
 ::-webkit-scrollbar {
   width: 8px;
@@ -1007,9 +1426,25 @@ html.no-flex-gap .alert > * + * {
    所有 :hover 规则现已收进 @media (hover: hover)，
    触屏设备根本收不到 hover 样式，无需再逐一覆盖抵消） */
 
+/* 尊重系统的「减弱动态效果」。两条声明的时长取值刻意不同，别改成一样：
+ *
+ * - transition-duration 必须是 0s，**不能是 0.01ms**。
+ *   非零时长会让 Chrome 把每一次属性变化都当成一次「进行中的 transition」，
+ *   而此时同步读取 getBoundingClientRect / getBBox 拿到的是**起始值**而不是新值。
+ *   mermaid 正是靠「插入 DOM 后立刻测量」来决定布局的，结果 dagre 按撑大的尺寸
+ *   排版，一张四节点的流程图 viewBox 会从 250×334 变成 3184×4245，
+ *   整体缩进气泡后节点只剩十几像素 —— 等于图表全废。
+ *   （实测：0.01ms 炸、0s 正常、transition-property:none 正常。
+ *    而且没法靠给 .mermaid-chart 子树开白名单绕开 —— mermaid 的测量容器
+ *    是临时挂在 document.body 上的，压根不在 .mermaid-chart 里面。）
+ *   语义上 0s 与 0.01ms 等价：都是「不过渡、立即可见」。
+ *
+ * - animation-duration 保留 0.01ms：它不参与布局测量，且保留一个非零时长
+ *   可以让 animationend 事件照常触发，万一有依赖它的收尾逻辑不会被挂住。
+ */
 @media (prefers-reduced-motion: reduce) {
   * {
-    transition-duration: 0.01ms !important;
+    transition-duration: 0s !important;
     animation-duration: 0.01ms !important;
   }
 }
@@ -1102,7 +1537,9 @@ html.has-tabbar #app-root > div:not(.toast) {
 .conv-list,
 .list-wrap,
 .form-scroll,
-.grid-wrap {
+.grid-wrap,
+.usage-page .body,
+.admin-page .body {
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
 }
@@ -1143,6 +1580,47 @@ html.has-tabbar #app-root > div:not(.toast) {
 
   .topbar-compact {
     padding: 6px 12px;
+  }
+
+  /* 侧栏只有 236px（面板内宽约 208px）：默认的 7px 14px 内边距会让
+     三档分段控件（如作文页「写范文/批改我的/要提纲」）放不下而横向裁切。
+     压一档内边距后三档总宽约 200px，刚好收进面板。
+     加 html 前缀：基础 .segmented-item 规则在打包顺序上更靠后，
+     同特异性会把它盖掉（与上文 :active 规则同理）。 */
+  html .segmented-item {
+    padding: 6px 10px;
+    font-size: 12.5px;
+  }
+  /* 顺带让面板里的分段控件占满整行，观感更稳 */
+  html .panel .segmented {
+    display: flex;
+  }
+  .panel .segmented > .segmented-item {
+    flex: 1;
+  }
+
+  /* 信息看板（管理页总览）：矮屏下 6 张指标卡 2 列×3 行占据近半屏，
+     压缩卡片并改 3 列×2 行，首屏能露出趋势图。 */
+  html .admin-page .metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  html .admin-page .metric {
+    padding: 10px 14px;
+  }
+  html .admin-page .metric-value {
+    margin-top: 3px;
+    font-size: 20px;
+  }
+
+  /* 用量页三张额度卡同理压缩，让「使用明细」首屏多露几行 */
+  html .usage-page .wallet-card {
+    padding: 10px 14px;
+  }
+  html .usage-page .wallet-value {
+    font-size: 22px;
+  }
+  html .usage-page .wallet-amount {
+    margin: 4px 0 6px;
   }
 }
 
@@ -1193,6 +1671,12 @@ html.no-flex-gap .segmented > * + * {
   margin-left: 2px;
 }
 
+
+
+
+
+
+
 .segmented-item {
   padding: 7px 14px;
   border: none;
@@ -1216,7 +1700,10 @@ html.no-flex-gap .segmented > * + * {
 
 .segmented-item.is-active {
   background: var(--surface-3);
-  color: var(--accent);
+  /* 用 --accent 作前景只有 4.35:1（在 #eef1f8 底色上，未达 WCAG AA 4.5:1）。
+     换成更深的 --accent-hover（5.89:1）—— 它仍然明显是同一个品牌蓝，
+     不会影响「高亮 = 当前选中」的识别；这里没有 hover 规则，不冲突。 */
+  color: var(--accent-hover);
   box-shadow: 0 2px 8px var(--ink-3);
 }
 
@@ -1254,29 +1741,182 @@ html.no-flex-gap .segmented > * + * {
 
 /* 等待首字的状态提示（对话 / 拍题 / 作文三处共用）
    为什么不做进度条：假进度一旦被识破，信任损失比不给还大。
-   一个呼吸点 + 一句随等待时长升级的说明，既表明"确实在工作"，
-   也不编造任何它并不知道的信息。 */
+   三点起伏 + 一句随等待时长升级的说明，既表明"确实在工作"，
+   也不编造任何它并不知道的信息。
+
+   设计基调是「可感知的柔和」——这两个要求缺一不可：
+   - 柔和：低饱和灰、缓慢节拍、小幅起伏，没有弹跳和硬闪；
+   - 可感知：纯 opacity 呼吸在玻璃浅底上肉眼几乎不可察（实测反馈
+     "只有三个点，没有动画"），所以保留 2.5px 的轻微上浮 ——
+     位移是三点动画存在感的来源，幅度小到不构成"催促感"即可。
+   用 text-secondary 而不是 tertiary：点是"在工作"的唯一信号源，
+   淡到看不清就等于没有。周期 1.3s + 0.17s 阶梯延迟：次第起伏，
+   慢到不焦躁、快到不像卡住。 */
 .waiting-hint {
   display: flex;
   align-items: center;
+  gap: 9px;
   font-size: 13px;
   color: var(--text-tertiary);
   line-height: 1.6;
+  /* 出现本身也柔和：淡入 0.25s，避免发送瞬间硬生生冒出一排点 */
+  animation: hintIn 0.25s ease-out;
+}
+html.no-flex-gap .waiting-hint > * + * {
+  margin-left: 9px;
 }
 
-.waiting-dot {
+
+
+
+
+
+@keyframes hintIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.waiting-dots {
+  display: inline-flex;
+  gap: 5px;
+  flex-shrink: 0;
+}
+html.no-flex-gap .waiting-dots > * + * {
+  margin-left: 5px;
+}
+
+
+
+
+
+
+/* Chrome 80 基线：flex 容器 gap 被整条丢弃，三个点会挤成一坨（项目惯例是
+   手写回退，gen-flex-gap-fallback.cjs 不在构建链里，别指望它自动补） */
+html.no-flex-gap .waiting-dots > * + * {
+  margin-left: 5px;
+}
+
+.waiting-dots span {
   width: 7px;
   height: 7px;
-  margin-right: 8px;
   border-radius: 50%;
-  background: var(--accent);
-  flex-shrink: 0;
-  animation: waitingPulse 1.2s ease-in-out infinite;
+  background: var(--text-secondary);
+  animation: waitingBreath 1.3s ease-in-out infinite;
 }
 
-@keyframes waitingPulse {
-  0%, 100% { opacity: 0.25; transform: scale(0.85); }
+.waiting-dots span:nth-child(2) { animation-delay: 0.17s; }
+.waiting-dots span:nth-child(3) { animation-delay: 0.34s; }
+
+@keyframes waitingBreath {
+  0%, 100% { opacity: 0.35; transform: translateY(0) scale(0.85); }
+  45%      { opacity: 1;    transform: translateY(-2.5px) scale(1); }
+}
+
+/* 思考过程面板
+   设计要求：① 默认折叠，别抢正文的位置；② 一眼能看出"在推演"，
+   而不是让学生以为卡死；③ 平板触屏点得到 summary（行高 32px 以上）。
+   summary 的 marker 由我们自己控制：Chrome 默认三角在不同字号下会歪。 */
+.think-panel {
+  margin-bottom: 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--glass-border-soft);
+  background: var(--glass-bg-soft);
+  overflow: hidden;
+}
+.think-summary {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 12px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  user-select: none;
+}
+.think-summary::-webkit-details-marker { display: none; }
+.think-summary > * + * { margin-left: 8px; }
+html.no-flex-gap .think-summary > * + * { margin-left: 8px; }
+.think-toggle { color: var(--text-tertiary); }
+/* 推演中的呼吸点：和 waiting-dots 同一套语言，学生能认出来这是"在工作" */
+.think-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: think-pulse 1.2s ease-in-out infinite;
+  flex: none;
+}
+.think-body {
+  padding: 2px 12px 10px;
+  color: var(--text-tertiary);
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+@keyframes think-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
   50% { opacity: 1; transform: scale(1); }
+}
+/* hover 态必须包起来：触屏上点一下会"粘住" hover（见 global.css 的说明） */
+@media (hover: hover) {
+  .think-summary:hover { color: var(--accent); }
+}
+
+/* 流式光标样式在 global.css（.stream-caret）：三页共用同一份，
+   避
+
+/* 流式光标：内联在最后一行文字的尾巴上（由 utils/stream-caret 注入渲染结果，
+   不放在容器之后 —— 容器后的行内元素会另起一行，光标孤零零悬在正文下面）。
+   呼吸式明暗（0.3~1）而不是 steps 硬切闪烁：硬切的机械感是"看起来奇怪"的
+   来源之一；对比也不压到 0 以下——光标要"温和地活着"，不能消失到让人
+   分不清是还在生成还是已经说完（光标存在的意义就是这件事）。
+   尺寸用 em 随字号缩放，对齐微调到与中文基线齐平。 */
+.stream-caret {
+  display: inline-block;
+  width: 0.45em;
+  height: 0.95em;
+  margin-left: 3px;
+  vertical-align: -0.12em;
+  background: var(--accent);
+  border-radius: 2px;
+  animation: caretBreath 1.2s ease-in-out infinite;
+}
+
+@keyframes caretBreath {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.3; }
+}
+
+/* 系统开了"减少动态效果"时的分层处理：
+   本文件上方有一个全局兜底（一切动画压到 0.01ms），装饰性动画尊重它即可；
+   但等待点与流式光标是「AI 还活着」的状态信号——完全静止的后果是学生
+   以为卡死、反复点击（实测反馈"只有三个点，没有动画"的根因就在这）。
+   所以对这两个元素精准豁免：退化为**纯 opacity 呼吸**（无位移、无缩放——
+   眩晕只来自空间运动，缓慢的透明度变化不违背 reduced-motion 的意图）。 */
+@media (prefers-reduced-motion: reduce) {
+  .waiting-hint { animation: none; }
+  .waiting-dots span {
+    animation: waitingBreathReduced 1.6s ease-in-out infinite !important;
+    transform: none;
+  }
+  .stream-caret {
+    animation: caretBreathReduced 1.4s ease-in-out infinite !important;
+  }
+}
+
+@keyframes waitingBreathReduced {
+  0%, 100% { opacity: 0.35; }
+  45%      { opacity: 0.9; }
+}
+
+@keyframes caretBreathReduced {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
 }
 
 /* 空状态 */
@@ -1294,6 +1934,12 @@ html.no-flex-gap .segmented > * + * {
 html.no-flex-gap .empty-hint > * + * {
   margin-top: 10px;
 }
+
+
+
+
+
+
 
 /* 进度条（额度、周限额、配额通用）
    contain: layout —— 条内宽度的变化（每次额度刷新都会动一次）不向外传播布局，
@@ -1320,4 +1966,139 @@ html.no-flex-gap .empty-hint > * + * {
   textarea {
     font-size: 16px;
   }
+}
+
+/* ============================================================
+   大屏增强（平板横屏 / 高分屏，视口 ≥1200px）
+   ------------------------------------------------------------
+   为什么需要这一段：
+   全站尺寸都是固定 px —— 视口从 960 涨到 2560，元素一个像素都不变。
+   实测 1920×1200：侧栏仍 288px、内容列仍 460~760px、正文仍 14px，
+   于是内容被锁在屏幕中间一小条，两侧大片空白 ——
+   学生反馈的「内容没铺开、字和按钮都小」就是这么来的。
+
+   三条硬约束：
+   1. 用 clamp() 流式增长，不用阶梯断点。平板宽度横跨 960~2560，
+      阶梯断点会在档位边界突然跳变（相邻两个像素差一整档）。
+   2. **每个 clamp 的下限都等于改前的原值**，保证 960×680
+      （本项目的目标设备基线）表现一字不变。修大屏不能把基线改坏。
+   3. 只放大骨架（栏宽、内容列宽、字号、点击目标）。
+      圆角 / 配色 / 阴影 / 动效这些设计语言一律不动。
+   ============================================================ */
+
+/* 侧栏：内容变宽了，栏也该按比例跟着长 */
+@media (min-width: 1200px) {
+  :root {
+    --sidebar-w: clamp(300px, 17vw, 380px);
+    --gap-md: 20px;
+    --gap-lg: 28px;
+  }
+}
+
+/* 分区标题与辅助文字：12px → 最高 14px。
+   它们原先只有 12px，在大屏上既小又淡（配色已同步把 --text-tertiary 加深）。 */
+.section-label,
+.tiny {
+  font-size: clamp(12px, 10.4px + 0.16vw, 14px);
+}
+
+/* 小按钮：视觉尺寸与命中区一起做大。
+   触屏标准命中区是 44×44（WCAG 2.5.5），原先 31~33px 高确实容易点空。 */
+.btn-sm {
+  padding: clamp(7px, 0.4vw + 3px, 10px) clamp(14px, 0.8vw + 6px, 20px);
+  font-size: clamp(13px, 11.5px + 0.15vw, 15px);
+}
+
+.segmented-item {
+  padding: clamp(7px, 0.5vw + 2px, 11px) clamp(14px, 0.9vw + 5px, 22px);
+  font-size: clamp(13px, 11.6px + 0.14vw, 15px);
+}
+
+/* 输入控件：大屏下，学生打字与读题的地方也该大一号 */
+@media (min-width: 1200px) {
+  .input,
+  .select,
+  textarea {
+    font-size: clamp(14px, 0.85vw + 3.8px, 16px);
+  }
+}
+
+/* ============================================================
+   ClassIntra 兼容设计令牌别名
+   从 ClassIntra 照搬的组件（笔记 / DrawCanvas / CloudImagePicker /
+   AppNavBar）用的是 CI 的令牌名。这里把每个名字映射到 Cluss 的
+   语义令牌上：值都是 var() 间接引用，深色主题下会自动跟随
+   html[data-theme="dark"] 里的实际定义，无需重复维护两份。
+   ============================================================ */
+:root {
+  /* 品牌色 */
+  --primary: var(--accent);
+  --primary-color: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --primary-light: var(--accent-soft);
+  --primary-lighter: var(--accent-soft);
+  --primary-rgb: 47, 107, 221;
+  --danger-rgb: 214, 69, 69;
+  --warning-rgb: 196, 126, 18;
+  --success-rgb: 31, 157, 63;
+
+  /* 语义色 */
+  --danger-color: var(--danger);
+  --success-color: var(--success);
+  --warning-color: var(--warning);
+  /* 笔记页专属强调色（Notes.vue 画板/灵感笔记用） */
+  --accent-notes: var(--purple);
+
+  /* 表面与背景 */
+  --bg-color: var(--bg-base);
+  --card-bg: var(--surface-2);
+  --surface-elevated: var(--surface-3);
+  --nav-bg: var(--glass-bg-strong);
+  --sidebar-bg: var(--glass-bg);
+  --separator-color: var(--menu-border);
+  --border-color: var(--menu-border);
+
+  /* 毛玻璃 */
+  --glass-blur-nav: blur(14px) saturate(1.3);
+  --glass-blur-thin: blur(10px) saturate(1.2);
+  --glass-blur-container: blur(18px) saturate(1.4);
+
+  /* 字体 */
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  --font-size-caption2: 10px;
+  --font-size-caption: 12px;
+  --font-size-xs: 11px;
+  --font-size-sm: 13px;
+  --font-size-base: 14px;
+  --font-size-body: 15px;
+  --font-size-md: 15px;
+  --font-size-subheadline: 15px;
+  --font-size-large: 17px;
+  --font-size-callout: 16px;
+  --font-size-title1: 22px;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* 间距 / 尺寸 / 圆角 */
+  --spacing-xs: var(--gap-xs);
+  --spacing-sm: var(--gap-sm);
+  --spacing-md: var(--gap-md);
+  --spacing-lg: var(--gap-lg);
+  --spacing-xl: var(--gap-xl);
+
+  /* 动效 */
+  --duration-fast: var(--dur-fast);
+  --duration-normal: var(--dur-base);
+  --duration-slow: var(--dur-slow);
+  --transition-fast: var(--dur-fast);
+  --ease-standard: var(--ease-inout);
+  --ease-emphasized: var(--ease-out);
+  --ease-decelerate: var(--ease-out);
+
+  /* 阴影 */
+  --shadow-sm: 0 2px 8px rgba(31, 41, 72, 0.06);
+  --shadow-md: var(--shadow-card);
+  --shadow-lg: var(--shadow-float);
 }

@@ -9,6 +9,13 @@
         <div class="brand-name">Cluss</div>
         <div class="brand-sub">引导式 AI 解题</div>
       </div>
+      <button
+        v-if="isEmbedded"
+        type="button"
+        class="ci-back-btn"
+        title="返回 ClassIntra 桌面"
+        @click="backToClassIntra"
+      ><i class="fa-solid fa-chevron-left"></i><span>ClassIntra</span></button>
     </div>
 
     <nav class="topbar-nav">
@@ -18,7 +25,12 @@
         class="nav-item"
         :class="{ active: item.id === active }"
         :to="item.to"
-      >{{ item.label }}</router-link>
+      >{{ item.label }}<span
+        v-if="badgeFor(item.id)"
+        class="nav-badge"
+        :title="'今天有 ' + badgeFor(item.id) + ' 道错题该复习了'"
+        :aria-label="'今天有 ' + badgeFor(item.id) + ' 道错题该复习了'"
+      >{{ badgeFor(item.id) }}</span></router-link>
     </nav>
 
     <div class="topbar-right">
@@ -62,7 +74,9 @@
             <div class="menu-head-text">
               <div class="menu-name">{{ displayName }}</div>
               <div class="menu-sub">{{ user.user_id }}{{ user.class_no ? ' · ' + user.class_no + '班' : '' }}</div>
-              <div v-if="user.source === 'classintra'" class="menu-badge">来自 ClassIntra</div>
+              <!-- 会话来源徽标：from_classintra 是「本次由 CI 免登进来」（撞号的本地账号也算），
+                   source 是「账号当初怎么来的」。取并集，学生才不会看到「我明明是 CI 进来的却没徽标」 -->
+              <div v-if="user.from_classintra || user.source === 'classintra'" class="menu-badge">来自 ClassIntra</div>
             </div>
           </div>
 
@@ -79,7 +93,9 @@
 
           <div class="menu-sep" aria-hidden="true"></div>
 
-          <button class="menu-item menu-danger" type="button" role="menuitem" @click="logout">退出登录</button>
+          <button class="menu-item menu-danger" type="button" role="menuitem" @click="logout">
+            {{ isEmbedded ? '退出到 ClassIntra' : '退出登录' }}
+          </button>
 
           <!-- 版本号：来源 client/package.json（与服务端约定同步改），排障时一眼对上服务端版本 -->
           <div class="menu-version tiny muted" aria-hidden="true">Cluss v{{ version }}</div>
@@ -92,6 +108,7 @@
 <script>
 import ClussLogo from './ClussLogo.vue';
 import navItems from '@/utils/nav-items';
+import { isEmbedded, backToClassIntra } from '@/utils/embedded';
 import { version } from '../../package.json';
 
 // 全站顶栏：六个学生入口 + 管理台（仅管理员）
@@ -113,6 +130,12 @@ export default {
     user: function() {
       return this.$store.state.auth.user || {};
     },
+    // 嵌入态：被 ClassIntra 的 Cluss 应用以内嵌 iframe 打开时，
+    // 在品牌区显示「返回 ClassIntra」，点击给宿主页发消息让它退出应用。
+    // 判据与出口统一在 utils/embedded.js —— 登录页的兜底出口也用同一份。
+    isEmbedded: function() {
+      return isEmbedded();
+    },
     isAdmin: function() {
       return this.$store.getters['auth/isAdmin'];
     },
@@ -131,7 +154,16 @@ export default {
       // （窄屏平板上一行放不下，只能横向滚动，反而更难用）。
       // 它已挂在用户菜单里，入口不丢。
       return navItems;
+    },
+    dueWrongCount: function() {
+      return this.$store.getters['wrongBook/dueCount'];
     }
+  },
+  mounted: function() {
+    // 每个页面各自渲染一个 AppNav，所以"进入新页面"天然就是刷新时机。
+    // 失败静默（见 store 里的说明）——角标是提示，不是功能，绝不能因此报错。
+    this.$store.dispatch('wrongBook/refreshOverview');
+    this.hintAdminOnce();
   },
   watch: {
     // 路由变化时收起：菜单挂在 body 上，不跟着组件走，必须显式关
@@ -144,6 +176,36 @@ export default {
     this.destroyMenuNode();
   },
   methods: {
+    // 给宿主（ClassIntra 应用壳）发消息让它退出 Cluss 应用；宿主未监听时静默
+    backToClassIntra: backToClassIntra,
+
+    // 班管第一次进来时指一次路：管理台入口藏在右上角头像菜单里，
+    // 不指一下真的找不到 —— 这正是「从 ClassIntra 进来的班管看不到管理台」的另一种成因
+    // （另一种是身份没同步进来，见服务端 syncCiAdminFlag）。
+    // 每个浏览器只提示一次：重复提示就从「贴心」变成「噪音」了。
+    hintAdminOnce: function() {
+      if (!this.isAdmin) return;
+      try {
+        if (localStorage.getItem('cluss_admin_hint')) return;
+        localStorage.setItem('cluss_admin_hint', '1');
+      } catch (e) {
+        return; // 隐私模式等拿不到 localStorage 就干脆不提示
+      }
+      var self = this;
+      this.$nextTick(function() {
+        self.$store.dispatch('toast', {
+          message: '你是班级管理员：管理台在右上角头像菜单里',
+          type: 'info'
+        });
+      });
+    },
+    // 导航项角标：目前只有错题本有，但走一个统一入口，
+    // 将来别的入口要挂角标时不用再改模板
+    badgeFor: function(itemId) {
+      if (itemId === 'wrong-book') return this.dueWrongCount;
+      return 0;
+    },
+
     toggleMenu: function() {
       var self = this;
       if (this.menuOpen) {
@@ -237,10 +299,23 @@ export default {
       this.closeMenu();
     },
 
+    // 嵌入态下**不能**把学生丢到 Cluss 登录页：他没有 Cluss 密码，
+    // 而登录页是没有顶栏的（返回按钮挂在顶栏里）—— 那是一条死路。
+    // 所以嵌入态退出 = 清会话 + 请宿主回 ClassIntra 桌面；
+    // 宿主万一没监听，登录页也备了「返回 ClassIntra」兜底（见 Login.vue）。
     logout: function() {
       var self = this;
+      var embedded = this.isEmbedded;
       this.closeMenu();
       this.$store.dispatch('auth/logout').then(function() {
+        if (embedded) {
+          backToClassIntra();
+          // 顺带把当前页收回首页：宿主万一没接消息，就不会停在
+          // 一个「会话已清、页面还在」的错位上（守卫会把首页换成登录页，
+          // 而登录页备了「返回 ClassIntra」出口）
+          self.$router.replace('/');
+          return;
+        }
         self.$router.replace('/login');
       });
     }
@@ -295,6 +370,34 @@ export default {
 }
 }
 
+/* 嵌入态返回按钮：被 ClassIntra 内嵌时出现在品牌区，贴 iOS 返回样式 */
+.ci-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 10px;
+  padding: 5px 12px 5px 8px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ci-back-btn i {
+  font-size: 11px;
+}
+.ci-back-btn:active {
+  transform: scale(0.96);
+}
+@media (max-width: 768px) {
+  .ci-back-btn span {
+    display: none;
+  }
+}
+
 .brand-name {
   font-size: 15px;
   font-weight: 600;
@@ -302,7 +405,8 @@ export default {
 }
 
 .brand-sub {
-  font-size: 11px;
+  /* 11px 在平板大屏上几乎读不到；配色已加深，字号也随视口长一点 */
+  font-size: clamp(11px, 9.464px + 0.16vw, 13px);
   color: var(--text-tertiary);
   line-height: 1.2;
 }
@@ -325,9 +429,11 @@ export default {
 }
 
 .nav-item {
-  padding: 6px 14px;
+  /* 大屏下同步放大：导航是最高频的点击目标，33.6px 高在平板上偏小。
+     clamp 下限等于原值，960×680 基线不变。 */
+  padding: clamp(6px, 0.45vw + 1.68px, 10px) clamp(14px, 0.9vw + 5.36px, 22px);
   border-radius: var(--radius-pill);
-  font-size: 13.5px;
+  font-size: clamp(13.5px, 11.58px + 0.2vw, 15.5px);
   font-weight: 500;
   color: var(--text-secondary);
   text-decoration: none;
@@ -345,6 +451,26 @@ export default {
 .nav-item.active {
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+/* 到期角标
+   用 margin-left 而不是 flex gap：基线是 Chrome 80 的安卓平板，
+   容器 gap 在那个内核上不生效（项目已有 html.no-flex-gap 兜底体系，
+   但这里更简单——单个子元素根本不需要 flex）。
+   min-width + 居中是为了让「9」和「12」都是个圆润的小胶囊，不歪。 */
+.nav-badge {
+  display: inline-block;
+  min-width: 16px;
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--danger);
+  color: var(--text-invert);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  vertical-align: 1px;
 }
 
 .topbar-right {
@@ -401,7 +527,8 @@ export default {
 }
 
 .user-sub {
-  font-size: 11px;
+  /* 学号·班级是「确认我是我」的关键信息，不该是全站最小的字 */
+  font-size: clamp(11px, 9.464px + 0.16vw, 13px);
   color: var(--text-tertiary);
   line-height: 1.25;
   text-align: left;

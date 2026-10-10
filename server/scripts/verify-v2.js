@@ -20,8 +20,10 @@ var db = require('../src/utils/db');
 
 // 目标地址统一走 lib/target：只允许本机实例（除非显式 ALLOW_REMOTE=1），
 // http/https 且不内嵌凭据 —— 这些脚本会清数据改配置，指向错对象是危险操作
-var BASE = require('./lib/target').resolve(process.env.PORT || 9101);
-var MOCK = 'http://127.0.0.1:9200';
+var target = require('./lib/target');
+var BASE = target.resolve(process.env.PORT || 9003);
+// mock 上游是另一台"本机服务"，要显式放行才能回放它收到的请求（见 lib/target.allow）
+var MOCK = target.allow('http://127.0.0.1:9200');
 
 var pass = 0;
 var fail = 0;
@@ -120,6 +122,13 @@ function get(url, token) {
   });
 }
 
+// 从 mock 的 /__last 回放里取出 system prompt。
+// 提示词类的改动只有这样才能验：接口返回 200 不代表提示词拼对了。
+function systemPromptOf(resp) {
+  var msgs = (resp.data && resp.data.messages) || [];
+  return (msgs[0] && msgs[0].role === 'system' && msgs[0].content) || '';
+}
+
 // ---- 模型配置快照 ----
 //
 // 本脚本会把模型改成指向 mock。不还原的话，在一台**已经配好真实模型**的机器上
@@ -171,42 +180,79 @@ function configureModels() {
 
   stmt.run('plain-model', '纯文本模型', MOCK, 'mock-key', 'plain', 0, 2000, 8000, 200, 0, 10);
   stmt.run('vision-model', '视觉模型', MOCK, 'mock-key', 'vision', 1, 2000, 8000, 200, 0, 11);
-  console.log('[setup] 模型已配置：deepseek-chat(视觉) / plain-model(纯文本) / vision-model(视觉)');
+
+  // 默认模型也必须指向 mock。
+  // 第 1 节的对话不带 model_id，走的是默认模型；不固定的话，
+  // 测试结果会跟着"用户此刻把哪个模型设成默认"变 ——
+  // 库里默认若指向真实上游（本机接的 web2api 之类），那节就会因为
+  // 那个上游没开而失败，看起来像是本次改动坏了，其实无关。
+  db.prepare('UPDATE ai_models SET is_default = 0').run();
+  db.prepare('UPDATE ai_models SET is_default = 1 WHERE id = ?').run('deepseek-chat');
+
+  console.log('[setup] 模型已配置：deepseek-chat(视觉, 默认) / plain-model(纯文本) / vision-model(视觉)');
 }
 
-// 这是**破坏性**操作：清空所有学生账号与业务数据。
+// 清场：**只删本脚本自己造的数据**，绝不碰真实账号。
 //
-// 加了防呆是因为它踩过一次真实事故：在一台已经配好演示数据的机器上跑验证，
-// 学生账号和额度被无声删光 —— 脚本只打印一行"业务数据已清空"，
-// 而使用者以为那只是"测试用的清理"。数据没了才发现。
+// 这里有一段代价不小的历史，值得写下来：
+//   最初它执行的是 `DELETE FROM users WHERE is_admin = 0`，也就是删光所有学生。
+//   在真实库上跑，就真的删光过三次 —— 其中一次是用户刚注册、正要拿去试用的账号。
+//   中途加过一道防呆（库里有数据时拒绝执行、必须显式 --force），
+//   **但那拦不住"我自己顺手加 --force"**，而每次跑验证都要绕过它。
+//   防呆解决的是"误操作"，这里的问题是"设计上就不该删别人的数据"。
 //
-// 所以：库里有真实数据时默认**拒绝执行**，必须显式加 --force。
+// 所以改成按归属删除：本脚本注册的学生用 net_name='v2test' 标记，
+// 只清这些账号及其名下的会话 / 用量 / 额度 / 错题 / 云盘文件。
+// 真实学生的数据一行都不会动，也不需要 --force 了。
+var TEST_NET_NAME = 'v2test';
+
 function resetData() {
-  var force = process.argv.indexOf('--force') >= 0;
+  var testUsers = db.prepare('SELECT user_id FROM users WHERE net_name = ?')
+    .all(TEST_NET_NAME).map(function(r) { return r.user_id; });
 
-  var students = db.prepare('SELECT COUNT(*) c FROM users WHERE is_admin = 0').get().c;
-  var usage = db.prepare('SELECT COUNT(*) c FROM cluss_usage_log').get().c;
-  var convs = db.prepare('SELECT COUNT(*) c FROM ai_conversations').get().c;
+  var others = db.prepare('SELECT COUNT(*) c FROM users WHERE is_admin = 0 AND net_name <> ?')
+    .get(TEST_NET_NAME).c;
 
-  if (!force && (students > 0 || usage > 0)) {
-    console.error('\n[拒绝执行] 这个库里有真实数据：');
-    console.error('    学生账号 ' + students + ' 个、会话 ' + convs + ' 个、用量记录 ' + usage + ' 条');
-    console.error('    本脚本会**全部删除**它们（含额度与云盘文件），且不可恢复。');
-    console.error('\n    确认要清空后再跑：node scripts/verify-v2.js --force');
-    console.error('    想保留现有数据，请先备份 database/ 目录（三个文件一起）。\n');
-    process.exit(1);
+  if (!testUsers.length) {
+    console.log('[setup] 没有上次遗留的测试账号，跳过清理' +
+      (others ? '（库里有 ' + others + ' 个真实学生，未触碰）' : ''));
+    return;
   }
 
-  db.prepare('DELETE FROM cluss_usage_log').run();
-  db.prepare('DELETE FROM cluss_credit_log').run();
-  db.prepare('DELETE FROM cluss_credit').run();
-  db.prepare('DELETE FROM ai_messages').run();
-  db.prepare('DELETE FROM ai_conversations').run();
-  db.prepare('DELETE FROM cloud_user_files').run();
-  db.prepare('DELETE FROM cloud_files').run();
-  db.prepare('DELETE FROM wrong_questions').run();
-  db.prepare("DELETE FROM users WHERE is_admin = 0").run();
-  console.log('[setup] 业务数据已清空（' + students + ' 个学生账号被删除）');
+  // 注意：better-sqlite3 的方法依赖 this，不能用 apply(null, ...) —— 会抛
+  // Illegal invocation。这里统一用一个小工具把参数按语句自身绑定上去。
+  function callStmt(sql, args) {
+    var stmt = db.prepare(sql);
+    return stmt.all.apply(stmt, args);
+  }
+  function runStmt(sql, args) {
+    var stmt = db.prepare(sql);
+    return stmt.run.apply(stmt, args);
+  }
+
+  // ai_messages 没有 user_id，只能经由会话归属
+  var qs = testUsers.map(function() { return '?'; }).join(',');
+  var convIds = callStmt(
+    'SELECT id FROM ai_conversations WHERE user_id IN (' + qs + ')', testUsers
+  ).map(function(r) { return r.id; });
+
+  var tx = db.transaction(function() {
+    if (convIds.length) {
+      var cs = convIds.map(function() { return '?'; }).join(',');
+      runStmt('DELETE FROM ai_messages WHERE conversation_id IN (' + cs + ')', convIds);
+    }
+    var us = testUsers.map(function() { return '?'; }).join(',');
+    ['cluss_usage_log', 'cluss_credit_log', 'cluss_credit',
+     'ai_conversations', 'wrong_questions', 'writing_pieces',
+     'cloud_user_files'].forEach(function(t) {
+      runStmt('DELETE FROM ' + t + ' WHERE user_id IN (' + us + ')', testUsers);
+    });
+    db.prepare('DELETE FROM users WHERE net_name = ?').run(TEST_NET_NAME);
+  });
+  tx();
+
+  console.log('[setup] 已清理上次的 ' + testUsers.length + ' 个测试账号及其数据' +
+    (others ? '；' + others + ' 个真实学生未触碰' : ''));
 }
 
 var adminToken = '';
@@ -501,6 +547,87 @@ function run() {
     var baseEnd = sys.indexOf('通用规则');
     ok('画像排在 BASE 之后（不破坏缓存前缀）',
       baseEnd !== -1 && sys.indexOf('【关于这个学生】') > baseEnd);
+  })
+
+  .then(function() {
+    section('5c. 日常模式人格设定');
+    // 人格只在日常模式生效，随会话存储。这一段覆盖三件容易静默失效的事：
+    //   1) 人格真的进了 system prompt
+    //   2) **不传 persona 时沿用会话里已存的**（曾经这里会把已存人格清成默认，
+    //      表现是"我选了人格，第二轮就不生效了"）
+    //   3) 学习模式不套人格、且带话题边界
+    return streamPost(BASE + '/api/chat/stream', studentToken, {
+      model_id: 'deepseek-chat', mode: 'daily', persona: 'humor', content: '你好'
+    });
+  }).then(function(r) {
+    var done = r.events.filter(function(e) { return e.event === 'done'; })[0];
+    global.__dailyConvId = done && done.data.conversation_id;
+
+    return get(MOCK + '/__last');
+  }).then(function(r) {
+    var sys = systemPromptOf(r);
+    ok('日常模式注入了人格段', sys.indexOf('【语气设定：幽默】') !== -1);
+    ok('人格段带着底线（仍是 AI 助手，不假装真人）', sys.indexOf('你仍是 AI 学习助手') !== -1);
+    ok('人格段交代了"不要解释语气变化"', sys.indexOf('不要解释、不要提及语气的改变') !== -1);
+    ok('日常模式带宽松话题规则', sys.indexOf('话题比学习模式宽松') !== -1);
+    ok('日常模式不含学习边界段', sys.indexOf('话题边界：以学习为中心') === -1);
+
+    // 会话标识必须发出去。少了它，web 反代类上游会**每问一句新建一路会话**：
+    // 账号的会话列表被灌满一次性对话、拿不到前缀缓存，
+    // 而且上游会看到"整段历史每轮重发"（平方级膨胀），有被判定刷屏的风险。
+    ok('请求带上了 X-Conversation-Id（上游据此复用会话）',
+      (r.data.headers || {})['x-conversation-id'] === global.__dailyConvId,
+      JSON.stringify((r.data.headers || {})['x-conversation-id']));
+
+    return get(BASE + '/api/conversations/' + global.__dailyConvId, studentToken);
+  }).then(function(r) {
+    ok('人格随会话落库', r.data.data.conversation.persona === 'humor',
+      JSON.stringify(r.data.data.conversation.persona));
+
+    // 关键用例：不传 persona，必须沿用会话里存的
+    return streamPost(BASE + '/api/chat/stream', studentToken, {
+      model_id: 'deepseek-chat', conversation_id: global.__dailyConvId, content: '继续说'
+    });
+  }).then(function() {
+    return get(MOCK + '/__last');
+  }).then(function(r) {
+    ok('不传 persona 时沿用会话里的人格（不会被清成默认）',
+      systemPromptOf(r).indexOf('【语气设定：幽默】') !== -1);
+
+    // 切到学习模式：不该套人格，且要带上话题边界
+    return streamPost(BASE + '/api/chat/stream', studentToken, {
+      model_id: 'deepseek-chat', conversation_id: global.__dailyConvId,
+      mode: 'study', study_style: 'guided', content: '这题怎么做'
+    });
+  }).then(function() {
+    return get(MOCK + '/__last');
+  }).then(function(r) {
+    var sys = systemPromptOf(r);
+    ok('学习模式不套人格', sys.indexOf('【语气设定') === -1);
+    ok('学习模式带话题边界（放宽但仍以学习为中心）', sys.indexOf('话题边界：以学习为中心') !== -1);
+    ok('引导模式先判断适用范围（概念问题不硬套解题流程）', sys.indexOf('先判断适用范围') !== -1);
+
+    // 再切回日常：人格不能因为在学习模式待过就丢掉
+    return streamPost(BASE + '/api/chat/stream', studentToken, {
+      model_id: 'deepseek-chat', conversation_id: global.__dailyConvId,
+      mode: 'daily', content: '回到日常'
+    });
+  }).then(function() {
+    return get(MOCK + '/__last');
+  }).then(function(r) {
+    ok('模式来回切换不丢人格', systemPromptOf(r).indexOf('【语气设定：幽默】') !== -1);
+
+    // 非法人格 id（旧客户端缓存了已被删掉的人格）：应静默归一为默认，不能报错
+    return streamPost(BASE + '/api/chat/stream', studentToken, {
+      model_id: 'deepseek-chat', mode: 'daily', persona: 'bogus-persona', content: '测试'
+    });
+  }).then(function(r) {
+    var done = r.events.filter(function(e) { return e.event === 'done'; })[0];
+    ok('非法人格不报错（静默归一为默认）', !!done);
+
+    return get(MOCK + '/__last');
+  }).then(function(r) {
+    ok('非法人格 → 不注入人格段', systemPromptOf(r).indexOf('【语气设定') === -1);
   })
 
   .then(function() {

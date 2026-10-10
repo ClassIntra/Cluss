@@ -16,8 +16,10 @@ var db = require('../src/utils/db');
 
 // 目标地址统一走 lib/target：只允许本机实例（除非显式 ALLOW_REMOTE=1），
 // http/https 且不内嵌凭据 —— 这些脚本会清数据改配置，指向错对象是危险操作
-var BASE = require('./lib/target').resolve(process.env.PORT || 9101);
-var MOCK = 'http://127.0.0.1:9200';
+var target = require('./lib/target');
+var BASE = target.resolve(process.env.PORT || 9003);
+// mock 上游是另一台"本机服务"，要显式放行（见 lib/target.allow）
+var MOCK = target.allow('http://127.0.0.1:9200');
 
 var pass = 0, fail = 0;
 var failures = [];
@@ -155,29 +157,57 @@ function setupModels() {
 // 破坏性：清空所有学生账号与业务数据。
 // 库里有真实数据时默认拒绝执行，必须显式加 --force（同 verify-v2 的理由：
 // 曾在一台配好演示数据的机器上无声清空过）。
+// 清场：**只删本脚本自己造的数据**，绝不碰真实账号。
+// 原来这里是 `DELETE FROM users WHERE is_admin = 0`（删光所有学生），
+// 在真实库上跑会连用户正在试用的账号一起删掉 —— 见 verify-v2 里那段更长的说明。
+// 本脚本注册的学生用 net_name='v3test' 标记，只清这些账号及其名下数据。
+var TEST_NET_NAME = 'v3test';
+
 function reset() {
-  var force = process.argv.indexOf('--force') >= 0;
+  var testUsers = db.prepare('SELECT user_id FROM users WHERE net_name = ?')
+    .all(TEST_NET_NAME).map(function(r) { return r.user_id; });
 
-  var students = db.prepare('SELECT COUNT(*) c FROM users WHERE is_admin = 0').get().c;
-  var usage = db.prepare('SELECT COUNT(*) c FROM cluss_usage_log').get().c;
-  var convs = db.prepare('SELECT COUNT(*) c FROM ai_conversations').get().c;
+  var others = db.prepare('SELECT COUNT(*) c FROM users WHERE is_admin = 0 AND net_name <> ?')
+    .get(TEST_NET_NAME).c;
 
-  if (!force && (students > 0 || usage > 0)) {
-    console.error('\n[拒绝执行] 这个库里有真实数据：');
-    console.error('    学生账号 ' + students + ' 个、会话 ' + convs + ' 个、用量记录 ' + usage + ' 条');
-    console.error('    本脚本会**全部删除**它们（含额度、错题本、作文、云盘文件），且不可恢复。');
-    console.error('\n    确认要清空后再跑：node scripts/verify-v3.js --force\n');
-    process.exit(1);
+  if (!testUsers.length) {
+    console.log('[setup] 没有上次遗留的测试账号，跳过清理' +
+      (others ? '（库里有 ' + others + ' 个真实学生，未触碰）' : ''));
+    return;
   }
 
-  ['cluss_usage_log', 'cluss_credit_log', 'cluss_credit', 'ai_messages', 'ai_conversations',
-   'wrong_questions', 'writing_pieces'].forEach(function(t) {
-    db.prepare('DELETE FROM ' + t).run();
+  // better-sqlite3 的方法依赖 this，apply(null, ...) 会抛 Illegal invocation
+  function callStmt(sql, args) {
+    var stmt = db.prepare(sql);
+    return stmt.all.apply(stmt, args);
+  }
+  function runStmt(sql, args) {
+    var stmt = db.prepare(sql);
+    return stmt.run.apply(stmt, args);
+  }
+
+  var qs = testUsers.map(function() { return '?'; }).join(',');
+  var convIds = callStmt(
+    'SELECT id FROM ai_conversations WHERE user_id IN (' + qs + ')', testUsers
+  ).map(function(r) { return r.id; });
+
+  var tx = db.transaction(function() {
+    if (convIds.length) {
+      var cs = convIds.map(function() { return '?'; }).join(',');
+      runStmt('DELETE FROM ai_messages WHERE conversation_id IN (' + cs + ')', convIds);
+    }
+    var us = testUsers.map(function() { return '?'; }).join(',');
+    ['cluss_usage_log', 'cluss_credit_log', 'cluss_credit',
+     'ai_conversations', 'wrong_questions', 'writing_pieces',
+     'cloud_user_files'].forEach(function(t) {
+      runStmt('DELETE FROM ' + t + ' WHERE user_id IN (' + us + ')', testUsers);
+    });
+    db.prepare('DELETE FROM users WHERE net_name = ?').run(TEST_NET_NAME);
   });
-  db.prepare('DELETE FROM cloud_user_files').run();
-  db.prepare('DELETE FROM cloud_files').run();
-  db.prepare('DELETE FROM users WHERE is_admin = 0').run();
-  console.log('[setup] 数据已清空（' + students + ' 个学生账号被删除）');
+  tx();
+
+  console.log('[setup] 已清理上次的 ' + testUsers.length + ' 个测试账号及其数据' +
+    (others ? '；' + others + ' 个真实学生未触碰' : ''));
 }
 
 var studentToken = '', adminToken = '', studentId = '';
@@ -486,7 +516,7 @@ function run() {
       '额度 ' + w.allocated_points + ' / 可用 ' + w.available_points);
     ok('学生端额度视图不含金额字段', w.used_yuan === undefined && w.allocated_yuan === undefined);
     console.log('    额度 ' + w.allocated_points + ' 积分 / 可用 ' + w.available_points +
-      ' 积分（单次消耗低于 1 积分时显示为 0，属正常）');
+      ' 积分（两位小数口径，可用量向下保留到「分」）');
 
     return get(BASE + '/api/usage/summary?days=7&group_by=source', studentToken);
   }).then(function(r) {

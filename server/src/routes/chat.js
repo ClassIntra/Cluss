@@ -1,6 +1,6 @@
 // 对话路由（薄层）
 //
-// 只负责：参数校验、会话 CRUD、把请求交给 turn-runner。
+// 只负责：参数校验、会话 CRUD、人格 CRUD、把请求交给 turn-runner。
 // 所有编排逻辑（闸门、上下文、流式、记账）都在 services/turn-runner.js ——
 // 这样学习链路（routes/study.js）能复用同一套流程，不会出现两份逐渐漂移的实现。
 
@@ -11,6 +11,8 @@ var time = require('../utils/time');
 var auth = require('../middleware/auth');
 var ai = require('../services/ai');
 var credit = require('../services/credit');
+var prompts = require('../services/prompt-registry');
+var personaStore = require('../services/persona-store');
 var constants = require('../utils/constants');
 var conv = require('../services/conversation-core');
 var turnRunner = require('../services/turn-runner');
@@ -25,7 +27,8 @@ var turnRunner = require('../services/turn-runner');
 // ============================================================
 router.get('/models', auth.requireAuth, function(req, res) {
   var isAdmin = req.user.is_admin === 1;
-  var all = ai.listModelsForClient();
+  var bundle = ai.listModelsForClient();
+  var all = bundle.models;
   var list = isAdmin ? all : all.filter(function(m) { return m.available; });
 
   var def = ai.getDefaultModelId();
@@ -39,20 +42,37 @@ router.get('/models', auth.requireAuth, function(req, res) {
   res.json({
     code: 200,
     message: 'ok',
-    data: { models: list, default_model: def }
+    // offpeak：当前处于谷时段时下发折扣信息（null = 平价），
+    // 学生界面据此显示"现在时段更划算"，不出现任何金额
+    data: { models: list, default_model: def, offpeak: bundle.offpeak }
   });
 });
 
 // ============================================================
 // 会话管理
 // ============================================================
+// 会话列表：游标分页 + 搜索
+//
+// 返回 { conversations, next_cursor, has_more }。
+// 分页用**游标**而不是 page/offset：列表按 updated_at 动态排序，
+// 用 OFFSET 在学生一边翻页一边发消息时会漏条或重复（详见 conversation-core 的注释）。
+// 前端拿到 has_more=false 就停止请求 —— 之前这里没有分页，服务端硬砍到 300 条，
+// 第 301 个会话永远看不见且前端无从察觉。
 router.get('/conversations', auth.requireAuth, function(req, res) {
-  var mode = String(req.query.mode || '').trim();
-  var rows = conv.listConversations(req.user.user_id, mode, req.query.limit);
+  var out = conv.listConversations(req.user.user_id, {
+    mode: String(req.query.mode || '').trim(),
+    q: String(req.query.q || '').trim(),
+    limit: req.query.limit,
+    cursor: req.query.cursor
+  });
   res.json({
     code: 200,
     message: 'ok',
-    data: { conversations: rows.map(conv.serializeConversation) }
+    data: {
+      conversations: out.rows.map(conv.serializeConversation),
+      next_cursor: out.next_cursor,
+      has_more: out.has_more
+    }
   });
 });
 
@@ -65,6 +85,9 @@ router.post('/conversations', auth.requireAuth, function(req, res) {
     modelId: modelId,
     mode: mode,
     studyStyle: studyStyle,
+    // 归一化后再落库；非日常模式会被 ensureConversation 忽略
+    dailyStyle: req.body.daily_style !== undefined
+      ? prompts.normalizeDailyStyle(req.body.daily_style) : undefined,
     titleFrom: ''
   });
   res.json({ code: 200, message: 'ok', data: conv.serializeConversation(row) });
@@ -75,7 +98,7 @@ router.get('/conversations/:id', auth.requireAuth, function(req, res) {
   if (!row) return res.status(404).json({ code: 404, message: '会话不存在' });
 
   var msgs = db.prepare(
-    'SELECT id, role, content, model_id, attachments, source, created_at FROM ai_messages WHERE conversation_id = ? ORDER BY id ASC'
+    'SELECT id, role, content, model_id, attachments, source, streaming, created_at FROM ai_messages WHERE conversation_id = ? ORDER BY id ASC'
   ).all(row.id);
 
   res.json({
@@ -106,7 +129,7 @@ router.patch('/conversations/:id', auth.requireAuth, function(req, res) {
   res.json({ code: 200, message: 'ok', data: null });
 });
 
-// 切换会话模式（学习大类与子模式）
+// 切换会话模式（学习大类与子模式）+ 日常模式的无限制风格
 // 单独一个端点而非并入 PATCH：模式切换是高频操作，且语义比「改个字段」重
 router.put('/conversations/:id/mode', auth.requireAuth, function(req, res) {
   var mode = String(req.body.mode || '').trim();
@@ -119,7 +142,19 @@ router.put('/conversations/:id/mode', auth.requireAuth, function(req, res) {
     return res.status(400).json({ code: 400, message: '学习模式只能是 guided 或 direct' });
   }
 
-  var row = conv.updateConversationMode(req.params.id, req.user.user_id, mode, studyStyle);
+  // daily_style：显式切换时**严格校验**，不像流式链路那样宽容。
+  // 理由：这是一次明确的用户操作（点了开关），传了非法值说明前端有 bug，
+  // 此时静默降级成"受限"会表现为"点了没反应"，很难查；直接报错更快暴露。
+  var dailyStyle;
+  if (req.body.daily_style !== undefined) {
+    var raw = String(req.body.daily_style).trim().toLowerCase();
+    if (raw !== 'free' && raw !== 'limited' && raw !== '') {
+      return res.status(400).json({ code: 400, message: 'daily_style 只能是 free 或 limited' });
+    }
+    dailyStyle = prompts.normalizeDailyStyle(raw);
+  }
+
+  var row = conv.updateConversationMode(req.params.id, req.user.user_id, mode, studyStyle, dailyStyle);
   if (!row) return res.status(404).json({ code: 404, message: '会话不存在' });
 
   res.json({ code: 200, message: 'ok', data: conv.serializeConversation(row) });
@@ -139,11 +174,18 @@ router.post('/chat/stream', auth.requireAuth, function(req, res) {
   var content = String(req.body.content || '').trim();
   var mode = String(req.body.mode || '').trim();
   var studyStyle = String(req.body.study_style || '').trim();
+  var persona = String(req.body.persona || '').trim();
+  var dailyStyle = String(req.body.daily_style || '').trim();
 
   // 模式只在显式传入时生效，避免前端忘记带参数时把已有会话的模式重置
   var conversation = { id: String(req.body.conversation_id || '') };
   if (mode) conversation.mode = mode;
   if (studyStyle) conversation.study_style = studyStyle;
+  // persona 与 daily_style 同规则：**只在客户端确实传了才写**（不传 = 别动）。
+  // persona 传 'buddy' 表示回到默认语气；daily_style 传 'limited' 表示回到受限——
+  // 两者都是有效值，所以判据是"非空"而不是"不等于默认值"。
+  if (persona) conversation.persona = persona;
+  if (dailyStyle) conversation.daily_style = dailyStyle;
 
   turnRunner.runStreamTurn({
     req: req,
@@ -151,11 +193,77 @@ router.post('/chat/stream', auth.requireAuth, function(req, res) {
     userId: req.user.user_id,
     content: content,
     modelId: String(req.body.model_id || ''),
+    // 深度思考：用户在对话页的开关（前端 localStorage 记住偏好，逐轮随请求带上）。
+    // 只认严格 true —— 早期版本前端可能传 '1'/'on' 之类的历史值，
+    // 与其猜语义，不如按「没开」处理，行为最可预期。
+    thinking: req.body.thinking === true,
     conversation: conversation,
     attachmentHashes: req.body.attachment_hashes || [],
+    noteIds: req.body.note_ids || [],
     task: { kind: '' },
     source: 'chat'
   });
+});
+
+// ============================================================
+// 日常模式人格
+//
+// 两套来源合成一个列表给前端：
+//   内置（prompt-registry 里写死，builtin=1）—— 所有学生都有、不可改删；
+//   自定义（库里按学生存，builtin=0）—— 可增删改。
+// 合成放在服务端而不是前端：前端只认一个列表，将来加"学校预置人格"
+// 之类的来源时，前端一个字都不用改。
+// ============================================================
+router.get('/personas', auth.requireAuth, function(req, res) {
+  var custom = [];
+  try {
+    custom = personaStore.list(req.user.user_id);
+  } catch (e) {
+    // 人格表异常不该让整页打不开：内置那 4 个照常返回
+    console.warn('[Persona] 自定义人格读取失败:', e.message);
+  }
+  res.json({
+    code: 200,
+    message: 'ok',
+    data: {
+      personas: prompts.listPersonas().concat(custom),
+      // 上限一并下发：前端据此在够多时把「新建」按钮置灰，不必等提交才报错
+      limits: { max_count: personaStore.MAX_COUNT, max_name: personaStore.MAX_NAME, max_prompt: personaStore.MAX_PROMPT }
+    }
+  });
+});
+
+// 新建自定义人格
+router.post('/personas', auth.requireAuth, function(req, res) {
+  var r = personaStore.create(req.user.user_id, {
+    name: req.body.name,
+    prompt: req.body.prompt
+  });
+  if (!r.ok) return res.status(400).json({ code: 400, message: r.message });
+  res.json({ code: 200, message: '已创建', data: { persona: r.persona } });
+});
+
+// 修改自定义人格（内置人格不可改，personaStore 只认 'p:数字'，天然拦住）
+router.put('/personas/:id', auth.requireAuth, function(req, res) {
+  var r = personaStore.update(req.user.user_id, req.params.id, {
+    name: req.body.name,
+    prompt: req.body.prompt
+  });
+  if (!r.ok) {
+    var status = r.message === '人格不存在' ? 404 : 400;
+    return res.status(status).json({ code: status, message: r.message });
+  }
+  res.json({ code: 200, message: '已保存', data: { persona: r.persona } });
+});
+
+// 删除自定义人格
+//
+// 刻意**不**回头清理会话里引用的这个 id（见 persona-store.remove 的说明）：
+// 那些会话会优雅回落成默认语气，而不是被连锁改动。
+router.delete('/personas/:id', auth.requireAuth, function(req, res) {
+  var r = personaStore.remove(req.user.user_id, req.params.id);
+  if (!r.ok) return res.status(404).json({ code: 404, message: r.message });
+  res.json({ code: 200, message: '已删除', data: null });
 });
 
 // ============================================================

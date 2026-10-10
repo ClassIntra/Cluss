@@ -1,6 +1,10 @@
 # 依赖
 node_modules/
 
+# pnpm 试验残留（本项目统一用 npm，见 README / docs/deploy.md）
+client/pnpm-lock.yaml
+client/pnpm-workspace.yaml
+
 # 环境变量（含密钥，绝不入库）
 .env
 .env.*
@@ -19,6 +23,18 @@ client/dist/
 
 # 云盘文件（用户上传的内容，体积大且属于运行时数据）
 server/Resources/
+
+# 测试脚手架（含走查截图与探针脚本，属临时产物不入库）
+.tmp-qa/
+.qa-auto/
+
+# 临时排查脚本（一次性用，用完即删）
+server/scripts/_tmp-*.js
+
+# 渲染探针页（手工打开量性能用的临时页面）
+client/bench-render.html
+client/render-probe.html
+client/public/orient-probe.html
 
 # 编辑器
 .vscode/

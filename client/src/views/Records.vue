@@ -84,6 +84,7 @@
 <script>
 import AppNav from '@/components/AppNav.vue';
 import Segmented from '@/components/Segmented.vue';
+import { fmtLocal } from '@/utils/fmt-time';
 
 export default {
   name: 'RecordsView',
@@ -166,7 +167,7 @@ export default {
     },
 
     formatTime: function(iso) {
-      return String(iso || '').replace('T', ' ').slice(0, 16);
+      return fmtLocal(iso);
     }
   }
 };
@@ -177,12 +178,18 @@ export default {
   display: flex;
   flex-direction: column;
   height: var(--app-height);
-  padding: var(--gap-md);
+  /* 完全贴边：去掉固定留白，仅保留安全区边距（无刘海设备上为 0） */
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   gap: var(--gap-md);
 }
 html.no-flex-gap .records-page > * + * {
   margin-top: var(--gap-md);
 }
+
+
+
+
+
 
 
 
@@ -203,6 +210,11 @@ html.no-flex-gap .body > * + * {
 
 
 
+
+
+
+
+
 .toolbar {
   display: flex;
   align-items: center;
@@ -215,6 +227,11 @@ html.no-flex-gap .body > * + * {
 html.no-flex-gap .toolbar > * + * {
   margin-left: var(--gap-md);
 }
+
+
+
+
+
 
 
 
@@ -264,13 +281,13 @@ html.no-flex-gap .toolbar > * + * {
 
 
 .icon-btn {
-  width: 28px;
-  height: 28px;
+  width: clamp(28px, 19.36px + 0.9vw, 42px);
+  height: clamp(28px, 19.36px + 0.9vw, 42px);
   border: none;
   border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-tertiary);
-  font-size: 16px;
+  font-size: clamp(16px, 13.12px + 0.3vw, 21px);
   line-height: 1;
   cursor: pointer;
 }
@@ -315,6 +332,11 @@ html.no-flex-gap .toolbar > * + * {
 html.no-flex-gap .card > * + * {
   margin-left: 12px;
 }
+
+
+
+
+
 
 
 
@@ -380,6 +402,11 @@ html.no-flex-gap .card-body > * + * {
 
 
 
+
+
+
+
+
 .card-top {
   display: flex;
   align-items: center;
@@ -389,6 +416,11 @@ html.no-flex-gap .card-body > * + * {
 html.no-flex-gap .card-top > * + * {
   margin-left: 8px;
 }
+
+
+
+
+
 
 
 
@@ -429,6 +461,11 @@ html.no-flex-gap .card-foot > * + * {
 
 
 
+
+
+
+
+
 .card-go {
   font-size: 12px;
   color: var(--accent);
@@ -450,6 +487,11 @@ html.no-flex-gap .card-foot > * + * {
 html.no-flex-gap .pager > * + * {
   margin-left: var(--gap-md);
 }
+
+
+
+
+
 
 
 

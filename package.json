@@ -4,7 +4,8 @@
   "private": true,
   "description": "Cluss - 引导式 AI 解题应用（可独立部署，亦可与 ClassIntra 深度联动）",
   "scripts": {
-    "start": "node server/src/app.js",
+    "start": "node scripts/start.js",
+    "server": "node server/src/app.js",
     "dev": "node server/src/app.js",
     "build": "cd client && npm run build"
   }

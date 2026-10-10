@@ -54,9 +54,18 @@ ok(view.weekly_remaining_points === 400, '本周剩余 400 积分');
 ok(!hasYuanKey(view), '视图中没有任何 _yuan 字段');
 ok(view.unit === '积分', '带单位标识');
 
-// 可用量向下取整：不能出现"显示还有 1 积分，一问就被拦"
+// 可用量向下保留到「分」：不能出现"显示还有积分，一问就被拦"；
+// 同时不再粗暴取整——小数比"数字蒸发"更可信（见 toPointsView 精度口径注释）
 var tiny = credit.toPointsView({ available_micro: 9900, is_allocated: true });
-ok(tiny.available_points === 0, '0.99 积分显示为 0（宁可少显示也不误导），实际 ' + tiny.available_points);
+ok(tiny.available_points === 0.99, '0.99 积分显示为 0.99（保守到「分」，不取整），实际 ' + tiny.available_points);
+
+// 精度：单轮消耗常不足 1 积分，取整会让明细对不上汇总 —— 必须保留两位小数
+var fine = credit.toPointsView({ is_allocated: true, used_micro: 14440, available_micro: 0 });
+ok(fine.used_points === 1.44, '已用 1.444 积分显示为 1.44（此前取整成 1，十轮差出 4），实际 ' + fine.used_points);
+ok(config.microToPointsExact(3500) === 0.35, '0.35 积分级消耗不再显示为 0，实际 ' + config.microToPointsExact(3500));
+ok(config.microToPointsExact(0) === 0 && config.microToPointsExact(20000000) === 2000, '精确换算在 0 与整值上不漂移');
+var floorHalf = credit.toPointsView({ is_allocated: true, available_micro: 965560 });
+ok(floorHalf.available_points === 96.55, '可用 96.556 保守显示为 96.55，实际 ' + floorHalf.available_points);
 
 console.log('\n[3] 学生端用量视图：去术语化 + 积分换算');
 var gRow = stats.studentGroupRow({ key: 'solve', calls: 3, cost_micro: 250000, total_tokens: 9999 });

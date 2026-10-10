@@ -101,6 +101,57 @@ function loadRecentTopics(userId) {
   return out;
 }
 
+// 笔记维度：学生在自己记什么，是最直接的"当前在学什么"信号
+//
+// 为什么值得单独一路：错题说明的是"他错在哪"（事后），
+// 笔记说明的是"他在主动整理什么"（当下）。两者互补 ——
+// 一个只在错题里出现三角函数的学生，和一个正在记三角函数笔记的学生，
+// 讲解的切入点不该一样。
+//
+// 只做统计不做评价（与全文件一致的取舍）：给"在记：三角函数（3 篇）"，
+// 不给"他对三角函数很上心"这种结论。
+function loadNoteInsights(userId) {
+  var rows = [];
+  try {
+    rows = db.prepare([
+      'SELECT title, tags, updated_at FROM cloud_notes',
+      'WHERE user_id = ? ORDER BY updated_at DESC LIMIT 30'
+    ].join('\n')).all(userId);
+  } catch (e) {
+    // cloud_notes 还没建（老库未迁移）时不能让整份画像失败
+    return null;
+  }
+
+  if (!rows.length) return null;
+
+  // 标签频次：笔记的标签是学生自己打的分类，比从正文猜主题可靠得多
+  var freq = {};
+  for (var i = 0; i < rows.length; i++) {
+    var tags = [];
+    try { tags = JSON.parse(rows[i].tags || '[]'); } catch (e) { tags = []; }
+    for (var t = 0; t < tags.length; t++) {
+      var key = String(tags[t] || '').trim();
+      if (!key) continue;
+      freq[key] = (freq[key] || 0) + 1;
+    }
+  }
+
+  var topTags = Object.keys(freq).map(function(k) {
+    return { tag: k, count: freq[k] };
+  }).sort(function(a, b) {
+    return b.count - a.count || a.tag.localeCompare(b.tag);
+  }).slice(0, 5);
+
+  var recentTitles = [];
+  for (var j = 0; j < rows.length && recentTitles.length < 3; j++) {
+    var title = String(rows[j].title || '').trim();
+    if (!title) continue;
+    recentTitles.push(title);
+  }
+
+  return { total: rows.length, topTags: topTags, recentTitles: recentTitles };
+}
+
 // opts: { force?: boolean }
 function buildProfile(userId, opts) {
   var uid = String(userId || '');
@@ -128,9 +179,11 @@ function buildProfile(userId, opts) {
     var weakSubjects = loadWeakSubjects(uid);
     var commonReasons = loadCommonReasons(uid);
     var recentTopics = loadRecentTopics(uid);
+    var noteInsights = loadNoteInsights(uid);
 
-    // 什么都没有的新生不注入：空画像只会白白占 token
-    if (!parsed && !weakSubjects.length && !recentTopics.length) {
+    // 什么都没有的新生不注入：空画像只会白白占 token。
+    // 笔记维度也算"有画像"—— 只记笔记、还没错过错题的学生同样值得个性化。
+    if (!parsed && !weakSubjects.length && !recentTopics.length && !noteInsights) {
       cache[uid] = { at: now, profile: null };
       return null;
     }
@@ -143,7 +196,8 @@ function buildProfile(userId, opts) {
         ? user.gender : '',
       weakSubjects: weakSubjects,
       commonReasons: commonReasons,
-      recentTopics: recentTopics
+      recentTopics: recentTopics,
+      noteInsights: noteInsights
     };
   } catch (e) {
     // 画像拿不到是完全可接受的降级 —— 不该因为统计查询失败让整轮对话失败

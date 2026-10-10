@@ -327,6 +327,11 @@ html.no-flex-gap .picker-head > * + * {
 
 
 
+
+
+
+
+
 .picker-title {
   margin: 0;
   font-size: 17px;
@@ -346,6 +351,11 @@ html.no-flex-gap .picker-head > * + * {
 html.no-flex-gap .upload-row > * + * {
   margin-left: 12px;
 }
+
+
+
+
+
 
 
 
@@ -387,6 +397,11 @@ html.no-flex-gap .quota-row > * + * {
 
 
 
+
+
+
+
+
 .quota-bar {
   flex: 1;
   height: 4px;
@@ -407,14 +422,19 @@ html.no-flex-gap .filter-row > * + * {
 
 
 
+
+
+
+
+
 .icon-btn {
-  width: 28px;
-  height: 28px;
+  width: clamp(28px, 19.36px + 0.9vw, 42px);
+  height: clamp(28px, 19.36px + 0.9vw, 42px);
   border: none;
   border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-tertiary);
-  font-size: 16px;
+  font-size: clamp(16px, 13.12px + 0.3vw, 21px);
   line-height: 1;
   cursor: pointer;
   flex-shrink: 0;
@@ -564,6 +584,11 @@ html.no-flex-gap .picker-foot > * + * {
 
 
 
+
+
+
+
+
 .foot-actions {
   display: flex;
   gap: 8px;
@@ -571,6 +596,11 @@ html.no-flex-gap .picker-foot > * + * {
 html.no-flex-gap .foot-actions > * + * {
   margin-left: 8px;
 }
+
+
+
+
+
 
 
 

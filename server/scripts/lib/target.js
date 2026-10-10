@@ -9,7 +9,7 @@
 //
 // 用法：
 //   var target = require('./lib/target');
-//   var BASE = target.resolve(process.env.PORT || 9101);
+//   var BASE = target.resolve(process.env.PORT || 9003);
 
 var LOOPBACK = ['127.0.0.1', 'localhost', '::1', '[::1]'];
 
@@ -51,4 +51,40 @@ function getCurrent() {
   return current;
 }
 
-module.exports = { resolve: resolve, current: getCurrent };
+// ---- 额外放行的目标 ----
+//
+// 用途：mock 上游跑在同一台机器的另一个端口（如 9200），
+// 脚本要回放它收到的请求（GET /__last）来断言"模型到底收到了什么"。
+// 它的 origin 与被测实例不同，会被上面的单目标校验拦下。
+//
+// 只放行**本机**地址：这个白名单是为了给本机测试夹具开口子，
+// 不是用来绕过"不许打远端"那条约束的。
+var extraOrigins = [];
+
+function allow(url) {
+  var u;
+  try {
+    u = new URL(String(url).trim());
+  } catch (e) {
+    throw new Error('[target] 放行的地址不是合法 URL：' + url);
+  }
+  if (LOOPBACK.indexOf(u.hostname) === -1) {
+    throw new Error(
+      '[target] 只能放行本机地址，收到 ' + u.hostname + '。\n' +
+      '  mock 上游是测试夹具，必须在同一台机器上。'
+    );
+  }
+  if (extraOrigins.indexOf(u.origin) === -1) extraOrigins.push(u.origin);
+  return u.origin;
+}
+
+function isAllowed(origin) {
+  return extraOrigins.indexOf(origin) !== -1;
+}
+
+module.exports = {
+  resolve: resolve,
+  current: getCurrent,
+  allow: allow,
+  isAllowed: isAllowed
+};

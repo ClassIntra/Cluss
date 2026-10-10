@@ -7,6 +7,7 @@ export default [
   { id: 'study', label: '学习', to: '/study' },
   { id: 'writing', label: '作文', to: '/writing' },
   { id: 'records', label: '记录', to: '/records' },
+  { id: 'notes', label: '笔记', to: '/notes' },
   { id: 'wrong-book', label: '错题本', to: '/wrong-book' },
   { id: 'cloud', label: '云盘', to: '/cloud' }
 ];

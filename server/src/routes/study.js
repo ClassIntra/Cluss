@@ -23,9 +23,13 @@ router.post('/solve/stream', auth.requireAuth, function(req, res) {
     return res.status(400).json({ code: 400, message: '题量模式只能是单题、多题或跨页题' });
   }
 
+  // 图片不再是唯一入口：老师的题发在群里、同学发来的一段题干，
+  // 都是"手上有题但手里没图"的高频场景。有题目文字就允许直接解，
+  // 两者皆空才拦（此时确实无从下手，给一条明确的路而不是笼统报错）。
+  var content = String(req.body.content || '').trim();
   var imageHashes = Array.isArray(req.body.image_hashes) ? req.body.image_hashes : [];
-  if (!imageHashes.length) {
-    return res.status(400).json({ code: 400, message: '请先选择题目图片' });
+  if (!imageHashes.length && !content) {
+    return res.status(400).json({ code: 400, message: '请上传题目图片，或把题目文字写进输入框' });
   }
 
   // 跨页题至少两张才有意义；只有一张时直接降级为单题，避免模型做无意义的「拼接自检」
@@ -37,7 +41,7 @@ router.post('/solve/stream', auth.requireAuth, function(req, res) {
     req: req,
     res: res,
     userId: req.user.user_id,
-    content: String(req.body.content || '').trim(),
+    content: content,
     modelId: String(req.body.model_id || ''),
     conversation: {
       id: String(req.body.conversation_id || ''),
@@ -45,7 +49,8 @@ router.post('/solve/stream', auth.requireAuth, function(req, res) {
       study_style: String(req.body.study_style || 'guided')
     },
     attachmentHashes: imageHashes,
-    task: { kind: 'solve', paperMode: paperMode, requiresImage: true },
+    noteIds: req.body.note_ids || [],
+    task: { kind: 'solve', paperMode: paperMode, requiresImage: imageHashes.length > 0 },
     source: 'solve'
   });
 });
@@ -55,16 +60,18 @@ router.post('/solve/stream', auth.requireAuth, function(req, res) {
 // body: { conversation_id?, model_id, answer_hashes[], content? }
 // ============================================================
 router.post('/grade/stream', auth.requireAuth, function(req, res) {
+  // 与 solve 同理：手写的作答（比如把自己算的过程敲进来）也算输入。
   var answerHashes = Array.isArray(req.body.answer_hashes) ? req.body.answer_hashes : [];
-  if (!answerHashes.length) {
-    return res.status(400).json({ code: 400, message: '请先选择作答图片' });
+  var content = String(req.body.content || '').trim();
+  if (!answerHashes.length && !content) {
+    return res.status(400).json({ code: 400, message: '请上传作答图片，或把你的作答写进输入框' });
   }
 
   turnRunner.runStreamTurn({
     req: req,
     res: res,
     userId: req.user.user_id,
-    content: String(req.body.content || '').trim(),
+    content: content,
     modelId: String(req.body.model_id || ''),
     conversation: {
       id: String(req.body.conversation_id || ''),
@@ -72,7 +79,8 @@ router.post('/grade/stream', auth.requireAuth, function(req, res) {
       study_style: 'guided'   // 批改固定用引导基调（批改本身已是直答）
     },
     attachmentHashes: answerHashes,
-    task: { kind: 'grade', requiresImage: true },
+    noteIds: req.body.note_ids || [],
+    task: { kind: 'grade', requiresImage: answerHashes.length > 0 },
     source: 'grade'
   });
 });
@@ -204,13 +212,25 @@ router.get('/records', auth.requireAuth, function(req, res) {
 
 // ============================================================
 // GET /api/study/conversations —— 学习类会话列表
+//
+// ⚠️ 前端已不再用这个端点（Study.vue 改为直接取 study 模式的会话），
+//    但它是对外契约的一部分，留着别删。分页形态与 /api/chat/conversations 对齐。
 // ============================================================
 router.get('/conversations', auth.requireAuth, function(req, res) {
-  var rows = conv.listConversations(req.user.user_id, 'study', req.query.limit);
+  var out = conv.listConversations(req.user.user_id, {
+    mode: 'study',
+    q: String(req.query.q || '').trim(),
+    limit: req.query.limit,
+    cursor: req.query.cursor
+  });
   res.json({
     code: 200,
     message: 'ok',
-    data: { conversations: rows.map(conv.serializeConversation) }
+    data: {
+      conversations: out.rows.map(conv.serializeConversation),
+      next_cursor: out.next_cursor,
+      has_more: out.has_more
+    }
   });
 });
 
@@ -223,7 +243,8 @@ router.get('/capabilities', auth.requireAuth, function(req, res) {
   var vision = require('../services/vision');
 
   var cfg = vision.getVisionConfig();
-  var models = ai.listModelsForClient();
+  var modelBundle = ai.listModelsForClient();
+  var models = modelBundle.models;
 
   var visionModels = [];
   for (var i = 0; i < models.length; i++) {
@@ -232,7 +253,8 @@ router.get('/capabilities', auth.requireAuth, function(req, res) {
         id: models[i].id,
         label: models[i].label,
         supports_vision: models[i].supports_vision,
-        via_relay: models[i].vision_via_relay
+        via_relay: models[i].vision_via_relay,
+        effective_free: models[i].effective_free
       });
     }
   }

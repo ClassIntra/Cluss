@@ -19,5 +19,16 @@ module.exports = [
   require('./007_cloud_files'),
   require('./008_vision_settings'),
   require('./009_wrong_questions'),
-  require('./010_writing_pieces')
+  require('./010_writing_pieces'),
+  require('./011_conversations_persona'),
+  require('./012_cloud_notes'),
+  require('./013_memories'),
+  require('./014_credit_pricing'),
+  require('./016_model_health'),
+  require('./017_wrong_book_review'),
+  require('./018_note_folders_canvas'),
+  require('./019_messages_streaming'),
+  require('./020_drop_classintra_disabled_sync'),
+  require('./021_daily_style_and_personas'),
+  require('./022_model_sources_offpeak')
 ];

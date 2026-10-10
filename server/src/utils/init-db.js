@@ -45,21 +45,25 @@ function seedDefaultModel() {
 
 // 管理员引导：只要配置了 ADMIN_PASSWORD 且账号不存在就创建，绝不覆盖已有密码
 //
-// 为什么所有模式都做（不限于 relay）：
-//   独立部署下学生无法在别处充值，管理员本就是同一套自建流程；
-//   relay 模式则是权威账本所在处，更需要稳定的管理入口。
-//   两处都用同一段逻辑，避免「独立部署没有管理台」这种不一致。
+// 权限位按部署模式区分：
+//   独立部署（standalone）—— 没有 ClassIntra 可引入班管，开发账号（ADMIN_USER_ID，
+//   默认 999999）就是唯一的管理入口，is_admin=1。
+//   联动部署（relay）—— 实际管理交给 ClassIntra 的班管（token 的 is_class_admin
+//   映射，见 middleware/auth.js）；开发账号只是开发用，is_admin 强制归 0，
+//   避免一个跑测试的账号在学校环境里握着全部管理权。
 function bootstrapAdmin() {
   var a = config.admin;
   if (!a.password) {
     console.warn('[init-db] 未设置 ADMIN_PASSWORD，跳过管理员引导（管理台将无法登录）');
     return;
   }
+  var wantAdmin = config.mode === config.MODES.RELAY ? 0 : 1;
   var existing = db.prepare('SELECT user_id FROM users WHERE user_id = ?').get(a.userId);
   if (existing) {
     // 已存在只确保权限位正确，不动密码（避免重启把管理员改过的密码还原）
-    if (config.mode === config.MODES.RELAY) {
-      db.prepare('UPDATE users SET is_admin = 1 WHERE user_id = ?').run(a.userId);
+    db.prepare('UPDATE users SET is_admin = ? WHERE user_id = ?').run(wantAdmin, a.userId);
+    if (wantAdmin === 0) {
+      console.log('[init-db] 联动模式：开发账号', a.userId, '不持有管理权（实际管理走 ClassIntra 班管）');
     }
     return;
   }
@@ -68,9 +72,10 @@ function bootstrapAdmin() {
   var hash = pwd.hashPassword(a.password);
   db.prepare([
     'INSERT INTO users (user_id, net_name, real_name, password_hash, status, is_admin, info_json, source, created_at)',
-    'VALUES (?, ?, ?, ?, \'active\', 1, \'{}\', \'local\', ?)'
-  ].join('\n')).run(a.userId, a.netName, a.realName, hash, time.nowUtc());
-  console.log('[init-db] 已创建管理员账号:', a.userId, '(' + a.realName + ')');
+    'VALUES (?, ?, ?, ?, \'active\', ?, \'{}\', \'local\', ?)'
+  ].join('\n')).run(a.userId, a.netName, a.realName, hash, wantAdmin, time.nowUtc());
+  console.log('[init-db] 已创建开发账号:', a.userId, '(' + a.realName + ')',
+    wantAdmin ? '（独立部署，兼管理入口）' : '（联动模式，非管理员）');
 }
 
 function initDatabase() {
@@ -79,6 +84,23 @@ function initDatabase() {
     (result.applied > 0 ? '（本次应用 ' + result.applied + ' 个迁移）' : '（已是最新）'));
 
   setMeta('instance_id', config.instanceId);
+
+  // 清理"生成中"僵尸：进程若在生成途中被杀（崩溃 / 强退），那条占位消息的
+  // streaming 会永远停在 1，前端会一直去轮询一个不会再动的会话。
+  // 重启之后确定没有任何生成还在进行 —— 统一收敛，判定是确定的。
+  //
+  // 复用 conversation-core 的实现，而不是在这里写一句 UPDATE：
+  //   「有正文的保留、没正文的删掉」这条规则单条收尾那边也在用，
+  //   两处各写一遍迟早漂移，变成"手动停止留正文、重启却把正文删了"。
+  try {
+    var settled = require('../services/conversation-core').settleAllStreamingMessages();
+    if (settled.total > 0) {
+      console.log('[init-db] 收敛遗留的"生成中"消息 ' + settled.total +
+        ' 条（保留 ' + settled.kept + ' 条有内容的，删除 ' + settled.dropped + ' 条空占位）');
+    }
+  } catch (e) {
+    console.warn('[init-db] 清理遗留 streaming 失败:', e.message);
+  }
 
   seedDefaultModel();
   bootstrapAdmin();

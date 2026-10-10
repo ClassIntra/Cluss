@@ -15,6 +15,52 @@ var db = require('../utils/db');
 var time = require('../utils/time');
 var prompts = require('./prompt-registry');
 
+// ------------------------------------------------------------
+// 复习排期（间隔重复）
+//
+// 用固定阶梯，不上 SM-2 那类自适应算法：在中学错题场景里，
+// **可解释比最优更重要**。学生能看懂「3 天后再练」并预期它；
+// 算法复杂到说不清来由，学生只会觉得这系统在乱排，进而不信任整个功能。
+//
+// stage 语义 = 已连续答对的次数，同时就是查表下标：
+//   stage 0 → 明天再练（刚入库，或刚答错被打回重来）
+//   stage 1 → 3 天后     stage 2 → 7 天后
+//   stage 3 → 15 天后    stage 4 → 30 天后
+//   stage 5 → 走完阶梯，不再排期（等学生自己确认掌握）
+var LADDER = [1, 3, 7, 15, 30];
+
+// 从「今天」往后排下一次复习
+function nextOnFromToday(stage) {
+  if (stage >= LADDER.length) return '';
+  return time.localDay(LADDER[stage]);
+}
+
+// 这道题现在是否到复习的时候
+//
+// 除「日期已到」之外还认一种情况：**从没排过期、也没复习过的未掌握题**。
+// 这是给自己留的安全网——万一哪条写入路径忘了排期（新增来源、脚本导入），
+// 那些题会永远不进复习队列，静默丢失。把它们视为「现在就该看」，
+// 系统就能自我修复，而不是等学生发现"这题怎么从来不出现在复习里"。
+function isDue(row, today) {
+  if (row.mastered === 1) return false;
+  var on = String(row.next_review_on || '');
+  if (!on) return !(Number(row.review_stage) > 0);
+  return on <= today;
+}
+
+// 给前端一句人话，避免各页各写一套日期文案
+function reviewHint(row, today) {
+  if (row.mastered === 1) return '';
+  var on = String(row.next_review_on || '');
+  if (!on) {
+    return Number(row.review_stage) >= LADDER.length ? '已走完复习阶梯' : '待安排';
+  }
+  var diff = time.localDayDiff(today, on);
+  if (diff <= 0) return '今天';
+  if (diff === 1) return '明天';
+  return diff + ' 天后';
+}
+
 // 转义正则元字符（标记里没有特殊字符，但保持通用写法更稳）
 function escapeRe(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -107,10 +153,15 @@ function saveExtracted(items, ctx) {
   if (!list.length) return 0;
 
   var now = time.nowUtc();
+  // 新收进来的错题按 stage 0 排期（明天再练）：
+  // 批改刚结束，学生已经看过正确答案，此刻"复习"只是重复阅读；
+  // 隔一天再回忆一次才是有效的第一次练习。
+  var firstReviewOn = nextOnFromToday(0);
   var stmt = db.prepare([
     'INSERT INTO wrong_questions (user_id, conversation_id, image_hash, source, subject,',
-    '  question, student_answer, correct_answer, reason, tag, mastered, note, created_at, updated_at)',
-    'VALUES (?, ?, ?, \'ai\', ?, ?, ?, ?, ?, ?, 0, \'\', ?, ?)'
+    '  question, student_answer, correct_answer, reason, tag, mastered, note, created_at, updated_at,',
+    '  review_stage, next_review_on, last_reviewed_on, review_count)',
+    'VALUES (?, ?, ?, \'ai\', ?, ?, ?, ?, ?, ?, 0, \'\', ?, ?, 0, ?, \'\', 0)'
   ].join('\n'));
 
   var tx = db.transaction(function() {
@@ -122,7 +173,7 @@ function saveExtracted(items, ctx) {
         String(ctx.imageHash || ''),
         it.subject, it.question, it.student_answer,
         it.correct_answer, it.reason, it.tag,
-        now, now
+        now, now, firstReviewOn
       );
     }
   });
@@ -148,16 +199,69 @@ function serialize(row) {
     conversation_id: row.conversation_id || '',
     image_hash: row.image_hash || '',
     image_url: row.image_hash ? ('/api/cloud/files/' + row.image_hash + '?thumb=1') : '',
+    // ---- 复习排期 ----
+    review_stage: Number(row.review_stage) || 0,
+    review_count: Number(row.review_count) || 0,
+    next_review_on: row.next_review_on || '',
+    last_reviewed_on: row.last_reviewed_on || '',
+    // due 与 review_hint 都在服务端算好：列表、角标、复习卡片三处若各写一套
+    // 日期判断与文案，迟早会互相矛盾（"这里说今天到期、那里说 3 天后"）
+    due: isDue(row, time.localDay()),
+    review_hint: reviewHint(row, time.localDay()),
     created_at: time.toISO(row.created_at),
     updated_at: time.toISO(row.updated_at)
   };
 }
 
-// opts: { userId, mastered: ''|'0'|'1', subject, page, limit }
+// 错题本的四类计数（收口成一处）
+//
+// 为什么要收口：角标、筛选标签、页面复习卡片、列表本身都依赖这几个数。
+// 之前每处各写一条 SQL 的写法，迟早出现「角标说 3 道、点进去只有 2 道」——
+// 这种偏差最伤信任，因为学生无法判断该信哪个。
+function countsOf(userId) {
+  var today = time.localDay();
+  var row = db.prepare([
+    'SELECT SUM(CASE WHEN mastered = 0 THEN 1 ELSE 0 END) AS pending,',
+    '       SUM(CASE WHEN mastered = 1 THEN 1 ELSE 0 END) AS done,',
+    '       SUM(CASE WHEN mastered = 0 AND ((next_review_on != \'\' AND next_review_on <= ?)',
+    '                 OR (next_review_on = \'\' AND review_stage = 0)) THEN 1 ELSE 0 END) AS due,',
+    '       SUM(CASE WHEN mastered = 0 AND next_review_on = \'\' AND review_stage >= ?',
+    '                THEN 1 ELSE 0 END) AS graduated,',
+    '       COUNT(*) AS total',
+    'FROM wrong_questions WHERE user_id = ?'
+  ].join('\n')).get(today, LADDER.length, String(userId));
+
+  return {
+    pending: (row && row.pending) || 0,
+    mastered: (row && row.done) || 0,
+    // due       = 今天该复习的
+    // graduated = 已走完复习阶梯、等他确认掌握的（不催，只提示）
+    due: (row && row.due) || 0,
+    graduated: (row && row.graduated) || 0,
+    total: (row && row.total) || 0
+  };
+}
+
+// 轻量概览：导航角标只想知道「今天有几道」，
+// 不该为了一个数字去拉整页列表（错题多的时候那是几十条 JOIN 与 Markdown 文本）
+function overview(userId) {
+  var c = countsOf(userId);
+  return {
+    due: c.due,
+    graduated: c.graduated,
+    pending: c.pending,
+    mastered: c.mastered,
+    total: c.total,
+    today: time.localDay()
+  };
+}
+
+// opts: { userId, mastered: ''|'0'|'1', subject, due: '1', page, limit }
 function list(opts) {
   var o = opts || {};
   var page = Math.max(1, parseInt(o.page, 10) || 1);
   var limit = Math.min(Math.max(1, parseInt(o.limit, 10) || 20), 100);
+  var today = time.localDay();
 
   var where = ['user_id = ?'];
   var params = [String(o.userId)];
@@ -170,34 +274,43 @@ function list(opts) {
     where.push('subject = ?');
     params.push(String(o.subject));
   }
+
+  // 只看今天该复习的。第二项「从没排过期」是安全网（见 isDue 的说明），
+  // 两条 SQL 与两条 JS 判定必须完全一致，否则会出现
+  // 「角标说有 3 道、点进去只有 2 道」这种最伤信任的偏差。
+  var dueCondition = [
+    'mastered = 0',
+    "AND ((next_review_on != '' AND next_review_on <= ?)",
+    "     OR (next_review_on = '' AND review_stage = 0))"
+  ].join('\n');
+  if (o.due === '1') {
+    where.push('(' + dueCondition + ')');
+    params.push(today);
+  }
+
   var whereSql = where.join(' AND ');
 
   var countStmt = db.prepare('SELECT COUNT(*) AS c FROM wrong_questions WHERE ' + whereSql);
   var total = (countStmt.get.apply(countStmt, params) || {}).c || 0;
 
+  // 复习队列按「该复习的先后」排：日期早的（拖得久的）排前面。
+  // 其余场景保持「最新收录在前」——那时学生找的是"我刚做错的那道"。
+  var orderSql = o.due === '1'
+    ? 'ORDER BY next_review_on ASC, id ASC'
+    : 'ORDER BY id DESC';
+
   var listStmt = db.prepare(
-    'SELECT * FROM wrong_questions WHERE ' + whereSql + ' ORDER BY id DESC LIMIT ? OFFSET ?'
+    'SELECT * FROM wrong_questions WHERE ' + whereSql + ' ' + orderSql + ' LIMIT ? OFFSET ?'
   );
   var rows = listStmt.all.apply(listStmt, params.concat([limit, (page - 1) * limit]));
 
-  // 已掌握/未掌握计数用于筛选标签上的角标
-  var stat = db.prepare([
-    'SELECT SUM(CASE WHEN mastered = 0 THEN 1 ELSE 0 END) AS pending,',
-    '       SUM(CASE WHEN mastered = 1 THEN 1 ELSE 0 END) AS done,',
-    '       COUNT(*) AS total',
-    'FROM wrong_questions WHERE user_id = ?'
-  ].join('\n')).get(String(o.userId));
-
+  // 计数统一从 countsOf 取，保证与角标、复习卡片完全同源
   return {
     page: page,
     limit: limit,
     total: total,
     total_pages: Math.ceil(total / limit),
-    counts: {
-      pending: (stat && stat.pending) || 0,
-      mastered: (stat && stat.done) || 0,
-      total: (stat && stat.total) || 0
-    },
+    counts: countsOf(o.userId),
     items: rows.map(serialize)
   };
 }
@@ -218,17 +331,22 @@ function create(userId, body) {
   var n = normalizeItem(b);
   var now = time.nowUtc();
 
+  // 手动录入的题同样进入复习队列；已掌握的直接不排期
+  var masteredFlag = b.mastered ? 1 : 0;
+  var firstReviewOn = masteredFlag ? '' : nextOnFromToday(0);
+
   var info = db.prepare([
     'INSERT INTO wrong_questions (user_id, conversation_id, image_hash, source, subject,',
-    '  question, student_answer, correct_answer, reason, tag, mastered, note, created_at, updated_at)',
-    'VALUES (?, \'\', ?, \'manual\', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    '  question, student_answer, correct_answer, reason, tag, mastered, note, created_at, updated_at,',
+    '  review_stage, next_review_on, last_reviewed_on, review_count)',
+    'VALUES (?, \'\', ?, \'manual\', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, \'\', 0)'
   ].join('\n')).run(
     String(userId),
     String(b.image_hash || ''),
     n.subject, question, n.student_answer, n.correct_answer, n.reason, n.tag,
-    b.mastered ? 1 : 0,
+    masteredFlag,
     String(b.note || '').slice(0, 2000),
-    now, now
+    now, now, firstReviewOn
   );
 
   return { ok: true, item: getOne(info.lastInsertRowid, userId) };
@@ -267,8 +385,19 @@ function update(id, userId, body) {
     params.push(tag);
   }
   if (b.mastered !== undefined) {
+    var wantMastered = b.mastered ? 1 : 0;
     sets.push('mastered = ?');
-    params.push(b.mastered ? 1 : 0);
+    params.push(wantMastered);
+    // 掌握状态变了，排期必须跟着变，否则两边自相矛盾：
+    //   标为已掌握却还留着到期日 → 复习队列里又冒出来
+    //   标回待复习却没有排期     → 它永远不进复习队列（靠 isDue 的安全网兜底，但那是兜底）
+    if (wantMastered === 1) {
+      sets.push('next_review_on = ?');
+      params.push('');
+    } else {
+      sets.push('review_stage = ?', 'next_review_on = ?');
+      params.push(0, nextOnFromToday(0));
+    }
   }
 
   if (!sets.length) return { ok: false, message: '没有要修改的内容' };
@@ -301,17 +430,28 @@ function batch(userId, ids, action) {
   var uid = String(userId);
   var affected = 0;
   var now = time.nowUtc();
+  var reFirstOn = nextOnFromToday(0);
+  var masterStmt = db.prepare([
+    'UPDATE wrong_questions SET mastered = 1, next_review_on = \'\', updated_at = ?',
+    'WHERE id = ? AND user_id = ?'
+  ].join('\n'));
+  var unmasterStmt = db.prepare([
+    'UPDATE wrong_questions SET mastered = 0, review_stage = 0, next_review_on = ?, updated_at = ?',
+    'WHERE id = ? AND user_id = ?'
+  ].join('\n'));
 
   var tx = db.transaction(function() {
     for (var i = 0; i < list.length; i++) {
       var info;
       if (action === 'delete') {
         info = db.prepare('DELETE FROM wrong_questions WHERE id = ? AND user_id = ?').run(list[i], uid);
+      } else if (action === 'master') {
+        // 标为已掌握要同时清空排期：否则它仍是"未掌握时的到期题"，
+        // 继续出现在「今日待复习」里，学生刚确认掌握又被催，会觉得系统没记住他的操作
+        info = masterStmt.run(now, list[i], uid);
       } else {
-        var mastered = action === 'master' ? 1 : 0;
-        info = db.prepare(
-          'UPDATE wrong_questions SET mastered = ?, updated_at = ? WHERE id = ? AND user_id = ?'
-        ).run(mastered, now, list[i], uid);
+        // 标回待复习 → 从第一级重新排期（他既然说不算掌握，就不该留在旧进度上）
+        info = unmasterStmt.run(reFirstOn, now, list[i], uid);
       }
       affected += info.changes;
     }
@@ -319,6 +459,78 @@ function batch(userId, ids, action) {
   tx();
 
   return { ok: true, affected: affected };
+}
+
+// ------------------------------------------------------------
+// 复习动作
+// ------------------------------------------------------------
+
+// 记一次复习
+//   result 'good'  —— 想起来了 / 这次做对了：阶梯往下走一级
+//   result 'again' —— 忘了 / 又错了：**打回第一级重来**
+//
+// 为什么要打回而不是"原地不动"：答错说明这道题的真实记忆强度被高估了，
+// 继续按原间隔往后退，等于把漏洞藏起来——下次再见到它时，学生已经忘了更久。
+// 打回重来看着严厉，但它才是间隔重复真正起作用的那一半。
+//
+// 不自动标记"已掌握"：走完阶梯只给建议，最终由学生自己点。
+// 机器替他判定"你会了"一旦判错，他会失去对整套复习安排的信任。
+function review(id, userId, result) {
+  var row = db.prepare('SELECT * FROM wrong_questions WHERE id = ? AND user_id = ?')
+    .get(Number(id), String(userId));
+  if (!row) return { ok: false, notFound: true, message: '错题不存在' };
+
+  if (row.mastered === 1) {
+    return { ok: false, message: '这道题已标记掌握，先「标回待复习」再来练' };
+  }
+
+  var kind = String(result || '') === 'again' ? 'again' : 'good';
+  var stage = Number(row.review_stage) || 0;
+  var today = time.localDay();
+
+  stage = kind === 'again' ? 0 : stage + 1;
+
+  var nextOn = nextOnFromToday(stage);
+  var graduated = kind === 'good' && nextOn === '';
+
+  db.prepare([
+    'UPDATE wrong_questions',
+    'SET review_stage = ?, next_review_on = ?, last_reviewed_on = ?,',
+    '    review_count = COALESCE(review_count, 0) + 1, updated_at = ?',
+    'WHERE id = ? AND user_id = ?'
+  ].join('\n')).run(stage, nextOn, today, time.nowUtc(), Number(id), String(userId));
+
+  return {
+    ok: true,
+    kind: kind,
+    graduated: graduated,
+    next_on: nextOn,
+    // 服务端把话术也一并给出：「3 天后」这种说法不该让前端各自拼
+    next_hint: nextOn ? (time.localDayDiff(today, nextOn) + ' 天后再练') : '',
+    stage: stage,
+    item: getOne(id, userId)
+  };
+}
+
+// 「今天先不复习」：把当前到期的题整体往后推 N 天
+//
+// 为什么必须留这个出口：一个躲不掉的提醒会从"帮忙"变成"压力"。
+// 给一个诚实、可逆、一键的推迟，比逼学生点开然后草草划完更尊重他，
+// 也保住了复习本身的质量（被逼做的复习等于没做）。
+function snooze(userId, days) {
+  var uid = String(userId);
+  var n = Math.min(Math.max(parseInt(days, 10) || 1, 1), 30);
+  var today = time.localDay();
+  var until = time.localDay(n);
+
+  var info = db.prepare([
+    'UPDATE wrong_questions SET next_review_on = ?',
+    'WHERE user_id = ? AND mastered = 0',
+    '  AND ((next_review_on != \'\' AND next_review_on <= ?)',
+    '       OR (next_review_on = \'\' AND review_stage = 0))'
+  ].join('\n')).run(until, uid, today);
+
+  return { ok: true, affected: info.changes, until: until, days: n };
 }
 
 // 出现过的学科（筛选下拉）
@@ -337,10 +549,12 @@ function exportCsv(userId) {
   ).all(String(userId));
 
   var q = function(s) { return String(s || '').replace(/"/g, '""').replace(/[\r\n]+/g, ' '); };
-  var lines = ['学科,题干,我的答案,正确答案,错因,状态,来源,记录时间'];
+  var today = time.localDay();
+  var lines = ['学科,题干,我的答案,正确答案,错因,状态,复习进度,下次复习,来源,记录时间'];
 
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
+    var stage = Number(r.review_stage) || 0;
     lines.push([
       '"' + q(r.subject) + '"',
       '"' + q(r.question) + '"',
@@ -348,6 +562,9 @@ function exportCsv(userId) {
       '"' + q(r.correct_answer) + '"',
       '"' + q(r.reason) + '"',
       r.mastered === 1 ? '已掌握' : '待复习',
+      // 复习进度用「第 n 级 / 共 m 级」表述，导出的表格给家长或老师看时能直接读懂
+      '"' + (r.mastered === 1 ? '—' : ('第 ' + Math.min(stage + 1, LADDER.length) + ' 级 / 共 ' + LADDER.length + ' 级')) + '"',
+      '"' + q(reviewHint(r, today)) + '"',
       r.source === 'ai' ? 'AI 提取' : '手动录入',
       String(r.created_at || '').slice(0, 19)
     ].join(','));
@@ -361,11 +578,16 @@ module.exports = {
   parseLoose: parseLoose,
   saveExtracted: saveExtracted,
   list: list,
+  countsOf: countsOf,
+  overview: overview,
+  review: review,
+  snooze: snooze,
   getOne: getOne,
   create: create,
   update: update,
   remove: remove,
   batch: batch,
   subjects: subjects,
-  exportCsv: exportCsv
+  exportCsv: exportCsv,
+  LADDER: LADDER
 };

@@ -23,12 +23,78 @@ var conv = require('./conversation-core');
 var builder = require('./context-builder');
 var vision = require('./vision');
 var userProfile = require('./user-profile');
+// 自定义人格的持久化。与 prompt-registry 的分工：那边管"内置人格定义与渲染"（纯函数），
+// 这边管"学生自建人格的存取"。turn-runner 是把两者接起来的地方。
+var personaStore = require('./persona-store');
+// 对话里自动沉淀长期记忆（后台跑、失败隔离、不阻塞主链路）
+var memoryExtractor = require('./memory-extractor');
+// ClassIntra 联动桥：用于取"Cluss 自己没有的那一维"画像素材（校园社区活动痕迹）。
+// 注意它**不读** ClassIntra 的数据库，只是调用 CI 侧的只读接口（见该文件顶部说明）。
+var ciBridge = require('./ci-bridge');
+var modelHealth = require('../utils/model-health');
 var config = require('../config');
 
 var DEFAULT_CONTEXT_BUDGET = 10000;
 
 function newTraceId() {
   return crypto.randomBytes(8).toString('hex');
+}
+
+// ------------------------------------------------------------
+// 会话级在途锁
+//
+// 为什么需要：同一个会话同时跑两轮流式，会在库里留下**两条** streaming=1 的占位行。
+// 前端恢复路径（Chat.vue 的 applyServerStreaming）是按"助手消息下标"对齐的，
+// 多出一条之后下标整体错位，正文会被写到错的节点上 —— 表现成"答案串行了"。
+// 而且两轮各记一次账，学生为同一件事被扣两份积分。
+//
+// 为什么锁在进程内而不是库里加一列：PM2 是单实例（见 ops 文档）。
+// ⚠️ 真要做横向扩容的话这里必须换实现，所以把这句话留在代码里。
+//
+// 三条防呆（缺一不可）：
+//   1. 持有者的 SSE 客户端**已经断开** → 允许接管。
+//      这是"点了停止生成又马上重发"的路径：客户端一断 res 的 close 就触发，
+//      但上游那一轮未必立刻结束（服务端没有主动 abort），锁还在它手上。
+//      此时若死等，学生会觉得"停一下之后就再也发不出去了"。
+//   2. TTL 兜底：任何未预期路径漏了释放，10 分钟后自动失效，
+//      不让一个陈旧的锁永久堵死这个会话（宁可偶尔放行两次，也不能卡住发不出去）。
+//   3. 释放时比对 traceId：被接管的那一轮收尾时**不能**把接管者的锁删掉。
+// ------------------------------------------------------------
+var IN_FLIGHT_TTL_MS = 10 * 60 * 1000;
+var inFlightTurns = new Map();
+
+// 返回 true = 拿到了锁；false = 同一会话已有在途生成，调用方应拒绝本次请求
+function acquireTurn(convId, traceId) {
+  var id = String(convId);
+  var prev = inFlightTurns.get(id);
+  if (prev) {
+    var expired = Date.now() - prev.startedAt > IN_FLIGHT_TTL_MS;
+    var gone = !!(prev.sse && prev.sse.isClientGone && prev.sse.isClientGone());
+    if (!expired && !gone) return false;
+    console.warn('[Turn] 会话 %s 上一轮仍在途（trace %s，%s）→ 本次接管',
+      id, prev.traceId, expired ? '锁已超时' : '上一个客户端已断开');
+  }
+  inFlightTurns.set(id, { traceId: traceId, startedAt: Date.now(), sse: null });
+  return true;
+}
+
+// SSE 写手建好之后回填进去 —— 锁的"持有者是否还活着"靠它判断
+function bindTurnSse(convId, traceId, sse) {
+  var cur = inFlightTurns.get(String(convId));
+  if (cur && cur.traceId === traceId) cur.sse = sse;
+}
+
+function releaseTurn(convId, traceId) {
+  var id = String(convId);
+  var cur = inFlightTurns.get(id);
+  if (cur && cur.traceId === traceId) inFlightTurns.delete(id);
+}
+
+// 只给验证脚本用：确认没有锁泄漏
+function inFlightSnapshot() {
+  var out = [];
+  inFlightTurns.forEach(function(v, k) { out.push({ conv_id: k, trace_id: v.traceId }); });
+  return out;
 }
 
 // 统一失败出口：SSE 头未写时返回 JSON，已写时降级为事件
@@ -90,6 +156,10 @@ function flattenForEstimate(messages) {
 //   modelId           string
 //   conversation      { id?, mode?, study_style? }
 //   attachmentHashes  [string] 云盘文件 hash（图片与文本混排）
+//   noteIds           [number] 引用的笔记 id（正文取自云盘 .md）
+//     ⚠️ 为什么笔记不走 attachmentHashes：笔记正文虽然也是云盘里的 .md 文件，
+//        但它是"学生自己写的东西"，不是外部资料。走独立通道才能用不同的措辞
+//        注入（"我引用的笔记" vs "附带的文件"），模型对两者的用法完全不同。
 //   task              { kind, requiresImage?, paperMode?, writing? }
 //     kind: '' | 'solve' | 'grade' | 'writing_generate' | 'writing_grade' | 'writing_outline'
 //     requiresImage: 显式声明「没有图就不许提交」。
@@ -107,6 +177,11 @@ function runStreamTurn(ctx) {
   var attachmentHashes = Array.isArray(ctx.attachmentHashes) ? ctx.attachmentHashes.filter(Boolean) : [];
   var hasImages = attachmentHashes.length > 0;
   var requiresImage = !!task.requiresImage;
+  // 深度思考开关（用户在前端选）：真值时请求上游先输出思维链。
+  // 这里只做"用户想不想要"的表达，"这个模型认不认"由 ai.buildRequestOptions
+  // 按 supports_thinking 二次把关——包括下面可能发生的熔断换模型，
+  // 换到的模型不支持时参数会被自动丢弃，不会把请求打坏。
+  var thinking = ctx.thinking === true;
 
   // 需要图的任务没带图，直接拦（拍题/批改属于这类）
   if (requiresImage && !hasImages) {
@@ -126,11 +201,35 @@ function runStreamTurn(ctx) {
     modelId: ctx.modelId,
     mode: conversationInput.mode,
     studyStyle: conversationInput.study_style,
+    // 人格：客户端传了就归一化后落库（'buddy' = 回到默认语气的显式表达，
+    // 是有效值），不传（undefined）表示"别动这一列"。
+    //
+    // ⚠️「只在日常模式生效」的判定已**下沉到 ensureConversation** ——
+    //   只有那里同时看得到"客户端想设什么"与"会话本来是什么模式"。
+    //   原先在这里用 `conversationInput.mode === 'daily'` 把关，会漏掉
+    //   「前端只换人格、没带 mode」的请求：那种情况下改动被静默丢弃，
+    //   学生表现为"点了没反应"。
+    persona: conversationInput.persona !== undefined
+      ? prompts.normalizePersona(conversationInput.persona)
+      : undefined,
+    // 无限制风格：与 persona 完全同规则（undefined = 别动；
+    //   '' = 回到受限，是有效值）。归一化交给 prompt-registry，判据同上了。
+    dailyStyle: conversationInput.daily_style !== undefined
+      ? prompts.normalizeDailyStyle(conversationInput.daily_style)
+      : undefined,
     titleFrom: content || (task.kind === 'grade' ? '作业批改' : '拍题解答'),
     taskKind: task.kind
   });
 
-  var effectiveModelId = String(ctx.modelId || convRow.model_id || ai.getDefaultModelId());
+  var requestedModelId = String(ctx.modelId || convRow.model_id || ai.getDefaultModelId());
+  // 模型被熔断时替学生换一个还能用的：他选的是"某个模型"这个功能，
+  // 而不是具体的某一家供应商 —— 换过去这件事不该由他承担。
+  var fallbackRow = ai.pickFallbackModel(requestedModelId);
+  var downgradedFrom = fallbackRow ? requestedModelId : '';
+  var effectiveModelId = fallbackRow ? fallbackRow.id : requestedModelId;
+  if (downgradedFrom) {
+    console.warn('[Turn] 模型 %s 已被熔断，本次自动改用 %s', downgradedFrom, effectiveModelId);
+  }
   var model = ai.resolveModel(effectiveModelId);
   // enabled 必须查：resolveModel 只看"有没有地址和 Key"，已停用的模型照样能解析出来。
   // 不查的话，客户端只要显式传一个停用模型的 model_id 就能绕开管理员的停用决定。
@@ -218,19 +317,56 @@ function runStreamTurn(ctx) {
     }
   }
 
+  // ---- 4.5) 笔记引用读取 ----
+  // 与附件同阶段（写 SSE 头之前）：笔记不存在/无权访问要能干净返回 400，
+  // 不能等到流已经开始了才发现引用的是别人的笔记。
+  var noteIds = Array.isArray(ctx.noteIds)
+    ? ctx.noteIds.map(Number).filter(function(n) { return n > 0; })
+    : [];
+  var noteText = '';
+  if (noteIds.length) {
+    var loadedNotes = loadNoteRefs(userId, noteIds);
+    if (loadedNotes.error) return fail(res, 400, loadedNotes.error);
+    noteText = loadedNotes.text;
+    // 笔记也进 attachmentMeta：历史消息里要留下「当时引用了笔记」的占位，
+    // 否则学生下次问「我刚才引的那篇」时，模型在历史里看不到任何痕迹。
+    for (var ni = 0; ni < loadedNotes.meta.length; ni++) {
+      attachmentMeta.push(loadedNotes.meta[ni]);
+    }
+  }
+
   // ---- 5) 图片缩图（在写 SSE 头之前完成，失败回退原图不阻断）----
   var shrinkChain = imageItems.length
     ? vision.shrinkAll(imageItems, null)
     : Promise.resolve([]);
 
   return shrinkChain.then(function(shrunkItems) {
+    // ---- 5.5) 会话级在途互斥 ----
+    // 放在写 SSE 头**之前**：409 只能以普通 JSON 返回；一旦写了头，HTTP 状态码
+    // 就固定成 200，学生拿到的会是"200 但内容是错误"这种别扭结果。
+    //
+    // 放在缩图之后是有意的：这一层唯一的职责是阻止"同一会话出现两条占位行"，
+    // 而占位行在第 10 步才写。把它提到前面的校验之前，只会让每条错误路径
+    // 都得记得放锁 —— 而"记得放锁"正是最容易漏的事。
+    if (!acquireTurn(convRow.id, traceId)) {
+      return fail(res, 409, '上一条回复还在生成中，等它写完再发；或者先点「停止生成」再重发。');
+    }
+
     // ---- 6) 写 SSE 头（此后不能再改 HTTP 状态码）----
     var sse = conv.createSseWriter(ctx.req, res);
+    bindTurnSse(convRow.id, traceId, sse);
+    // 把"放锁"和收尾绑死：本轮无论怎么结束（成功 / 失败 / 被上游中断），
+    // 只要走到 sse.close() 就一定释放，不依赖每个分支各自记得释放。
+    var closeSse = sse.close;
+    sse.close = function() { closeSse(); releaseTurn(convRow.id, traceId); };
     sse.headers();
 
     sse.send('meta', {
       conversation_id: convRow.id,
       model_id: effectiveModelId,
+      // 学生选的那个模型被熔断了、我们替他换了 —— 这件事要透明告知：
+      // 否则他明明选了"A 模型"却看到"B 模型"的回答，会以为是 Bug。
+      downgraded_from: downgradedFrom,
       mode: convRow.mode || 'study',
       study_style: convRow.study_style || 'guided',
       trace_id: traceId
@@ -289,20 +425,81 @@ function runStreamTurn(ctx) {
         console.warn('[Turn] 学生画像构建失败（不影响对话）:', e.message);
       }
 
+      // ClassIntra 活动素材：**只读缓存**（同步、零延迟），再"发射后不管"地触发一次
+      // 后台刷新，让下一轮对话能用上最新值。
+      //
+      // 为什么不在这里 await 一次 CI 请求：这是增强项，CI 慢 2 秒学生的首字就慢 2 秒，
+      // CI 挂掉还要吃满超时 —— 为一个"锦上添花"把主链路绑上别人的可用性不划算。
+      // 代价是"新数据晚一轮生效"，对画像完全可接受。详见 ci-bridge 的说明。
+      // refreshStudentProfile **永不抛**，但仍包一层 try：这里的任何异常都不该中断对话。
+      var ciProfile = null;
+      try {
+        ciProfile = ciBridge.getCachedStudentProfile(userId);
+        ciBridge.refreshStudentProfile(userId);
+      } catch (e) {
+        console.warn('[Turn] ClassIntra 画像读取失败（不影响对话）:', e.message);
+      }
+
       // 余额也交给模型一把：学生问「我还有多少积分」时能直接答，
       // 不用让他自己去看侧栏。BASE 第 14 条禁止模型主动播报。
       var walletView = credit.toPointsView(credit.getState(userId));
 
-      var systemPrompt = prompts.getSystemPrompt({
+      // 跨会话记忆：只取与本次提问相关的几条（检索命中，否则退化到最近更新）。
+      // 全量塞进上下文既费 token，也会让陈年旧事被当成当前语境。
+      // 构建失败只降级为空 —— 记忆是增强项，不该因为它挂掉整轮对话。
+      var memories = [];
+      try {
+        var memorySvc = require('./memory');
+        memories = memorySvc.selectForContext(userId, content, memorySvc.MAX_INJECT);
+      } catch (e) {
+        console.warn('[Turn] 记忆检索失败（不影响对话）:', e.message);
+      }
+
+      // 人格：把会话里存的 id 解析成一条可渲染的记录。
+      //   内置 id（buddy/humor/...）→ prompt-registry 自带；
+      //   'p:数字' → 该学生自己的自定义人格（从库里取）。
+      //   自定义人格取不到（已被删）时 resolvePersona 返回 null，
+      //   人格段自然为空 = 回到默认语气，对话照常能开。
+      var personaRecord = null;
+      if ((convRow.mode || 'study') === 'daily' && convRow.persona) {
+        try {
+          personaRecord = prompts.resolvePersona(convRow.persona, personaStore.listForResolve(userId));
+        } catch (e) {
+          console.warn('[Turn] 人格解析失败（回落默认语气）:', e.message);
+        }
+      }
+
+      var promptOpts = {
         mode: convRow.mode || 'study',
         studyStyle: convRow.study_style || 'guided',
+        // 无限制风格：仅日常模式生效。值已在落库时归一化过（'' | 'free'）。
+        dailyStyle: (convRow.mode || 'study') === 'daily' ? (convRow.daily_style || '') : '',
+        personaRecord: personaRecord,
         taskKind: task.kind === 'solve' ? task.paperMode : task.kind,
         writing: task.writing || null,
         hasAttachment: attachmentMeta.length > 0,
         studentProfile: profile,
+        // ClassIntra 侧脱敏活动素材（可能为 null = CI 未联动 / 取不到）
+        ciProfile: ciProfile,
+        memories: memories,
         pointsBalance: walletView.available_points,
         weeklyRemainingPoints: walletView.weekly_unlimited ? null : walletView.weekly_remaining_points
-      });
+      };
+
+      // 恒定段 / 逐轮变化段分开取（见 prompt-registry 的 getSystemPromptParts）：
+      //   stable   → 作为 system 消息。同一会话内逐字节不变，上游前缀缓存才对
+      //              **历史消息**也生效（实测未拆前命中率仅 10.2%）。
+      //   dynamic  → 画像/CI/记忆/余额/时间。拼到本轮用户消息末尾且**不落库**，
+      //              这样 system 不再被它们污染。
+      var sysParts = prompts.getSystemPromptParts(promptOpts);
+      var systemPrompt = sysParts.stable;
+      var trailingContext = sysParts.dynamic;
+
+      // 输出长度硬上限：按场景定档（见 prompt-registry 的 OUTPUT_CAP）。
+      // 为什么放在这里算而不是在 ai 层默认：档位取决于"这一轮的产出物本来该有多长"，
+      // 只有 turn-runner 同时知道 mode 与 taskKind。
+      // 这是防跑飞的**兜底**，不是"逼短"的手段——正常回答碰不到它。
+      var outputCap = prompts.outputCapFor(promptOpts);
 
       var userContent = content || tasksDefaultText(task);
       var taskHint = buildTaskHint(task, imageHashes.length);
@@ -334,7 +531,10 @@ function runStreamTurn(ctx) {
         userContent: userContent,
         imageDataUrls: imageDataUrls,
         relayText: relayResult ? relayResult.text : '',
+        noteText: noteText,
         textAttachmentText: textAttachmentText,
+        // 系统注入的背景块（画像/CI/记忆/余额/时间）：拼到本轮用户消息末尾，不落库
+        trailingContext: trailingContext,
         budgetTokens: DEFAULT_CONTEXT_BUDGET
       });
 
@@ -348,9 +548,63 @@ function runStreamTurn(ctx) {
 
       // ---- 10) 流式生成 ----
       var promptText = flattenForEstimate(built.messages);
+
+      // 先**预留**一条助手消息（streaming=1），边生成边把内容写进去。
+      // 为什么不等结束再一次性 INSERT：学生切页面 / 关掉应用时，库里必须有
+      // "已经写到哪"的中间态，回来（哪怕换了设备）才能接着看。
+      // 位置也有讲究：必须在 loadContextMessages 之后，且那条查询已按
+      // streaming=0 过滤，双保险防止空占位被当成历史喂回去。
+      //
+      // 写之前先收敛本会话**遗留**的占位行：走到这里说明在途锁在手上，
+      // 这个会话不可能有别的活生成者，所以任何 streaming=1 都是死的
+      //（上一轮客户端断开后服务端仍在跑、或上一轮异常收尾没走干净）。
+      // 不收敛的话库里会攒出两条 streaming=1，前端按下标对齐就会串行。
+      var stale = conv.settleStreamingMessages(convRow.id);
+      if (stale.total) {
+        console.warn('[Turn] 会话 %s 收敛了 %d 条遗留的"生成中"占位（保留 %d / 删除 %d）',
+          convRow.id, stale.total, stale.kept, stale.dropped);
+      }
+
+      var assistantMsgId = conv.appendMessage(convRow.id, 'assistant', '', effectiveModelId, {
+        attachments: [], source: source, streaming: 1
+      });
+
+      // 增量落库要**节流**：better-sqlite3 是同步写，每个 token 写一次会阻塞
+      // 事件循环，把读取上游那段也一起拖慢 —— 那就本末倒置了。
+      // 200ms 一次足够让"切回来看到进度"这件事成立。
+      var accText = '';
+      var lastFlushAt = 0;
+      var FLUSH_MS = 200;
+      function flushProgress() {
+        var now = Date.now();
+        if (now - lastFlushAt < FLUSH_MS) return;
+        lastFlushAt = now;
+        try { conv.updateMessageContent(assistantMsgId, accText); }
+        catch (e) { /* 中间态落库失败不阻断生成，收尾还会再写一次 */ }
+      }
+
       var handle = ai.chatStream(model, built.messages, {
+        // 让上游按会话复用它那一侧的上下文（详见 buildRequestOptions 里的说明）
+        conversationId: convRow.id,
+        // 用户开的「深度思考」：只有模型实测支持时 ai 层才会真的透传参数
+        thinking: thinking,
+        // 输出上界（防跑飞）。实测单轮最高 18431 token / 14.9 积分，
+        // 提示词对这类失控没有约束力，只有请求体里的 max_tokens 才有。
+        maxTokens: outputCap,
         onDelta: function(text) {
+          accText += text;
           sse.send('delta', { text: text });
+          flushProgress();
+        },
+        // 思维链单独走一条事件：正文之前那段「正在推演」要有去处，
+        // 否则推理型模型的首字延迟（实测难题可达 14 秒）全变成干等。
+        onReasoning: function(text) {
+          sse.send('reasoning', { text: text });
+        },
+        // 上游卡住不出字：告诉前端一声，让它把等待提示换成明确的失败提示。
+        // 这里不发 error 事件——真正的收尾统一走 .catch，避免发两次。
+        onStall: function() {
+          console.warn('[Turn] 模型 %s 首令牌超时（trace %s）', effectiveModelId, traceId);
         }
       });
 
@@ -384,16 +638,50 @@ function runStreamTurn(ctx) {
           }
         }
 
-        // ---- 12) 存档助手消息（存的是剥离后的正文）----
+        // ---- 12) 助手消息定稿（存的是剥离后的正文，并清掉"生成中"标记）----
+        // 占位消息在第 10 步就写好了，这里只做最后那次 UPDATE。
+        // 一个字都没生成（极少见：上游返回成功但内容为空）→ 删掉占位，
+        // 免得留下一只空白气泡，比"什么都没发生"更像坏了。
         if (finalText) {
-          conv.appendMessage(convRow.id, 'assistant', finalText, effectiveModelId, {
-            attachments: [],
-            source: source
+          conv.updateMessageContent(assistantMsgId, finalText, { streaming: 0 });
+        } else {
+          conv.deleteMessage(assistantMsgId);
+        }
+
+        // ---- 12.5) 零产出 = 失败，**绝不记账** ----
+        // ⚠️ 这里曾是线上事故点（2026-10-10 定位）：
+        // 上游可能「HTTP 200 + 流正常结束，但正文一个字都没给」——
+        // 常见于内容被上游静默清空，或推理型模型只吐思维链、不出正文。
+        // 此时 ai.chatStream 的 promise 是 **resolve**（不是 reject），
+        // 旧代码于是当成功一路走下去：删占位消息 → 照常 recordUsage 扣费 → 发 done。
+        // 学生端什么都没看见（前端判定「未收到回复内容」），积分却被实打实扣掉；
+        // 他误以为坏了而反复重试，就成了重试风暴（实测一个会话 18 秒扣了 16 笔）。
+        //
+        // 正确语义是「没有正文就没有交付」，这是故障而非成功。所以这里**提前返回**：
+        // 不记账、不发 done，把出路明确告诉学生。
+        // 刻意**不动模型健康状态** —— 零产出更接近「上游对某类请求的策略问题」，
+        // 与 401/402/429 同类，自动熔断只会把真实原因藏起来（见 utils/model-health）。
+        // 上游确实消耗的 token 由我方承担：相对「白扣学生积分」，这个代价小得多，
+        // 也符合「学生体验优先于成本」的既定取舍。
+        if (!finalText) {
+          console.warn('[Turn] 模型 %s 零产出（trace %s，思维链 %d 字）→ 判定失败且不计费',
+            effectiveModelId, traceId, (result.reasoning || '').length);
+          sse.send('error', {
+            message: (result.reasoning || '')
+              ? '模型只输出了思考过程、没有给出正式回答。换个模型再问一次通常就好了。'
+              : '模型这次没有返回任何内容，可能是它暂时不稳定。换个模型再问一次通常就好了。'
           });
+          sse.close();
+          return;
         }
 
         // ---- 13) 记账 ----
         var usage = extractUsage(result.usage, promptText, result.text);
+
+        // 这一轮跑通了：把连续失败计数清零。
+        // 放在这里而不是 streaming 末尾 —— 上游返回 usage 之后才算真的成功，
+        // 中途断开（done 没到）不应该洗白一个坏模型。
+        modelHealth.recordSuccess(effectiveModelId);
         var costMicro = pricing.calcCostMicro(model, usage);
         credit.recordUsage({
           user_id: userId,
@@ -417,16 +705,20 @@ function runStreamTurn(ctx) {
         var pointsView = credit.toPointsView(credit.getState(userId));
         sse.send('done', {
           conversation_id: convRow.id,
-          cost_points: config.microToPoints(costMicro),
+          // 用精确口径（保留两位小数）而不是整数取整：
+          // 单轮真实消耗常在 0.3~1.4 积分，取整后多半变成 0，
+          // 于是"明明用了一次，返回的消耗是 0"——将来做积分明细时账目对不上。
+          cost_points: config.microToPointsExact(costMicro),
           balance: {
             available_points: pointsView.available_points,
             weekly_remaining_points: pointsView.weekly_unlimited
               ? null : pointsView.weekly_remaining_points
           },
-          // 免费模型不上报 estimated：用量估算只影响计费，而免费模型不产生费用，
-          // 弹「本次用量为估算值」只会让学生困惑（他既没被扣钱，也无从处理）。
+          // 免费模型（永久免费或限免中）不上报 estimated：用量估算只影响计费，
+          // 而这类模型不产生费用，弹「本次用量为估算值」只会让学生困惑
+          // （他既没被扣钱，也无从处理）。
           // 数据库里仍如实记录 estimated —— 对账要看真话，那是管理端的事。
-          estimated: usage.estimated === 1 && !model.is_free,
+          estimated: usage.estimated === 1 && !pricing.isModelFree(model),
           image_count: imageHashes.length,
           vision_mode: visionPlan.mode,
           // 批改时有意义：本次自动收录了几道错题到错题本
@@ -434,8 +726,43 @@ function runStreamTurn(ctx) {
           context: built.stats
         });
         sse.close();
+
+        // ---- 14) 长期记忆自动沉淀（发射后不管）----
+        // 放在 sse.close() **之后**：学生那边已经完整收到回答，这一步是纯后台事务，
+        // 无论跑多久、成功还是失败，都不影响这次对话的结果。
+        // 触发条件（每 N 轮一次、排除任务型对话）与模型选择都在 memory-extractor 里。
+        try {
+          memoryExtractor.maybeExtractAfterTurn({
+            userId: userId,
+            conversationId: convRow.id,
+            mode: convRow.mode || 'study',
+            // 带附件 / 引用笔记的都是任务型对话，正文是"题目与他写的答案"，
+            // 不是"关于他这个人"的信息 —— 拿去挖画像没营养，还可能把题目里的
+            // 虚构条件误当成他的真实情况。
+            hasAttachment: attachmentMeta.length > 0 || noteIds.length > 0
+          });
+        } catch (e) {
+          console.warn('[Turn] 记忆提取触发失败（不影响对话）:', e.message);
+        }
       }).catch(function(err) {
         console.error('[Turn] 流式调用失败:', err.message, err.detail || '');
+
+        // 失败 / 卡死也要给占位消息收尾：保留已经生成的部分（学生看到多少就留多少，
+        // 这正是"不丢内容"的含义），并清掉 streaming —— 否则这条会永远显示成"生成中"，
+        // 前端每次打开都会去轮询一个不会再动的会话。
+        try {
+          if (accText) conv.updateMessageContent(assistantMsgId, accText, { streaming: 0 });
+          else conv.deleteMessage(assistantMsgId);
+        } catch (e) { /* 收尾失败不要掩盖真正的错误 */ }
+
+        // 「连上了但一个字都不出 / 直接断开」计一次失败，连续到阈值就熔断，
+        // 让它从学生的下拉框里消失。401/402/429 不走这条 —— 那不是模型坏了。
+        if (modelHealth.isFusableError(err && err.code)) {
+          modelHealth.recordFailure(effectiveModelId, err.code);
+        }
+
+        // 学生端的错误文案必须带下一步动作（见 utils/model-health 的说明）；
+        // stall 类错误的 message 已经写好了「点停止生成换个模型再问一次」。
         sse.send('error', { message: err.message || 'AI 服务暂时不可用，请稍后重试' });
         sse.close();
       });
@@ -443,6 +770,9 @@ function runStreamTurn(ctx) {
   }).catch(function(err) {
     // 缩图等前置阶段的异步异常也要有兜底出口
     console.error('[Turn] 前置处理失败:', err.message);
+    // 这条路径走的是 res.end() 而不是 sse.close()，所以要单独放锁。
+    // 没事也调到：traceId 不匹配时 releaseTurn 什么都不做，不会误删别人的锁。
+    releaseTurn(convRow.id, traceId);
     if (res.headersSent) {
       try {
         res.write('event: error\ndata: ' + JSON.stringify({ message: '处理失败，请重试' }) + '\n\n');
@@ -452,6 +782,66 @@ function runStreamTurn(ctx) {
       res.status(500).json({ code: 500, message: '处理失败，请重试' });
     }
   });
+}
+
+// 读取被引用的笔记
+//
+// 返回 { text, meta, error }：
+//   text  —— 拼好的笔记正文（每篇带标题，超长截断）
+//   meta  —— [{ id, name, kind:'note' }]，用于存档与历史占位
+//   error —— 非空表示应当拒绝这次请求（笔记不存在或不属于该用户）
+//
+// 两处必须校验：笔记 id 属于本人（SQL 里带 user_id），
+// 且正文文件确实在该用户云盘里（readUserFile 内部校验归属）。
+function loadNoteRefs(userId, noteIds) {
+  var MAX_NOTES = 5;
+  var PER_NOTE_CHARS = 4000;   // 单篇正文截断长度
+  var TOTAL_CHARS = 12000;     // 全部笔记正文合计上限
+
+  if (noteIds.length > MAX_NOTES) {
+    return { error: '单次最多引用 ' + MAX_NOTES + ' 篇笔记' };
+  }
+
+  var db = require('../utils/db');
+  var cloudStore = require('./cloud-store');
+
+  var chunks = [];
+  var meta = [];
+  var total = 0;
+
+  for (var i = 0; i < noteIds.length; i++) {
+    var row = db.prepare('SELECT * FROM cloud_notes WHERE id = ? AND user_id = ?')
+      .get(noteIds[i], String(userId));
+    if (!row) return { error: '引用的笔记不存在或无权访问' };
+
+    var res = cloudStore.readUserFile(row.file_hash, userId);
+    if (res.error) {
+      // 笔记还在、正文文件没了：不让学生白等一整轮才发现引用是空的
+      return { error: '笔记「' + (row.title || '未命名笔记') + '」的正文已丢失' };
+    }
+
+    var text = res.buffer.toString('utf8');
+    var truncated = false;
+    if (text.length > PER_NOTE_CHARS) {
+      text = text.slice(0, PER_NOTE_CHARS);
+      truncated = true;
+    }
+    // 合计也要卡：五篇各 4000 就是两万字，足以把上下文预算吃光
+    var remain = TOTAL_CHARS - total;
+    if (remain <= 0) break;
+    if (text.length > remain) {
+      text = text.slice(0, remain);
+      truncated = true;
+    }
+
+    var title = row.title || '未命名笔记';
+    chunks.push('### 笔记：' + title +
+      (truncated ? '\n（内容过长已截断）' : '') + '\n' + text);
+    meta.push({ id: row.id, hash: row.file_hash, name: title, kind: 'note' });
+    total += text.length;
+  }
+
+  return { text: chunks.join('\n\n'), meta: meta, error: '' };
 }
 
 // 用户只发图/只给参数、没写正文时，给一个兜底的任务性提示
@@ -500,5 +890,9 @@ function buildTaskHint(task, imageCount) {
 
 module.exports = {
   runStreamTurn: runStreamTurn,
-  extractUsage: extractUsage
+  extractUsage: extractUsage,
+  // 下划线前缀 = 仅给验证脚本用（确认在途锁拿了会放、没有泄漏），业务代码不要调
+  _acquireTurn: acquireTurn,
+  _releaseTurn: releaseTurn,
+  _inFlightSnapshot: inFlightSnapshot
 };

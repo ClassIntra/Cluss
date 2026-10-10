@@ -279,7 +279,11 @@ function describeImages(relayModel, items, onProgress) {
         ]
       }];
 
-      return ai.chatOnce(relayModel, messages, { timeout: RELAY_TIMEOUT_MS, temperature: 0.2 })
+      // 转述要抄录整页文字，确实会长，但有天然上界（一页纸的字量）。
+      // 给 3072 是防它把"描述图片"写成"解题+讲解"（转述器越界解题会挤掉正文模型）。
+      return ai.chatOnce(relayModel, messages, {
+        timeout: RELAY_TIMEOUT_MS, temperature: 0.2, maxTokens: 3072
+      })
         .then(function(data) {
           var text = data && data.choices && data.choices[0] &&
             data.choices[0].message && data.choices[0].message.content;

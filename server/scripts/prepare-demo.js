@@ -10,7 +10,7 @@ var db = require('../src/utils/db');
 
 // 目标地址统一走 lib/target：只允许本机实例（除非显式 ALLOW_REMOTE=1），
 // http/https 且不内嵌凭据 —— 这些脚本会清数据改配置，指向错对象是危险操作
-var BASE = require('./lib/target').resolve(process.env.PORT || 9101);
+var BASE = require('./lib/target').resolve(process.env.PORT || 9003);
 var MOCK = 'http://127.0.0.1:9200';
 
 function makePngBuffer() {

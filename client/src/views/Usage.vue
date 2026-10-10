@@ -48,6 +48,10 @@
           <div class="tiny muted">
             {{ totals.calls || 0 }} 次使用<span v-if="totals.image_count"> · 看了 {{ totals.image_count }} 张图</span>
           </div>
+          <!-- 确定性感：行业经验是"不知道正常水位"比"花了多少"更让人不安。
+               给一个静态参考区间（放在用量页而非对话页，避免常驻刺激），
+               学生对上号了就不慌，对不上会主动来看明细。 -->
+          <div class="tiny muted">参考：一轮引导对话通常 1~2 积分，拍题约 2 积分</div>
         </div>
       </section>
 
@@ -127,6 +131,7 @@
 </template>
 
 <script>
+import { fmtLocal } from '@/utils/fmt-time';
 import AppNav from '@/components/AppNav.vue';
 import Segmented from '@/components/Segmented.vue';
 import UsageChart from '@/components/UsageChart.vue';
@@ -230,7 +235,7 @@ export default {
     // 分组的可读名与「类型」的中文都由服务端给（见 usage-stats 的 student* 系列），
     // 前端不再自己维护一份映射表 —— 两处各写一份迟早会不一致。
     formatTime: function(iso) {
-      return String(iso || '').replace('T', ' ').slice(5, 16);
+      return fmtLocal(iso, { short: true });
     }
   }
 };
@@ -241,12 +246,18 @@ export default {
   display: flex;
   flex-direction: column;
   height: var(--app-height);
-  padding: var(--gap-md);
+  /* 完全贴边：去掉固定留白，仅保留安全区边距（无刘海设备上为 0） */
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   gap: var(--gap-md);
 }
 html.no-flex-gap .usage-page > * + * {
   margin-top: var(--gap-md);
 }
+
+
+
+
+
 
 .body {
   flex: 1;
@@ -260,6 +271,11 @@ html.no-flex-gap .usage-page > * + * {
 html.no-flex-gap .body > * + * {
   margin-top: var(--gap-md);
 }
+
+
+
+
+
 
 .wallet-row {
   display: grid;
@@ -282,6 +298,11 @@ html.no-flex-gap .body > * + * {
 html.no-flex-gap .wallet-amount > * + * {
   margin-left: 4px;
 }
+
+
+
+
+
 
 .wallet-unit {
   font-size: 13px;
@@ -330,19 +351,24 @@ html.no-flex-gap .filters > * + * {
   margin-left: 10px;
 }
 
+
+
+
+
+
 .export-btn {
   margin-left: auto;
   text-decoration: none;
 }
 
 .icon-btn {
-  width: 28px;
-  height: 28px;
+  width: clamp(28px, 19.36px + 0.9vw, 42px);
+  height: clamp(28px, 19.36px + 0.9vw, 42px);
   border: none;
   border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-tertiary);
-  font-size: 16px;
+  font-size: clamp(16px, 13.12px + 0.3vw, 21px);
   line-height: 1;
   cursor: pointer;
 }
@@ -398,6 +424,11 @@ html.no-flex-gap .filters > * + * {
 html.no-flex-gap .group-row > * + * {
   margin-left: 10px;
 }
+
+
+
+
+
 
 .group-key {
   flex: 1;
@@ -475,6 +506,10 @@ html.no-flex-gap .group-row > * + * {
 .src-study { background: var(--purple-soft); color: var(--purple-text); }
 .src-solve { background: var(--success-soft); color: var(--success); }
 .src-grade { background: var(--warning-soft); color: var(--warning); }
+.src-writing,
+.src-writing_generate,
+.src-writing_grade,
+.src-writing_outline { background: var(--pink-soft); color: var(--pink-text); }
 .src-vision_relay { background: var(--ink-2); color: var(--text-secondary); }
 
 .pager {
@@ -487,6 +522,11 @@ html.no-flex-gap .group-row > * + * {
 html.no-flex-gap .pager > * + * {
   margin-left: var(--gap-md);
 }
+
+
+
+
+
 
 @media (max-width: 900px) {
   .wallet-row {

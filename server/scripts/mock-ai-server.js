@@ -21,8 +21,12 @@ var PORT = Number(process.env.MOCK_AI_PORT || 9200);
 var CHUNK_MS = Number(process.env.MOCK_CHUNK_MS || 6);
 
 // 固定用量，便于断言计费结果
-var USAGE_TEXT = { prompt_tokens: 1000, completion_tokens: 500, cache_hit_tokens: 200, total_tokens: 1500 };
-var USAGE_VISION = { prompt_tokens: 2400, completion_tokens: 600, cache_hit_tokens: 0, total_tokens: 3000 };
+// usage 字段名必须走 OpenAI 兼容口径（prompt_cache_hit_tokens）：
+// extractUsage 只认 DeepSeek 的 prompt_cache_hit_tokens 与 OpenAI 的
+// prompt_tokens_details.cached_tokens，用别的字段名等于"上游没回缓存命中"，
+// 计费会全部按输入价（6000 而不是 5700）——曾让冒烟断言错位一轮
+var USAGE_TEXT = { prompt_tokens: 1000, completion_tokens: 500, prompt_cache_hit_tokens: 200, total_tokens: 1500 };
+var USAGE_VISION = { prompt_tokens: 2400, completion_tokens: 600, prompt_cache_hit_tokens: 0, total_tokens: 3000 };
 
 var REPLY_TEXT = '这道题的关键是**先确定受力方向**。\n\n' +
   '提示一：把 $F$ 沿水平和竖直分解，得到 $F_x = F\\cos\\theta$。\n\n' +
@@ -206,7 +210,19 @@ var server = http.createServer(function(req, res) {
     try { payload = JSON.parse(body); } catch (e) {}
 
     var messages = payload.messages || [];
-    lastRequest = { at: new Date().toISOString(), model: payload.model || '', messages: messages };
+    // 记录请求头，好让验证脚本能断言"会话标识有没有发出来"。
+    // authorization 脱敏：它虽然是测试用的假 key，但没必要进回放。
+    var safeHeaders = {};
+    Object.keys(req.headers || {}).forEach(function(k) {
+      if (k.toLowerCase() === 'authorization') return;
+      safeHeaders[k] = req.headers[k];
+    });
+    lastRequest = {
+      at: new Date().toISOString(),
+      model: payload.model || '',
+      headers: safeHeaders,
+      messages: messages
+    };
     var info = detectKind(messages, payload);
     var reply = pickReply(info);
     var usage = pickUsage(info);

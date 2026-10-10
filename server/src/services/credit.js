@@ -16,6 +16,7 @@
 var db = require('../utils/db');
 var time = require('../utils/time');
 var config = require('../config');
+var pricing = require('./pricing');
 
 var WEEK_DAYS = 7;
 
@@ -94,22 +95,36 @@ function getState(userId) {
 //
 // 刻意**不返回**任何元字段：一旦前端能同时拿到元与积分，
 // 迟早会有人把「¥」显示到学生面前，包装就白做了。
+//
+// 精度口径（关系到学生信不信这套账）：
+//   可用      —— floor 到「分」：闸门在微元层精确判定，显示只许少不许多；
+//   其余各数  —— round 到「分」：单轮消耗常不足 1 积分，整数取整会让
+//               明细加起来对不上汇总（1.44 变 1，十轮差出 4 积分），
+//               「计数不准」的印象比小数点更伤。
+//   各数各自真实（误差 ≤ 0.005），已用 + 可用与额度的差 ≤ 0.01，
+//   肉眼不可察 —— 比起强凑恒等式而让某个数失真，这样更准也更稳。
 function toPointsView(state) {
   var s = state || {};
+  var floor2 = function(v) { return Math.floor(Number(v || 0) * 100) / 100; };
+
   return {
     unit: '积分',
     // 未开通与「开通了但用完了」是两种完全不同的处境，
     // 前端要靠 is_allocated 区分文案，不能只看数量
     is_allocated: !!s.is_allocated,
-    allocated_points: config.microToPoints(s.allocated_micro || 0),
-    used_points: config.microToPoints(s.used_micro || 0),
-    // 可用量向下取整：宁可显示得少一点，也不要出现「显示还有 1 积分却被拦下」
-    available_points: Math.floor(Number(s.available_micro || 0) * config.points.perYuan / 1000000),
+    allocated_points: config.microToPointsExact(s.allocated_micro || 0),
+    used_points: config.microToPointsExact(s.used_micro || 0),
+    // 可用量向下保留到「分」：宁可显示得少一点，也不要出现「显示还有积分
+    // 却被拦下」。再卡 0 下限：管理员把额度清零/调低到已用之下时，
+    // 微元层面 available 会变负，展示成「-1.2 积分」学生读不懂也没法处理 ——
+    // 闸门本来就在 ≤0 拦下，展示成 0 才与「已用完」的状态一致。
+    // 账本（微元）仍如实记负，对账不受影响。
+    available_points: Math.max(0, floor2(Number(s.available_micro || 0) * config.points.perYuan / 1000000)),
     used_percent: s.used_percent || 0,
     weekly_unlimited: !!s.weekly_unlimited,
-    weekly_quota_points: config.microToPoints(s.weekly_quota_micro || 0),
-    weekly_used_points: config.microToPoints(s.weekly_used_micro || 0),
-    weekly_remaining_points: Math.floor(Number(s.weekly_remaining_micro || 0) * config.points.perYuan / 1000000),
+    weekly_quota_points: config.microToPointsExact(s.weekly_quota_micro || 0),
+    weekly_used_points: config.microToPointsExact(s.weekly_used_micro || 0),
+    weekly_remaining_points: Math.max(0, floor2(Number(s.weekly_remaining_micro || 0) * config.points.perYuan / 1000000)),
     weekly_percent: s.weekly_percent || 0,
     window_days: s.window_days || WEEK_DAYS
   };
@@ -117,8 +132,10 @@ function toPointsView(state) {
 
 // 闸门判定：返回 null 表示放行，否则返回给用户看的中文提示
 function checkGate(userId, model) {
-  // 免费模型不受额度限制
-  if (model && model.is_free) return null;
+  // 免费模型（永久免费，或限免中）不受额度限制。
+  // 必须与计费侧（pricing.calcCostMicro）用同一个判定：两边口径一旦分叉，
+  // 就会出现「闸门拦下了不计费的模型」或「放行了实际会扣钱的模型」。
+  if (model && pricing.isModelFree(model)) return null;
 
   var uid = String(userId);
   var asg = getAssignment(uid);

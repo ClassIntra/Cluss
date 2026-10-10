@@ -26,6 +26,19 @@
       }
     })();
   </script>
+  <script>
+    /* 带 ?token= 进来（被 ClassIntra 应用壳内嵌免登）时，main.js 要先拿这个 token
+       打一轮 check-status 才能决定是否挂载应用 —— 这一两个网络往返里页面本来是**空的**。
+       打上标记让下面的启动占位显示出来，学生看到的是「正在进入」，而不是一片白。
+       不带 token 的正常加载几十毫秒就挂载完了，不加标记、不显示占位（否则像闪屏）。 */
+    (function () {
+      try {
+        if (/[?&]token=/.test(window.location.search)) {
+          document.documentElement.className += ' boot-embedded';
+        }
+      } catch (e) { /* 探测失败就老老实实白屏一下，不影响主流程 */ }
+    })();
+  </script>
   <style>
     /* 首屏背景：与 Vue 挂载后的视觉一致，避免加载时闪白。
        注意只设在 html 上、不设在 body 上——
@@ -49,10 +62,64 @@
     html[data-theme="dark"] {
       background: #14161d;
     }
+
+    /* ---------- 免登期间的启动占位（默认不显示，见上面那段脚本） ---------- */
+    .boot-splash {
+      display: none;
+    }
+
+    /* 刻意手写 top/right/bottom/left 而不写 inset：设备基线是 Chrome 80，
+       inset 是 Chrome 87+ 才认的简写（产物里出现 inset 会被兼容性守卫拦下）。 */
+    html.boot-embedded .boot-splash {
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      color: #7a8395;
+      font-size: 13px;
+      letter-spacing: 0.02em;
+    }
+
+    html.boot-embedded[data-theme="dark"] .boot-splash {
+      color: #96a0b3;
+    }
+
+    .boot-logo {
+      width: 46px;
+      height: 46px;
+      border-radius: 14px;
+      background: linear-gradient(140deg, #4f8ff7, #2f6bdd);
+      box-shadow: 0 8px 24px rgba(47, 107, 221, 0.28);
+      animation: boot-pulse 1.2s ease-in-out infinite;
+    }
+
+    @keyframes boot-pulse {
+      0%, 100% { opacity: 0.55; transform: scale(0.96); }
+      50%      { opacity: 1;    transform: scale(1); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .boot-logo { animation: none; opacity: 1; transform: none; }
+    }
   </style>
 </head>
 <body>
-  <div id="app"></div>
+  <div id="app">
+    <!-- 免登校验期间的占位：Vue 挂载时整体替换 #app 的内容，它会随之消失 -->
+    <div class="boot-splash" aria-hidden="true">
+      <div class="boot-logo"></div>
+      <div>正在进入 Cluss…</div>
+    </div>
+  </div>
+  <!-- Font Awesome：笔记 / 画板 / AppNavBar 等「从 ClassIntra 照搬」的组件依赖 fa 图标。
+       静态资源在本地 public/fontawesome（局域网离线可用），不引入 npm 依赖。 -->
+  <link rel="stylesheet" href="/fontawesome/css/all.min.css" />
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

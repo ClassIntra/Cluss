@@ -40,7 +40,22 @@
         <div v-else class="grid">
           <div v-for="f in filtered" :key="f.hash" class="card">
             <button class="card-preview" type="button" :title="f.name" @click="preview(f)">
-              <img v-if="f.is_image" class="card-img" :src="f.thumb_url || f.url" :alt="f.name" loading="lazy" />
+              <!-- 加载失败时换成一句人话 + 重试，不再露出破图和一长串文件名 -->
+              <div
+                v-if="f.is_image && failed[f.hash]"
+                class="card-img card-img-failed"
+                @click.stop="retry(f)"
+              >
+                <span class="tiny">图片加载失败 · 点此重试</span>
+              </div>
+              <img
+                v-else-if="f.is_image"
+                class="card-img"
+                :src="f.thumb_url || f.url"
+                :alt="f.name"
+                loading="lazy"
+                @error="onImgError(f)"
+              />
               <div v-else class="card-text">
                 <span class="card-text-icon">TXT</span>
                 <span class="card-text-name">{{ f.name }}</span>
@@ -76,6 +91,7 @@
 </template>
 
 <script>
+import { fmtLocal } from '@/utils/fmt-time';
 import AppNav from '@/components/AppNav.vue';
 import Segmented from '@/components/Segmented.vue';
 
@@ -90,7 +106,11 @@ export default {
       loading: false,
       uploading: false,
       error: '',
-      previewing: null
+      previewing: null,
+      // 加载失败的文件（hash → true）。401/404 时 <img> 只会给一个
+      // 莫名的破图加 alt 文本，学生不知道发生了什么；
+      // 换成一句人话 + 重试入口（见模板与 onImgError）。
+      failed: {}
     };
   },
   computed: {
@@ -192,6 +212,30 @@ export default {
       });
     },
 
+    // 图片加载失败：记录下来（模板据此换成「加载失败 · 点此重试」），
+    // 并顺手探一下是不是登录态问题 —— 401 时给学生一句**能行动**的话，
+    // 而不是让他对着一个破图猜。
+    onImgError: function(f) {
+      this.$set(this.failed, f.hash, true);
+      var self = this;
+      var u = f.thumb_url || f.url;
+      fetch(u, { credentials: 'same-origin' }).then(function(r) {
+        if (r.status === 401) {
+          self.$store.dispatch('toast', { message: '登录已过期，图片加载失败，请重新登录', type: 'error' });
+        } else if (r.status === 404) {
+          self.$store.dispatch('toast', { message: '原图已不存在，无法显示', type: 'error' });
+        }
+      }).catch(function() {});
+    },
+
+    // 重试：加时间戳绕过浏览器缓存（失败的那次响应可能已被缓存）
+    retry: function(f) {
+      this.$delete(this.failed, f.hash);
+      var bust = '_t=' + Date.now();
+      f.thumb_url = '/api/cloud/files/' + f.hash + '?thumb=1&' + bust;
+      f.url = '/api/cloud/files/' + f.hash + '?' + bust;
+    },
+
     preview: function(f) {
       if (!f.is_image) {
         // 文本文件直接走下载，浏览器会以新标签打开
@@ -209,7 +253,7 @@ export default {
     },
 
     formatDate: function(iso) {
-      return String(iso || '').replace('T', ' ').slice(0, 16);
+      return fmtLocal(iso);
     }
   }
 };
@@ -220,12 +264,18 @@ export default {
   display: flex;
   flex-direction: column;
   height: var(--app-height);
-  padding: var(--gap-md);
+  /* 完全贴边：去掉固定留白，仅保留安全区边距（无刘海设备上为 0） */
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   gap: var(--gap-md);
 }
 html.no-flex-gap .cloud-page > * + * {
   margin-top: var(--gap-md);
 }
+
+
+
+
+
 
 
 
@@ -241,6 +291,11 @@ html.no-flex-gap .cloud-page > * + * {
 html.no-flex-gap .body > * + * {
   margin-top: var(--gap-md);
 }
+
+
+
+
+
 
 
 
@@ -264,6 +319,11 @@ html.no-flex-gap .toolbar > * + * {
 
 
 
+
+
+
+
+
 .toolbar-left {
   display: flex;
   align-items: center;
@@ -278,6 +338,11 @@ html.no-flex-gap .toolbar-left > * + * {
 
 
 
+
+
+
+
+
 .toolbar-right {
   display: flex;
   align-items: center;
@@ -286,6 +351,11 @@ html.no-flex-gap .toolbar-left > * + * {
 html.no-flex-gap .toolbar-right > * + * {
   margin-left: 8px;
 }
+
+
+
+
+
 
 
 
@@ -373,6 +443,18 @@ html.no-flex-gap .toolbar-right > * + * {
   background: var(--ink-1);
 }
 
+/* 图片加载失败时的兜底卡片：不露破图和一长串文件名，给一句人话 + 可点击重试 */
+.card-img-failed {
+  width: 100%;
+  height: 130px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ink-1);
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
 .card-text {
   height: 130px;
   display: flex;
@@ -386,6 +468,11 @@ html.no-flex-gap .toolbar-right > * + * {
 html.no-flex-gap .card-text > * + * {
   margin-top: 8px;
 }
+
+
+
+
+
 
 
 
@@ -423,6 +510,11 @@ html.no-flex-gap .card-foot > * + * {
 
 
 
+
+
+
+
+
 .card-meta {
   flex: 1;
   min-width: 0;
@@ -448,14 +540,19 @@ html.no-flex-gap .card-actions > * + * {
 
 
 
+
+
+
+
+
 .icon-btn {
-  width: 26px;
-  height: 26px;
+  width: clamp(26px, 17.36px + 0.9vw, 40px);
+  height: clamp(26px, 17.36px + 0.9vw, 40px);
   border: none;
   border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-tertiary);
-  font-size: 15px;
+  font-size: clamp(15px, 12.12px + 0.3vw, 20px);
   line-height: 26px;
   text-align: center;
   text-decoration: none;
@@ -505,6 +602,11 @@ html.no-flex-gap .preview-mask > * + * {
 
 
 
+
+
+
+
+
 .preview-img {
   max-width: 94vw;
   max-height: 84vh;
@@ -520,6 +622,11 @@ html.no-flex-gap .preview-mask > * + * {
 html.no-flex-gap .preview-bar > * + * {
   margin-left: var(--gap-md);
 }
+
+
+
+
+
 
 
 

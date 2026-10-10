@@ -27,6 +27,28 @@ function nowLocalText() {
     ' 周' + week + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
 }
 
+// 本地日历日 'YYYY-MM-DD'（服务器时区）
+//
+// 为什么复习排期用它而不是 UTC 时间戳：学生问的是「今天要不要复习」，
+// 这是日历日问题，不是「间隔多少小时」问题。按 UTC 判定到期，
+// 中国学生（UTC+8）晚 8 点后 UTC 已跨日，刚练过的题会立刻又变「已到期」，
+// 体感就是"怎么又催我"。天数运算一律走这个口径，字符串比较即可排序与判到期。
+function localDay(offsetDays) {
+  var d = new Date(Date.now() + Number(offsetDays || 0) * 86400000);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+}
+
+// 两个本地日历日相差几天（b - a），用于文案「3 天后」
+function localDayDiff(a, b) {
+  var pa = String(a || '').split('-');
+  var pb = String(b || '').split('-');
+  if (pa.length !== 3 || pb.length !== 3) return 0;
+  var da = Date.UTC(Number(pa[0]), Number(pa[1]) - 1, Number(pa[2]));
+  var db = Date.UTC(Number(pb[0]), Number(pb[1]) - 1, Number(pb[2]));
+  if (!isFinite(da) || !isFinite(db)) return 0;
+  return Math.round((db - da) / 86400000);
+}
+
 // N 天前的 UTC 时间点（用于滚动窗口查询）
 function utcBeforeDays(days) {
   var ms = Number(days || 0) * 24 * 3600 * 1000;
@@ -45,6 +67,8 @@ module.exports = {
   nowUtc: nowUtc,
   fmtUtc: fmtUtc,
   nowLocalText: nowLocalText,
+  localDay: localDay,
+  localDayDiff: localDayDiff,
   utcBeforeDays: utcBeforeDays,
   toISO: toISO
 };

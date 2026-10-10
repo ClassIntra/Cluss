@@ -109,6 +109,11 @@ html.no-flex-gap .bars > * + * {
   margin-left: 6px;
 }
 
+
+
+
+
+
 .bar-col {
   flex: 1;
   min-width: 0;
@@ -125,6 +130,11 @@ html.no-flex-gap .bars > * + * {
 html.no-flex-gap .bar-col > * + * {
   margin-top: 6px;
 }
+
+
+
+
+
 
 /* 点亮的柱子整根提亮，气泡浮在它上方 */
 .bar-col.is-active .bar-value {

@@ -1,7 +1,8 @@
 // 验证脚本共用的 HTTP 出口（verify-v2 / verify-v3 / prepare-demo）
 //
 // 与直接用 axios 的区别：**每个请求发出前**都做一次源校验 ——
-// URL 的 origin 必须等于 lib/target.resolve() 解析出的被测实例，
+// URL 的 origin 必须等于 lib/target.resolve() 解析出的被测实例
+// （或脚本用 lib/target.allow 显式放行的本机夹具，如 mock 上游），
 // 协议必须是 http/https。e2e 脚本会携带管理员/学生令牌发几百个请求，
 // 把"目标只指向被测的本机实例"这条约束压到一个出口上，
 // 任何一处手滑拼错 URL（比如把令牌拼进主机名）都会在这里被拦下，
@@ -31,7 +32,8 @@ instance.interceptors.request.use(function(config) {
     return Promise.reject(new Error('[http] 只允许 http/https，收到：' + u.protocol));
   }
   var base = target.current();
-  if (base && u.origin !== base) {
+  // 被测实例本身，或脚本显式放行的本机夹具（如 mock 上游，见 lib/target.allow）
+  if (base && u.origin !== base && !target.isAllowed(u.origin)) {
     return Promise.reject(new Error(
       '[http] 请求目标 ' + u.origin + ' 超出了被测实例 ' + base +
       '——请检查 URL 拼接（令牌/文件名不要拼进主机名）'

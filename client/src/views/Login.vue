@@ -70,17 +70,27 @@
           <router-link class="link" to="/register">立即注册</router-link>
         </div>
 
-        <div v-if="ciHint" class="ci-hint">
+        <!-- 嵌入态：这里必须留一个返回出口。
+             免登失败（CI 登录过期 / CI 暂时连不上）时学生会落到这一页，
+             而他没有 Cluss 密码 —— 登录页又没有顶栏（返回按钮挂在顶栏里），
+             少了这条链路就是死路一条。 -->
+        <div v-if="isEmbedded" class="ci-hint">
+          <span class="dot-info"></span>
+          <span>正在 ClassIntra 中打开</span>
+          <button type="button" class="link ci-back" @click="backToClassIntra">返回 ClassIntra</button>
+        </div>
+        <div v-else-if="ciHint" class="ci-hint">
           <span class="dot-info"></span>
           已接入 ClassIntra：可直接用 ClassIntra 账号登录
         </div>
-      </aside>
+      </section>
     </div>
   </div>
 </template>
 
 <script>
 import ClussLogo from '@/components/ClussLogo.vue';
+import { isEmbedded, backToClassIntra } from '@/utils/embedded';
 
 export default {
   name: 'LoginView',
@@ -105,7 +115,14 @@ export default {
       self.ciHint = !!(data && data.ci_bridge_enabled);
     }).catch(function() { /* 探测失败不影响登录 */ });
   },
+  computed: {
+    // 嵌入态（被 ClassIntra 内嵌）：判据与出口都在 utils/embedded.js
+    isEmbedded: isEmbedded
+  },
   methods: {
+    // 回到 ClassIntra 桌面（宿主未监听时静默，此时学生本就没别的路可走）
+    backToClassIntra: backToClassIntra,
+
     handleLogin: function() {
       var self = this;
       this.errorMsg = '';
@@ -172,6 +189,11 @@ html.no-flex-gap .brand-pane > * + * {
 
 
 
+
+
+
+
+
 .brand-head {
   display: flex;
   align-items: center;
@@ -180,6 +202,11 @@ html.no-flex-gap .brand-pane > * + * {
 html.no-flex-gap .brand-head > * + * {
   margin-left: 14px;
 }
+
+
+
+
+
 
 
 
@@ -218,6 +245,11 @@ html.no-flex-gap .brand-points > * + * {
 
 
 
+
+
+
+
+
 .brand-points li {
   display: flex;
   align-items: center;
@@ -226,6 +258,11 @@ html.no-flex-gap .brand-points > * + * {
 html.no-flex-gap .brand-points li > * + * {
   margin-left: 10px;
 }
+
+
+
+
+
 
 
 
@@ -291,9 +328,16 @@ html.no-flex-gap .form-foot > * + * {
 
 
 
+
+
+
+
+
 .link {
-  font-size: 13px;
-  color: var(--accent);
+  /* 「立即注册」是登录页唯一的次要操作，原来 13px 且 --accent 在 #eef1f8
+     底色上只有 4.35:1（不达标）。改用更深的 --accent-hover（5.89:1），并随视口放大。 */
+  font-size: clamp(13px, 11.176px + 0.19vw, 15px);
+  color: var(--accent-hover);
   text-decoration: none;
   font-weight: 500;
 }
@@ -316,6 +360,25 @@ html.no-flex-gap .form-foot > * + * {
 html.no-flex-gap .ci-hint > * + * {
   margin-left: 8px;
 }
+
+/* 嵌入态的返回出口：用 button 承载（不是链接），所以要把浏览器默认外观清干净，
+   观感仍按链接走；触屏上命中区要够高，不然平板上点不准。 */
+.ci-back {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+
+
+
+
 
 
 

@@ -144,6 +144,14 @@
             <span class="muted tiny">已经有账号？</span>
             <router-link class="link" to="/login">去登录</router-link>
           </div>
+
+          <!-- 嵌入态返回出口：理由同 Login.vue —— 被 ClassIntra 内嵌时这一页也可能
+               成为落脚点（免登失败 / 学生自己点进来），没有这条链路就是死路一条 -->
+          <div v-if="isEmbedded" class="ci-hint">
+            <span class="dot-info"></span>
+            <span>正在 ClassIntra 中打开</span>
+            <button type="button" class="link ci-back" @click="backToClassIntra">返回 ClassIntra</button>
+          </div>
         </template>
       </section>
     </div>
@@ -152,6 +160,7 @@
 
 <script>
 import ClussLogo from '@/components/ClussLogo.vue';
+import { isEmbedded, backToClassIntra } from '@/utils/embedded';
 
 export default {
   name: 'RegisterView',
@@ -172,6 +181,8 @@ export default {
     };
   },
   computed: {
+    // 嵌入态（被 ClassIntra 内嵌）：判据与出口都在 utils/embedded.js
+    isEmbedded: isEmbedded,
     // 实时预览学号前缀（年份后两位 + 班级），班内编号由后端分配所以显示为 --
     idPreview: function() {
       var year = String(this.form.enrollment_year || '').trim();
@@ -190,6 +201,9 @@ export default {
     }
   },
   methods: {
+    // 回到 ClassIntra 桌面（宿主未监听时静默，此时学生本就没别的路可走）
+    backToClassIntra: backToClassIntra,
+
     handleRegister: function() {
       var self = this;
       this.errorMsg = '';
@@ -267,6 +281,11 @@ html.no-flex-gap .brand-pane > * + * {
 
 
 
+
+
+
+
+
 .brand-head {
   display: flex;
   align-items: center;
@@ -275,6 +294,11 @@ html.no-flex-gap .brand-pane > * + * {
 html.no-flex-gap .brand-head > * + * {
   margin-left: 14px;
 }
+
+
+
+
+
 
 
 
@@ -312,6 +336,11 @@ html.no-flex-gap .brand-points > * + * {
 
 
 
+
+
+
+
+
 .brand-points li {
   display: flex;
   align-items: center;
@@ -320,6 +349,11 @@ html.no-flex-gap .brand-points > * + * {
 html.no-flex-gap .brand-points li > * + * {
   margin-left: 10px;
 }
+
+
+
+
+
 
 
 
@@ -384,6 +418,11 @@ html.no-flex-gap .id-preview > * + * {
 
 
 
+
+
+
+
+
 .id-preview-ready {
   background: var(--accent-soft);
   border-color: var(--accent-border);
@@ -427,11 +466,52 @@ html.no-flex-gap .form-foot > * + * {
   margin-left: 6px;
 }
 
+/* ---------- 嵌入态返回出口（与 Login.vue 同一套，勿各写一份） ---------- */
+.ci-hint {
+  margin-top: var(--gap-md);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+html.no-flex-gap .ci-hint > * + * {
+  margin-left: 8px;
+}
+
+/* 用 button 承载（不是链接），所以要把浏览器默认外观清干净，观感仍按链接走；
+   触屏上命中区要够高，不然平板上点不准。 */
+.ci-back {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.dot-info {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+}
+
+
+
+
+
+
 
 
 .link {
-  font-size: 13px;
-  color: var(--accent);
+  /* 同 Login.vue：--accent 在 #eef1f8 上只有 4.35:1，改用更深的 --accent-hover */
+  font-size: clamp(13px, 11.176px + 0.19vw, 15px);
+  color: var(--accent-hover);
   text-decoration: none;
   font-weight: 500;
 }

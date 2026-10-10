@@ -243,7 +243,12 @@ if (require.main === module) {
     target = resolveTarget();
   }
   probe(target).then(function(r) {
-    process.exit(r.supported === true ? 0 : 1);
+    // 用 exitCode + 自然退出，**不要** process.exit()。
+    // 原因：fetch 的连接句柄在 process.exit() 时还没关，Windows 上会触发
+    // libuv 断言（Assertion failed: UV_HANDLE_CLOSING）并让进程以**非 0 退出**——
+    // 于是调用方（connect-*.js）把"探测通过"误读成"不支持"，静默写成视觉=关。
+    // 这个 bug 真发生过：探针明明读出了随机数字，落库却是「视觉=关」。
+    process.exitCode = r.supported === true ? 0 : 1;
   });
 }
 

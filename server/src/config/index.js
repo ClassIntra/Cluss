@@ -61,6 +61,16 @@ function microToPoints(micro) {
   return Math.round(Number(micro) * pointsPerYuan / 1000000);
 }
 
+// 精确到「分」的积分换算（保留两位小数，去不了尾零交给数字序列化）。
+//
+// 为什么必须有它：单轮对话的真实消耗常在 0.3 ~ 1.4 积分之间，
+// 若明细按整数取整，1.44 变 1、0.35 变 0 —— 学生把明细加起来
+// 和汇总一对（14.4 的账对出 10），「计数不准」的印象就来了。
+// 整数口径保留在钱包大数字与闸门文案上；明细与汇总用本函数。
+function microToPointsExact(micro) {
+  return Math.round(Number(micro || 0) * pointsPerYuan / 1e4) / 100;
+}
+
 function yuanToPoints(yuan) {
   return Math.round(Number(yuan) * pointsPerYuan);
 }
@@ -70,7 +80,7 @@ var mode = readMode();
 module.exports = {
   MODES: MODES,
   mode: mode,
-  port: num(process.env.PORT, 9101),
+  port: num(process.env.PORT, 9003),
   instanceId: String(process.env.CLUSS_INSTANCE_ID || 'cluss-local').trim(),
 
   // 版本号唯一来源：本 package.json 的 version 字段。
@@ -138,5 +148,6 @@ module.exports = {
   yuanToMicro: yuanToMicro,
   microToYuan: microToYuan,
   microToPoints: microToPoints,
+  microToPointsExact: microToPointsExact,
   yuanToPoints: yuanToPoints
 };

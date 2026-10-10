@@ -26,6 +26,8 @@ function parseFrame(frame, handlers) {
 
   if (event === 'meta' && handlers.onMeta) handlers.onMeta(payload);
   else if (event === 'delta' && handlers.onDelta) handlers.onDelta(payload.text || '');
+  // 思维链单独的事件：不是正文，不能被拼进回答里
+  else if (event === 'reasoning' && handlers.onReasoning) handlers.onReasoning(payload.text || '');
   else if (event === 'status' && handlers.onStatus) handlers.onStatus(payload);
   else if (event === 'done' && handlers.onDone) handlers.onDone(payload);
   else if (event === 'error' && handlers.onError) handlers.onError(payload.message || '生成失败');

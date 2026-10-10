@@ -280,6 +280,13 @@ function saveFile(userId, opts) {
           'VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, 0, ?)'
         ].join('\n')).run(hash, uid, originalName, buffer.length, mime, storagePath, kind, now);
       }
+      // 重新上传同一内容（用户可能删过一次）：cloud_files 行若已被软删，
+      // 必须复活（deleted=0），否则 getUserFile / resolveAbsolutePath 会因
+      // deleted=1 判「文件不存在」，前端 <img> 拿到的是一句 404 JSON。
+      // 这是真实踩到过的坑：学生删除某题图、稍后重传同一张，图就再也打不开了。
+      if (existing && existing.deleted) {
+        db.prepare('UPDATE cloud_files SET deleted = 0 WHERE hash = ?').run(hash);
+      }
       // UNIQUE(user_id, file_hash) 保证同一用户对同一文件只有一条引用
       db.prepare([
         'INSERT OR IGNORE INTO cloud_user_files (user_id, file_hash, display_name, uploaded_at)',
@@ -358,6 +365,39 @@ function readUserFile(hash, userId, maxBytes) {
   }
 }
 
+// 按 hash 直接读文件内容，不做用户引用校验。
+// 唯一调用方是云笔记的「公开笔记」分支：visibility='public' 意味着
+// 作者主动把这篇笔记共享给全班，此时正文（作者名下的云盘文件）需要
+// 跨用户可读。调用方必须先自行确认该 hash 确实属于一篇公开笔记。
+function readFileByHash(hash, maxBytes) {
+  if (!hash || !/^[a-f0-9]{64}$/.test(String(hash))) return { error: '文件不存在或无权访问' };
+  var row = db.prepare('SELECT hash, size, mime_type, storage_path, kind FROM cloud_files WHERE hash = ?').get(String(hash));
+  if (!row || row.deleted) return { error: '文件不存在或无权访问' };
+
+  var limit = Number(maxBytes || MAX_FILE_BYTES);
+  if (row.size > limit) {
+    return { error: '文件过大（' + Math.round(row.size / 1024 / 1024) + 'MB），上限 ' + Math.round(limit / 1024 / 1024) + 'MB' };
+  }
+  var absPath = absolutePathFor(row.storage_path);
+  try {
+    if (!fs.existsSync(absPath)) {
+      return { error: '文件已丢失，请重新上传' };
+    }
+    return {
+      buffer: fs.readFileSync(absPath),
+      mime: row.mime_type,
+      name: row.hash,
+      size: row.size,
+      hash: row.hash,
+      kind: row.kind || kindForMime(row.mime_type),
+      width: 0,
+      height: 0
+    };
+  } catch (err) {
+    console.error('[Cloud] 按hash读文件失败:', err.message);
+    return { error: '文件读取失败' };
+  }
+}
 // 取绝对路径（供静态流式下发用，避免整文件读进内存）
 function resolveAbsolutePath(hash, userId) {
   var info = getUserFile(hash, userId);
@@ -439,6 +479,7 @@ module.exports = {
   saveFile: saveFile,
   getUserFile: getUserFile,
   readUserFile: readUserFile,
+  readFileByHash: readFileByHash,
   resolveAbsolutePath: resolveAbsolutePath,
   listFiles: listFiles,
   deleteFile: deleteFile,

@@ -13,7 +13,9 @@
           </option>
         </select>
         <div class="toolbar-right">
+          <!-- 复习模式自带"先想再看"，此时再给一个自测开关只会互相打岔 -->
           <button
+            v-if="!reviewMode"
             class="btn btn-sm"
             :class="quizMode ? 'btn-primary' : 'btn-ghost'"
             title="先自己想，再点开核对答案与错因"
@@ -21,7 +23,73 @@
           >{{ quizMode ? '退出自测' : '自测模式' }}</button>
           <button class="btn btn-sm btn-ghost" @click="exportCsv">导出 CSV</button>
           <button class="btn btn-sm btn-ghost" @click="load(1)">刷新</button>
-          <button class="btn btn-sm btn-primary" @click="openCreate">手动添加</button>
+          <button class="btn btn-sm btn-primary" :disabled="reviewMode" @click="openCreate">手动添加</button>
+        </div>
+      </div>
+
+      <!-- ---- 今日复习卡片 ----
+           做成"卡片 + 角标"而不是弹窗：错题复习不是紧急事项，
+           弹窗会打断学生正在做的题，而且弹窗只有"立即处理"和"关闭"两种回答，
+           等于逼他现在做。卡片一直在那儿，但从不挡路。 -->
+      <div v-if="reviewMode && items.length" class="review-card glass is-active">
+        <div class="review-main">
+          <div class="review-title">
+            复习中
+            <span class="tiny muted">还剩 {{ items.length }} 道</span>
+          </div>
+          <div class="tiny muted review-sub">
+            先自己想，再点「看答案」核对；答完顺手点「记住了」或「忘了」，
+            系统据此安排下次什么时候再见到它。
+          </div>
+        </div>
+        <div class="review-actions">
+          <button class="btn btn-sm btn-ghost" @click="exitReview">退出复习</button>
+        </div>
+      </div>
+
+      <!-- 复习做完了：必须给个交代。
+           走到这里说明一轮结束了，学生需要知道"练了几道、它们去哪了、
+           还有没有别的事"，否则他会停在空列表前，分不清是结束了还是加载失败。 -->
+      <div v-else-if="justFinished" class="review-card glass is-done">
+        <div class="review-main">
+          <div class="review-title">今天的复习做完了</div>
+          <div class="tiny muted review-sub">
+            刚练过 {{ justFinished }} 道，它们已按你的表现排到后面的日期。
+            <span v-if="counts.graduated > 0">
+              另有 {{ counts.graduated }} 道走完了整个复习阶梯，觉得稳了就标记已掌握。
+            </span>
+          </div>
+        </div>
+        <div class="review-actions">
+          <button class="btn btn-sm btn-ghost" @click="justFinished = 0">知道了</button>
+        </div>
+      </div>
+
+      <div v-else-if="counts.due > 0" class="review-card glass">
+        <div class="review-main">
+          <div class="review-title">
+            今天有 {{ counts.due }} 道错题该复习了
+          </div>
+          <div class="tiny muted review-sub">
+            按 1 / 3 / 7 / 15 / 30 天的间隔安排。一次过一遍就好，不用做完整张卷子。
+            <span class="review-free">复习不花积分</span>
+          </div>
+        </div>
+        <div class="review-actions">
+          <button class="btn btn-sm btn-ghost" :disabled="snoozing" @click="snoozeToday">
+            {{ snoozing ? '处理中…' : '今天先不复习' }}
+          </button>
+          <button class="btn btn-sm btn-primary" @click="startReview">开始复习</button>
+        </div>
+      </div>
+
+      <!-- 走完阶梯的轻提示：不催，只是告诉他"这里有个可以收尾的事" -->
+      <div v-else-if="counts.graduated > 0" class="review-card glass is-done">
+        <div class="review-main">
+          <div class="review-title">有 {{ counts.graduated }} 道走完了复习阶梯</div>
+          <div class="tiny muted review-sub">
+            它们已经连续答对了好几轮。觉得稳了就标记已掌握，想再巩固就留着。
+          </div>
         </div>
       </div>
 
@@ -60,10 +128,18 @@
         <div v-if="loading" class="empty-hint">读取中…</div>
 
         <div v-else-if="!items.length" class="empty-hint">
-          <div>{{ masteredFilter === '1' ? '还没有已掌握的错题' : '错题本是空的' }}</div>
-          <div class="tiny">
-            批改作业时，错题会自动收进来；也可以点右上角「手动添加」
-          </div>
+          <template v-if="reviewMode">
+            <div>今天到期的都过完了</div>
+            <div class="tiny">
+              它们已经按你的表现排到后面的日期，明天或几天后才会再出现
+            </div>
+          </template>
+          <template v-else>
+            <div>{{ masteredFilter === '1' ? '还没有已掌握的错题' : '错题本是空的' }}</div>
+            <div class="tiny">
+              批改作业时，错题会自动收进来；也可以点右上角「手动添加」
+            </div>
+          </template>
         </div>
 
         <div v-else class="items">
@@ -78,6 +154,14 @@
                 <span class="badge" :class="q.tag === '△' ? 'badge-warning' : 'badge-danger'">{{ q.tag }}</span>
                 <span class="badge">{{ q.source === 'ai' ? 'AI 提取' : '手动录入' }}</span>
                 <span v-if="q.mastered" class="badge badge-success">已掌握</span>
+                <!-- 复习排期：到期的用醒目色，未到期的直接说"3 天后"。
+                     学生最需要知道的就是"这道题什么时候再见到" -->
+                <span
+                  v-else-if="q.review_hint"
+                  class="badge"
+                  :class="q.due ? 'badge-warning' : ''"
+                >{{ q.due ? '该复习了' : q.review_hint }}</span>
+                <span v-if="q.review_count > 0" class="badge">练过 {{ q.review_count }} 次</span>
                 <span class="tiny muted item-time">{{ formatTime(q.created_at) }}</span>
               </div>
 
@@ -120,7 +204,15 @@
                 <span class="tiny muted">来源题图</span>
               </div>
 
-              <div class="item-actions">
+              <!-- 复习模式下换成"记住了 / 忘了"：这两个按钮就是复习的产出，
+                   它们决定这道题下次什么时候再来。其余管理动作（编辑/删除）
+                   在复习时只会分散注意力，先收起来。 -->
+              <div v-if="reviewMode" class="item-actions">
+                <button class="btn btn-sm btn-ghost" @click="reviewOne(q, 'again')">忘了，明天再练</button>
+                <button class="btn btn-sm btn-primary" @click="reviewOne(q, 'good')">记住了</button>
+              </div>
+
+              <div v-else class="item-actions">
                 <button class="btn btn-sm btn-ghost" @click="toggleMastered(q)">
                   {{ q.mastered ? '标回待复习' : '标记已掌握' }}
                 </button>
@@ -219,22 +311,32 @@
 import AppNav from '@/components/AppNav.vue';
 import Segmented from '@/components/Segmented.vue';
 import { renderMarkdown } from '@/utils/markdown';
+import { fmtLocal } from '@/utils/fmt-time';
+import mermaidCharts from '@/mixins/mermaid';
 
 export default {
   name: 'WrongBookView',
   components: { AppNav, Segmented },
+  mixins: [mermaidCharts],
   data: function() {
     return {
       masteredFilter: '0',
       subject: '',
       items: [],
       subjects: [],
-      counts: { pending: 0, mastered: 0, total: 0 },
+      counts: { pending: 0, mastered: 0, due: 0, graduated: 0, total: 0 },
       selected: [],
       // 自测模式：藏起正确解法 / 错因 / 笔记，学生先想再看。
       // revealed 记录本页哪些条目已翻开；翻页或改筛选时清空
       quizMode: false,
       revealed: {},
+      // 复习模式：只看今天到期的题，且强制开着自测（先想再看）。
+      // 它是一个"一轮做完"的流程，不是又一个筛选器——
+      // 所以刻意不做成第 4 个筛选标签（四个标签在窄屏平板上会挤成两行）
+      reviewMode: false,
+      snoozing: false,
+      // 刚复习完几道：用于结束后给一句交代，不做持久化（刷新即散）
+      justFinished: 0,
       page: 1,
       totalPages: 1,
       loading: false,
@@ -283,6 +385,100 @@ export default {
       return !!(q.correct_answer || q.reason || q.note);
     },
 
+    // ---- 复习流程 ----
+
+    // 开始复习：只看今天到期的，并强制打开自测（先想再看）
+    startReview: function() {
+      this.reviewMode = true;
+      this.quizMode = true;
+      this.revealed = {};
+      this.justFinished = 0;
+      this.load(1);
+    },
+
+    // 退出复习：中途退出不会丢任何进度——每次「记住了/忘了」都已经写回服务端了。
+    // 这里只需要回到普通列表，并把角标刷成最新
+    exitReview: function() {
+      this.reviewMode = false;
+      this.quizMode = false;
+      this.revealed = {};
+      this.load(1);
+      this.$store.dispatch('wrongBook/refreshOverview');
+    },
+
+    // 记一次复习
+    //   'good'  记住了 —— 阶梯往下一级
+    //   'again' 忘了   —— 打回第一级，明天再来
+    //
+    // 成功后本地移除这一条、不整页重拉：复习讲究节奏，
+    // 每点一次就闪一下「读取中」会把这个节奏打断。
+    reviewOne: function(q, result) {
+      var self = this;
+      if (this._reviewing) return;
+      this._reviewing = true;
+
+      this.$http.post('/wrong-book/' + q.id + '/review', { result: result }).then(function(r) {
+        if (r.data.code !== 200) throw new Error(r.data.message || '记录失败');
+
+        var idx = -1;
+        for (var i = 0; i < self.items.length; i++) {
+          if (self.items[i].id === q.id) { idx = i; break; }
+        }
+        if (idx >= 0) self.items.splice(idx, 1);
+        self.justFinished += 1;
+
+        // 一轮做完了 → 自动收尾。
+        // 不收尾的话，学生会停在一个空列表上对着「复习中·还剩 0 道」发呆，
+        // 分不清是结束了还是页面坏了。收尾动作：
+        //   1) 退出复习（回到普通列表，让他能继续看自己的错题本）
+        //   2) 本地把 due 清零 —— 刚刚练过的题全部被推到了未来，这是事实，
+        //      不必等下一次请求回来，否则中间会闪一下"今天有 N 道该复习"
+        if (!self.items.length) {
+          self.reviewMode = false;
+          self.quizMode = false;
+          self.revealed = {};
+          self.counts = Object.assign({}, self.counts, { due: 0 });
+          self.load(1);
+        }
+
+        // 服务端已经算好了准确话术（"3 天后再练" / "打回第一级，明天再练"），
+        // 直接用它——前端另写一套文案，迟早与后端判定互相矛盾
+        if (r.data.message) {
+          self.$store.dispatch('toast', {
+            message: r.data.message,
+            type: result === 'again' ? 'info' : 'success'
+          });
+        }
+        self.$store.dispatch('wrongBook/refreshOverview');
+      }).catch(function(err) {
+        self.$store.dispatch('toast', { message: err.message || '记录失败', type: 'error' });
+      }).then(function() {
+        self._reviewing = false;
+      });
+    },
+
+    // 今天先不复习：把当前到期的整体推到明天
+    //
+    // 这是「不打扰」的关键出口：一个躲不掉的提醒会从帮忙变成压力。
+    // 给一个一键、可逆、看得懂的推迟，比逼学生点开然后草草划完更尊重他，
+    // 也保住了复习本身的质量——被逼做的复习等于没做。
+    snoozeToday: function() {
+      var self = this;
+      if (this.snoozing) return;
+      this.snoozing = true;
+
+      this.$http.post('/wrong-book/review/snooze', { days: 1 }).then(function(r) {
+        if (r.data.code !== 200) throw new Error(r.data.message || '操作失败');
+        self.$store.dispatch('toast', { message: r.data.message, type: 'success' });
+        self.load(1);
+        self.$store.dispatch('wrongBook/refreshOverview');
+      }).catch(function(err) {
+        self.$store.dispatch('toast', { message: err.message || '操作失败', type: 'error' });
+      }).then(function() {
+        self.snoozing = false;
+      });
+    },
+
     load: function(page) {
       var self = this;
       this.loading = true;
@@ -293,17 +489,25 @@ export default {
 
       return this.$http.get('/wrong-book', {
         params: {
-          mastered: this.masteredFilter,
-          subject: this.subject,
-          page: this.page,
-          limit: 20
+          mastered: this.reviewMode ? '0' : this.masteredFilter,
+          subject: this.reviewMode ? '' : this.subject,
+          // 复习模式只要今天到期的
+          due: this.reviewMode ? '1' : '',
+          // 一轮做完就够：复习是"过一遍"，不是"翻完整个错题本"。
+          // 学生若今天有 60 道到期，一次给 60 道会长得吓人；50 道够用，
+          // 做完再看进度——真正的积压会分成几天自然消化
+          limit: this.reviewMode ? 50 : 20,
+          page: this.page
         }
       }).then(function(r) {
         if (r.data.code !== 200) throw new Error(r.data.message || '加载失败');
         var d = r.data.data;
         self.items = d.items || [];
-        self.counts = d.counts || { pending: 0, mastered: 0, total: 0 };
+        self.counts = d.counts || { pending: 0, mastered: 0, due: 0, graduated: 0, total: 0 };
         self.totalPages = d.total_pages || 1;
+        // 顺手把全局概览也更新掉：counts 与 overview 在服务端同源（countsOf 一处算），
+        // 所以这是零成本的同步——不用再发一次请求，角标也不会和页面上的数字打架
+        if (d.counts) self.$store.commit('wrongBook/SET_OVERVIEW', d.counts);
       }).catch(function(err) {
         self.error = err.message || '加载失败';
       }).then(function() {
@@ -462,7 +666,7 @@ export default {
     },
 
     formatTime: function(iso) {
-      return String(iso || '').replace('T', ' ').slice(0, 16);
+      return fmtLocal(iso);
     }
   }
 };
@@ -473,12 +677,18 @@ export default {
   display: flex;
   flex-direction: column;
   height: var(--app-height);
-  padding: var(--gap-md);
+  /* 完全贴边：去掉固定留白，仅保留安全区边距（无刘海设备上为 0） */
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   gap: var(--gap-md);
 }
 html.no-flex-gap .wrong-page > * + * {
   margin-top: var(--gap-md);
 }
+
+
+
+
+
 
 
 
@@ -501,6 +711,90 @@ html.no-flex-gap .body > * + * {
 
 
 
+
+
+
+
+
+/* ---- 今日复习卡片 ----
+   做成卡片而不是弹窗：复习不是紧急事项，弹窗会打断学生正在做的题，
+   而且弹窗只有"立即处理"和"关闭"两个答案，等于逼他现在做。
+   左边信息、右边动作，窄屏靠 flex-wrap 自然堆叠。
+   gap 一律配 html.no-flex-gap 回退（基线是 Chrome 80 的安卓平板）。 */
+.review-card {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-md);
+  padding: 12px 16px;
+  border-radius: var(--radius-lg);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+html.no-flex-gap .review-card > * + * {
+  margin-left: var(--gap-md);
+}
+
+
+
+
+
+/* 左侧色条区分三种状态：到期（强调）/ 复习中（强调+底色）/ 已收尾（成功） */
+.review-card {
+  border-left: 3px solid var(--accent);
+}
+.review-card.is-active {
+  background: var(--accent-soft);
+}
+.review-card.is-done {
+  border-left-color: var(--success);
+}
+.review-main {
+  flex: 1;
+  min-width: 220px;
+}
+.review-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.review-sub {
+  margin-top: 3px;
+  line-height: 1.55;
+}
+/* 「复习不花积分」单独标出来：
+   学生已经形成"用 AI 就要花积分"的预期，不点明的话，
+   他会因为怕扣分而不敢点「开始复习」——这是纯本地操作，一分不花 */
+.review-free {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: var(--radius-pill);
+  background: var(--success-soft);
+  color: var(--success);
+  font-size: 11.5px;
+}
+.review-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+html.no-flex-gap .review-actions > * + * {
+  margin-left: 8px;
+}
+
+
+
+
+
+/* 窄屏：动作换到下一行并占满，避免两个按钮被挤成竖排 */
+@media (max-width: 680px) {
+  .review-actions {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
 .toolbar {
   display: flex;
   align-items: center;
@@ -513,6 +807,11 @@ html.no-flex-gap .body > * + * {
 html.no-flex-gap .toolbar > * + * {
   margin-left: var(--gap-md);
 }
+
+
+
+
+
 
 
 
@@ -539,6 +838,11 @@ html.no-flex-gap .toolbar-right > * + * {
 
 
 
+
+
+
+
+
 .stat-row {
   display: flex;
   align-items: center;
@@ -555,6 +859,11 @@ html.no-flex-gap .stat-row > * + * {
 
 
 
+
+
+
+
+
 .stat {
   display: flex;
   align-items: baseline;
@@ -565,6 +874,11 @@ html.no-flex-gap .stat-row > * + * {
 html.no-flex-gap .stat > * + * {
   margin-left: 6px;
 }
+
+
+
+
+
 
 
 
@@ -593,6 +907,11 @@ html.no-flex-gap .stat > * + * {
 html.no-flex-gap .bulk > * + * {
   margin-left: 8px;
 }
+
+
+
+
+
 
 
 
@@ -638,6 +957,11 @@ html.no-flex-gap .items > * + * {
 
 
 
+
+
+
+
+
 .item {
   display: flex;
   gap: 10px;
@@ -649,6 +973,11 @@ html.no-flex-gap .items > * + * {
 html.no-flex-gap .item > * + * {
   margin-left: 10px;
 }
+
+
+
+
+
 
 
 
@@ -685,6 +1014,11 @@ html.no-flex-gap .item-top > * + * {
 
 
 
+
+
+
+
+
 .item-time {
   margin-left: auto;
 }
@@ -697,6 +1031,11 @@ html.no-flex-gap .item-top > * + * {
 html.no-flex-gap .item-row > * + * {
   margin-left: 10px;
 }
+
+
+
+
+
 
 
 
@@ -739,6 +1078,11 @@ html.no-flex-gap .item-image > * + * {
 
 
 
+
+
+
+
+
 .item-image img {
   width: 96px;
   height: 96px;
@@ -763,6 +1107,11 @@ html.no-flex-gap .item-actions > * + * {
 
 
 
+
+
+
+
+
 .pager {
   display: flex;
   align-items: center;
@@ -773,6 +1122,11 @@ html.no-flex-gap .item-actions > * + * {
 html.no-flex-gap .pager > * + * {
   margin-left: var(--gap-md);
 }
+
+
+
+
+
 
 
 
@@ -852,6 +1206,11 @@ html.no-flex-gap .switch-row > * + * {
 
 
 
+
+
+
+
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -863,6 +1222,11 @@ html.no-flex-gap .switch-row > * + * {
 html.no-flex-gap .modal-actions > * + * {
   margin-left: 10px;
 }
+
+
+
+
+
 
 
 

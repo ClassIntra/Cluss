@@ -89,6 +89,11 @@ html.no-flex-gap .confirm-actions > * + * {
   margin-left: 10px;
 }
 
+
+
+
+
+
 /* 危险动作时取消是主按钮、确认是红的：颜色权重压过位置权重，
    手指滑过去不会顺手把「删除」点成默认项 */
 .confirm-card .btn-ghost {

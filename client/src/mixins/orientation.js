@@ -1,58 +1,34 @@
-// 方向判定 + 竖屏抽屉 + 边缘侧滑手势（对话 / 拍题 / 作文三页共用）
+// 方向适配 + 竖屏抽屉 + 边缘侧滑手势（对话 / 拍题 / 作文等页共用）
 //
 // ============================================================
-// 一、为什么不能再用「视口宽高比」判断方向
+// ⚠️ 方向**不在这里算**
 // ============================================================
+// 唯一真相源是 `utils/device-orientation.js`（由 `main.js` 启动，全局只跑一份）。
+// 本 mixin 只做两件事：
+//   1. 订阅方向结果，投影到组件的 `isPortrait` / `useDrawer` 供模板用；
+//   2. 提供竖屏抽屉的开合状态与左缘侧滑手势。
 //
-// 软键盘弹出时视口高度会掉 300px 以上。在 680×960 的竖屏平板上，
-// 键盘一起来视口就变成约 680×630 —— 宽度反而比高度大，
-// 宽高比判定直接翻转成"横屏"。于是三件事同时发生，
-// 而且都发生在学生**正在打字**的时候：
+// 为什么必须这样切：方向原来散在四处各算各的（本 mixin、TabBar、Study 页、
+// CSS 媒体查询），判据还各不相同（设备 API / 物理尺寸 / 视口比例），
+// 任两处不一致就会出现「同一屏一半横一半竖」。现在 <html> 上的类与各页面
+// 模板绑定**同源**，页面生灭不再影响方向类。
 //
-//   1. JS 的 isPortrait 变 false → 常驻侧栏突然冒出来，正文被挤成一条缝
-//   2. CSS 的 @media (orientation: portrait) 失效 → 竖屏专属样式消失
-//   3. 反过来触发 @media (orientation: landscape) and (max-height: 800px)
+// 为什么不用「视口宽高比」判方向：软键盘只改变**高度**，680×960 的竖屏平板
+// 键盘一起来视口变成约 680×630 —— 宽高比直接翻转成"横屏"，侧栏突然冒出来、
+// 正文被挤成一条缝，而且就发生在学生**正在打字**的时候。
+// 判据的完整推导（含受管平板上 screen.orientation.type 撒谎的实测）见
+// utils/device-orientation.js。
 //
-// 键盘只改变**高度**，不改变方向。所以判据换成**设备方向**
-// （screen.orientation），并把结果写到 <html> 的 class 上，
-// 让 CSS 和 JS 走同一个真相来源 —— 各判各的迟早会不一致。
-//
-// ============================================================
-// 二、两个类名，各管一件事
-// ============================================================
-//
-//   html.is-portrait  设备物理竖屏（不管多宽）
+// 两个类名各管一件事（仍由 util 写到 <html> 上）：
+//   html.is-portrait  设备竖屏（不管多宽）
 //   html.use-drawer   设备竖屏 **且** 视口宽度 ≤ 1024 → 侧栏改抽屉
-//
-// 为什么分开：1600×2560 的大竖屏平板物理上是竖屏，但横向空间够，
-// 侧栏常驻更好用；只有窄竖屏（680~1024）才需要抽屉。
-//
-// 关键：**抽屉的样式必须由 use-drawer 驱动，不能再用媒体查询**。
-// 因为 JS 在 use-drawer 为真时会把侧栏 v-show 隐藏起来 ——
-// 如果 CSS 那边因为键盘翻转而不把它变成抽屉，侧栏就彻底没入口了。
+// 1600×2560 的大竖屏平板物理上是竖屏，但横向空间够，侧栏常驻更好用；
+// 只有窄竖屏（680~1024）才需要抽屉。**抽屉样式必须由 use-drawer 驱动，
+// 不能再用媒体查询**：JS 在 use-drawer 为真时会把侧栏 v-show 隐藏起来，
+// CSS 那边若因为键盘翻转而不把它变成抽屉，侧栏就彻底没入口了。
 
-function detectPortrait() {
-  // 首选：浏览器直接给的方向
-  try {
-    var so = window.screen && window.screen.orientation;
-    if (so && typeof so.type === 'string') {
-      if (so.type.indexOf('portrait') === 0) return true;
-      if (so.type.indexOf('landscape') === 0) return false;
-    }
-  } catch (e) { /* 老 WebView 没有 screen.orientation */ }
+import { subscribeOrientation } from '../utils/device-orientation';
 
-  // 次选：物理屏幕尺寸（同样不受键盘影响）
-  try {
-    var sw = window.screen && window.screen.width;
-    var sh = window.screen && window.screen.height;
-    if (sw && sh && sw !== sh) return sw < sh;
-  } catch (e) { /* ignore */ }
-
-  // 兜底：只能看视口比例（会被键盘影响，但总比没有强）
-  return window.innerHeight >= window.innerWidth;
-}
-
-var DRAWER_MAX_WIDTH = 1024;   // 超过这个宽度就不必用抽屉
 var EDGE_ZONE = 26;            // 左边缘多宽算"从边缘起手"
 var OPEN_RATIO = 0.34;         // 拖过抽屉宽度的这个比例就判定为打开
 
@@ -87,16 +63,19 @@ export default {
   },
 
   mounted: function() {
-    this.syncOrientation();
+    var self = this;
 
-    // 只在方向真的可能变时重算。单纯的高度变化（地址栏、软键盘）不触发 ——
-    // 这正是原来那个 bug 的来源。
-    window.addEventListener('orientationchange', this.syncOrientation);
-    if (window.screen && window.screen.orientation && window.screen.orientation.addEventListener) {
-      window.screen.orientation.addEventListener('change', this.syncOrientation);
-    }
-    // 宽度变化仍要跟（旋转会改宽度；桌面拖窗口也要跟），但节流到一帧
-    window.addEventListener('resize', this.onViewportResize);
+    // 订阅全局方向结果（订阅时会立刻回调一次当前值）
+    this._unsubOrientation = subscribeOrientation(function(s) {
+      if (self.isPortrait === s.portrait && self.useDrawer === s.useDrawer) return;
+      self.isPortrait = s.portrait;
+      self.useDrawer = s.useDrawer;
+      // 不再是抽屉模式时把抽屉状态收干净，否则转回横屏会看到遮罩残留
+      if (!s.useDrawer) {
+        self.drawerOpen = false;
+        self.drawerDragX = null;
+      }
+    });
 
     // 侧滑手势
     this._onTouchStart = this.handleTouchStart.bind(this);
@@ -112,11 +91,12 @@ export default {
   },
 
   beforeDestroy: function() {
-    window.removeEventListener('orientationchange', this.syncOrientation);
-    if (window.screen && window.screen.orientation && window.screen.orientation.removeEventListener) {
-      window.screen.orientation.removeEventListener('change', this.syncOrientation);
+    // ⚠️ 只退订，**不动** is-portrait / use-drawer —— 那两个类归 utils/device-orientation
+    // 全局维护。切页时新组件先挂载、旧组件后销毁，在这里清理会把新页面刚写好的类抹掉。
+    if (this._unsubOrientation) {
+      this._unsubOrientation();
+      this._unsubOrientation = null;
     }
-    window.removeEventListener('resize', this.onViewportResize);
 
     document.removeEventListener('touchstart', this._onTouchStart);
     document.removeEventListener('touchmove', this._onTouchMove);
@@ -126,39 +106,6 @@ export default {
   },
 
   methods: {
-    // resize 很密（地址栏收缩、键盘动画都会刷），节流到一帧
-    onViewportResize: function() {
-      if (this._resizeQueued) return;
-      this._resizeQueued = true;
-      var self = this;
-      var raf = window.requestAnimationFrame || function(cb) { return setTimeout(cb, 16); };
-      raf(function() {
-        self._resizeQueued = false;
-        self.syncOrientation();
-      });
-    },
-
-    syncOrientation: function() {
-      var portrait = detectPortrait();
-      // 宽度用视口宽度：它不受键盘影响（键盘只减高度），旋转时会变
-      var narrow = window.innerWidth <= DRAWER_MAX_WIDTH;
-      var useDrawer = portrait && narrow;
-
-      this.isPortrait = portrait;
-      this.useDrawer = useDrawer;
-
-      // 写到 <html> 上，让 CSS 用同一个判据（见文件头的说明）
-      var root = document.documentElement;
-      root.classList.toggle('is-portrait', portrait);
-      root.classList.toggle('use-drawer', useDrawer);
-
-      // 不再是抽屉模式时把抽屉状态收干净，否则转回横屏会看到遮罩残留
-      if (!useDrawer) {
-        this.drawerOpen = false;
-        this.drawerDragX = null;
-      }
-    },
-
     syncDrawerClass: function() {
       document.documentElement.classList.toggle('drawer-open', !!this.drawerOpen);
     },

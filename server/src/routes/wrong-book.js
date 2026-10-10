@@ -17,10 +17,35 @@ router.get('/', auth.requireAuth, function(req, res) {
     userId: req.user.user_id,
     mastered: String(req.query.mastered || ''),
     subject: String(req.query.subject || ''),
+    // due=1 → 只返回今天该复习的（复习模式与「今日待复习」筛选用）
+    due: String(req.query.due || ''),
     page: req.query.page,
     limit: req.query.limit
   });
   res.json({ code: 200, message: 'ok', data: data });
+});
+
+// ============================================================
+// GET /api/wrong-book/review/overview —— 复习概览（导航角标用）
+// 只回几个计数，不拉题目正文：角标每次进页都要问一次，
+// 错题多的时候整页数据是几十条带 Markdown 的长文本，为一个数字不值。
+// 必须注册在 /:id 之前，否则 "review" 会被当成 id。
+// ============================================================
+router.get('/review/overview', auth.requireAuth, function(req, res) {
+  res.json({ code: 200, message: 'ok', data: wrongBook.overview(req.user.user_id) });
+});
+
+// ============================================================
+// POST /api/wrong-book/review/snooze —— 今天先不复习（整体推迟）
+// body: { days?: 1..30 }
+// ============================================================
+router.post('/review/snooze', auth.requireAuth, function(req, res) {
+  var r = wrongBook.snooze(req.user.user_id, req.body.days);
+  res.json({
+    code: 200,
+    message: r.affected ? ('已把 ' + r.affected + ' 道题推到 ' + r.until + ' 再看') : '今天没有到期的错题',
+    data: r
+  });
 });
 
 // ============================================================
@@ -70,6 +95,27 @@ router.post('/batch', auth.requireAuth, function(req, res) {
   var msg = action === 'delete' ? ('已删除 ' + result.affected + ' 条')
     : ('已更新 ' + result.affected + ' 条');
   res.json({ code: 200, message: msg, data: { affected: result.affected } });
+});
+
+// ============================================================
+// POST /api/wrong-book/:id/review —— 记一次复习
+// body: { result: 'good' | 'again' }
+//   good  → 阶梯往下一级     again → 打回第一级重来
+// 这是纯本地记账，不消耗积分（不调用任何 AI，也不写账本）。
+// ============================================================
+router.post('/:id/review', auth.requireAuth, function(req, res) {
+  var result = wrongBook.review(req.params.id, req.user.user_id, req.body.result);
+  if (!result.ok) {
+    var status = result.notFound ? 404 : 400;
+    return res.status(status).json({ code: status, message: result.message });
+  }
+
+  var msg;
+  if (result.kind === 'again') msg = '打回第一级，明天再练';
+  else if (result.graduated) msg = '这一轮走完了，觉得稳了就标记已掌握';
+  else msg = result.next_hint;
+
+  res.json({ code: 200, message: msg, data: result });
 });
 
 // ============================================================

@@ -15,12 +15,21 @@
         <circle v-if="icons[item.id].circle" :cx="icons[item.id].circle.cx" :cy="icons[item.id].circle.cy" :r="icons[item.id].circle.r" />
       </svg>
       <span class="tab-label">{{ item.label }}</span>
+      <!-- 到期角标：绝对定位，不能作为 flex 子项参与流式布局 ——
+           .tab-item 是 column flex，角标若在流内会把图标和文字顶歪，
+           且 html.no-flex-gap 的回退规则（> * + * 加 margin-top）还会再推它一下 -->
+      <span
+        v-if="badgeFor(item.id)"
+        class="tab-badge"
+        :title="'今天有 ' + badgeFor(item.id) + ' 道错题该复习了'"
+      >{{ badgeFor(item.id) }}</span>
     </router-link>
   </nav>
 </template>
 
 <script>
 import navItems from '@/utils/nav-items';
+import { subscribeOrientation } from '@/utils/device-orientation';
 
 // ============================================================
 // 竖屏底部标签栏
@@ -31,16 +40,14 @@ import navItems from '@/utils/nav-items';
 //   更根本的是可达性：顶栏在屏幕上缘，而竖屏握持时拇指活动范围在下半屏。
 //   底栏让六个入口全部落在拇指热区里，且永远可见、不用滚。
 //
-// 何时显示：与抽屉同一判据（设备竖屏 且 视口宽 ≤ 1024，见 mixins/orientation）。
-// 这里不引那个 mixin —— 它带着抽屉手势的 document 级监听，
-// 挂在 App.vue 会和页面里的实例重复注册。TabBar 只需要"显示/隐藏"，
-// 自己监听方向与宽度变化就够（节流到一帧，与 mixin 同款做法）。
+// 何时显示：订阅 utils/device-orientation 的 useDrawer（＝设备竖屏 且 视口宽 ≤ 1024），
+// 与页面里的抽屉是**同一份**判定。不引 mixins/orientation（它带着抽屉手势的
+// document 级监听，挂在 App.vue 会和页面实例重复注册）；也不自己算方向 ——
+// 曾经这里另算一份，在受管平板上与页面那几份分叉过（底栏竖屏、正文横屏）。
 //
 // 横屏与大竖屏平板（>1024）不显示：顶栏横排链接在那里本来就是最优解，
 // 底栏反而浪费垂直空间 —— 横屏矮屏上垂直空间是最贵的。
 // ============================================================
-
-var DRAWER_MAX_WIDTH = 1024; // 必须与 mixins/orientation 的同名常量一致
 
 // 线性图标，stroke 用 currentColor，随激活态变色。
 // 手绘 path 而不引图标库：六个图标不值得多一个依赖与加载成本。
@@ -57,6 +64,9 @@ var ICONS = {
   },
   records: {
     d: 'M12 4a8 8 0 1 1 0 16 8 8 0 0 1 0-16zm0 4v4.3l3 1.7'
+  },
+  notes: {
+    d: 'M6 3.5h9.5a2.5 2.5 0 0 1 2.5 2.5v12a2.5 2.5 0 0 1-2.5 2.5H6a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2zM8.5 8h5M8.5 11.5h5M8.5 15h3'
   },
   'wrong-book': {
     d: 'M6.5 4h11A1.5 1.5 0 0 1 19 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 18.5v-13A1.5 1.5 0 0 1 6.5 4zM9 4v16M12.5 9.5l4 5m0-5l-4 5'
@@ -96,6 +106,9 @@ export default {
         width: 'calc((100% - 12px) / ' + this.items.length + ')',
         transform: 'translateX(' + this.activeIndex * 100 + '%)'
       };
+    },
+    dueWrongCount: function() {
+      return this.$store.getters['wrongBook/dueCount'];
     }
   },
   watch: {
@@ -107,52 +120,28 @@ export default {
     }
   },
   mounted: function() {
-    this.sync();
-    this._onResize = this.onResize.bind(this);
-    window.addEventListener('resize', this._onResize);
-    window.addEventListener('orientationchange', this._onResize);
-    if (window.screen && window.screen.orientation && window.screen.orientation.addEventListener) {
-      window.screen.orientation.addEventListener('change', this._onResize);
-    }
+    var self = this;
+    // 订阅判据（订阅时会立刻回调一次当前值）；visible 的 watcher 会接着同步 has-tabbar
+    this._unsubOrientation = subscribeOrientation(function(s) {
+      self.narrowPortrait = s.useDrawer;
+    });
+    // 与顶栏同一个刷新时机：底栏也是每页各挂一个实例
+    this.$store.dispatch('wrongBook/refreshOverview');
     document.documentElement.classList.toggle('has-tabbar', this.visible);
   },
   beforeDestroy: function() {
-    window.removeEventListener('resize', this._onResize);
-    window.removeEventListener('orientationchange', this._onResize);
-    if (window.screen && window.screen.orientation && window.screen.orientation.removeEventListener) {
-      window.screen.orientation.removeEventListener('change', this._onResize);
+    if (this._unsubOrientation) {
+      this._unsubOrientation();
+      this._unsubOrientation = null;
     }
     document.documentElement.classList.remove('has-tabbar');
   },
   methods: {
-    // resize 会因地址栏与软键盘高频触发（高度变化不影响"竖屏+宽度"判定），
-    // 但方向与宽度仍可能变，照 mixins/orientation 的做法节流到一帧
-    onResize: function() {
-      if (this._queued) return;
-      this._queued = true;
-      var self = this;
-      var raf = window.requestAnimationFrame || function(cb) { return setTimeout(cb, 16); };
-      raf(function() {
-        self._queued = false;
-        self.sync();
-      });
+    // 与顶栏一致：只有错题本挂角标，走统一入口便于以后扩展
+    badgeFor: function(itemId) {
+      if (itemId === 'wrong-book') return this.dueWrongCount;
+      return 0;
     },
-
-    sync: function() {
-      var portrait = true;
-      try {
-        var so = window.screen && window.screen.orientation;
-        if (so && typeof so.type === 'string') {
-          portrait = so.type.indexOf('portrait') === 0;
-        } else {
-          var sw = window.screen && window.screen.width;
-          var sh = window.screen && window.screen.height;
-          portrait = (sw && sh && sw !== sh) ? sw < sh : window.innerHeight >= window.innerWidth;
-        }
-      } catch (e) { /* 拿不到方向时按竖屏处理，窄屏下多显示一个底栏无害 */ }
-      this.narrowPortrait = portrait && window.innerWidth <= DRAWER_MAX_WIDTH;
-    },
-
     isActive: function(item) {
       // 「对话」的 to 是 '/'，不能直接全等：/study 不能点亮 / 的 tab
       if (item.to === '/') return this.$route.path === '/';
@@ -262,6 +251,11 @@ html.no-flex-gap .tab-item > * + * {
   margin-top: 2px;
 }
 
+
+
+
+
+
 .tab-icon {
   width: 21px;
   height: 21px;
@@ -270,6 +264,27 @@ html.no-flex-gap .tab-item > * + * {
   stroke-width: 1.7;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+/* 到期角标
+   绝对定位是必须的：.tab-item 是 column flex，角标若留在流内会挤走图标与文字。
+   视觉上从图标右上角"探出来"——中心线往右偏 6px，压在图标上沿。
+   margin 显式清零：no-flex-gap 的 `> * + *` 回退规则会给它加 margin-top。 */
+.tab-badge {
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  margin: 0 0 0 6px;
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--danger);
+  color: var(--text-invert);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
 }
 
 /* 激活瞬间图标弹一下：到底激活的是哪个，一目了然。
@@ -285,7 +300,10 @@ html.no-flex-gap .tab-item > * + * {
 }
 
 .tab-label {
-  font-size: 10.5px;
+  /* 底部导航是竖屏下的主导航，学生要反复扫它确认「我在哪一页」。
+     10.5px 是全站最小的字号 —— 导航字小到需要辨认，导航本身就失效了。
+     直接提到 12px：竖屏底栏本来就是待修项，这里不需要保 10.5 的基线。 */
+  font-size: 12px;
   line-height: 1.2;
   white-space: nowrap;
 }

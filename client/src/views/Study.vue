@@ -79,6 +79,9 @@
                 <button class="btn btn-sm btn-ghost" @click="pickerOpen = true">
                   {{ attachments.length ? '重新选择' : '从云盘选择' }}
                 </button>
+                <button class="btn btn-sm btn-ghost" @click="notePickerOpen = true">
+                  {{ noteRefs.length ? '引用笔记 ' + noteRefs.length : '引用笔记' }}
+                </button>
               </div>
             </div>
 
@@ -95,7 +98,18 @@
               <div v-else class="img-list">
                 <div v-for="(a, idx) in attachments" :key="a.hash" class="img-card">
                   <span class="img-index">{{ idx + 1 }}</span>
-                  <img class="img-preview" :src="a.url || ('/api/cloud/files/' + a.hash)" :alt="a.name" />
+                  <!-- 预览用**缩略图**，点开才加载原图。
+                       直接拿原图当预览是这里以前的做法：手机上拍一张 3-5MB 的照片，
+                       塞进这么小的预览卡里，低端平板上要等很久才出画 ——
+                       学生看到的就是"图片显示不出来"。
+                       同一处的对话页一直是这么做的（?thumb=1 + 点击看原图）。 -->
+                  <img
+                    class="img-preview"
+                    :src="a.thumb_url || ('/api/cloud/files/' + a.hash + '?thumb=1')"
+                    :alt="a.name"
+                    loading="lazy"
+                    @click="preview = a.url || ('/api/cloud/files/' + a.hash)"
+                  />
                   <span class="img-name tiny">{{ a.name }}</span>
                   <button class="img-remove" title="移除" @click="removeAttachment(a.hash)">×</button>
                 </div>
@@ -106,6 +120,15 @@
               <span v-if="paperMode === 'cross_page'" class="badge badge-accent">请确认顺序：图 1 → 图 {{ attachments.length }}</span>
               <span v-else class="tiny muted">共 {{ attachments.length }} 张</span>
             </div>
+
+            <!-- 引用的笔记：让 AI 结合自己整理的笔记来讲，而不是只对着题图硬解 -->
+            <div v-if="noteRefs.length" class="note-refs">
+              <span class="note-refs-label tiny">引用笔记</span>
+              <span v-for="n in noteRefs" :key="n.id" class="note-ref-chip">
+                {{ n.title }}
+                <button class="note-ref-x" title="移除" @click="removeNoteRef(n.id)">×</button>
+              </span>
+            </div>
           </section>
 
           <!-- 解答区 -->
@@ -115,36 +138,54 @@
               <div class="pane-actions">
                 <!-- 只显示模型名：原来还缀一个「（转述）」，那是系统内部的实现方式
                      （先用一个能看图的模型把图片转成文字），学生看到只会困惑，
-                     也做不了任何决定。title 里点明这是管理员配好的，省掉"为什么要我选"的迟疑。 -->
-                <select
+                     也做不了任何决定。倍率 / 限免由 ModelSelect 以徽标呈现。 -->
+                <ModelSelect
                   v-model="modelId"
-                  class="model-select-sm"
+                  :options="visionModels"
                   :disabled="sending"
-                  title="用哪个 AI 由管理员配置，一般不用改"
-                >
-                  <option
-                    v-for="m in visionModels"
-                    :key="m.id"
-                    :value="m.id"
-                    :disabled="!m.available"
-                  >{{ m.label }}</option>
-                </select>
+                  size="sm"
+                />
               </div>
             </div>
 
             <div ref="scroller" class="pane-body answer-body" @scroll="onScrollAnswer">
-              <!-- 已提交但还没出字：给状态文字，而不是让 taskHint 配一个闪烁光标
-                   干等（等久了学生会以为卡死，见 utils/waiting.js） -->
-              <div v-if="!answer && sending" class="waiting-hint">
-                <span class="waiting-dot" aria-hidden="true"></span>{{ waitText }}
+              <!-- 已提交但还没出字：三点呼吸说明"在工作"，文字说明"为什么可能慢"
+                   （8s / 20s 分级升级，见 utils/waiting.js）。
+                   role=status 让读屏器也能听到，而不是只看到动画 -->
+              <!-- 推理中的推演过程：思考比正文先到，这时候学生最容易以为卡死，
+                   所以宁可让它占一小块地方，也要让他看见"在工作"。
+                   默认折叠，展开才看全文（见 Chat.vue 同名样式）。 -->
+              <details
+                v-if="reasoning"
+                class="think-panel"
+                @toggle="reasoningOpen = $event.target.open"
+              >
+                <summary class="think-summary">
+                  <span class="think-dot" v-if="sending" aria-hidden="true"></span>
+                  {{ sending ? '正在推演思路…' : '思考过程' }}
+                  <span class="think-toggle muted tiny">（{{ reasoningOpen ? '收起' : '展开' }}）</span>
+                </summary>
+                <div class="think-body">{{ reasoning }}</div>
+              </details>
+
+              <div v-if="!answer && sending" class="waiting-hint" role="status">
+                <span class="waiting-dots" aria-hidden="true"><span></span><span></span><span></span></span><span>{{ waitText }}</span>
               </div>
               <div v-else-if="!answer" class="empty-hint">
                 <div class="tiny">{{ taskHint }}</div>
               </div>
               <!-- 渲染预计算好的 answerHtml：在模板里调 render(answer) 会让每次
-                   重渲染都重解析整篇 Markdown（见 mixins/streamFrame） -->
-              <div v-else class="md-body" v-html="answerHtml"></div>
-              <span v-if="sending && answer" class="caret"></span>
+                   重渲染都重解析整篇 Markdown（见 mixins/streamFrame）。
+                   流式光标已由 paint 注入渲染结果的最后一行行内 -->
+              <!-- 流式期间走「冻结段 + 尾段」两个节点（见 utils/stream-paint）：
+                   冻结段在生成过程中不再变化，浏览器不必重建它。 -->
+              <template v-else>
+                <div v-if="answerHtmlFrozen" class="md-body md-stream">
+                  <div class="md-part" v-html="answerHtmlFrozen"></div>
+                  <div class="md-part" v-html="answerHtml"></div>
+                </div>
+                <div v-else class="md-body" v-html="answerHtml"></div>
+              </template>
             </div>
 
             <div v-if="visionStatus" class="vision-status">
@@ -159,7 +200,7 @@
                 v-model="note"
                 class="note-input"
                 rows="1"
-                :placeholder="taskKind === 'grade' ? '补充说明（选填），如：这是第 3 次作业' : '补充说明（选填），如：只讲第 2 问'"
+                :placeholder="notePlaceholder"
               ></textarea>
               <button
                 class="btn"
@@ -183,6 +224,22 @@
       @picked="onPicked"
       @close="pickerOpen = false"
     />
+
+    <NotePicker
+      v-if="notePickerOpen"
+      :max="5"
+      title="引用笔记"
+      :value="noteIds"
+      @picked="onNotesPicked"
+      @close="notePickerOpen = false"
+    />
+
+    <!-- 题图放大：预览卡里是缩略图，点开看原图，方便提交前确认字够不够清楚 -->
+    <transition name="fade">
+      <div v-if="preview" class="preview-mask" @click.self="preview = ''">
+        <img class="preview-img" :src="preview" alt="题图" />
+      </div>
+    </transition>
   </div>
 </template>
 
@@ -190,24 +247,40 @@
 import AppNav from '@/components/AppNav.vue';
 import Segmented from '@/components/Segmented.vue';
 import CloudPicker from '@/components/CloudPicker.vue';
-import { renderMarkdown } from '@/utils/markdown';
+import NotePicker from '@/components/NotePicker.vue';
+import { renderMarkdown, renderStream } from '@/utils/markdown';
+import { createStreamPainter } from '@/utils/stream-paint';
+import { appendStreamCaret } from '@/utils/stream-caret';
 import { readSseStream, postStream } from '@/utils/sse';
+import streamSession from '@/utils/stream-session';
+import noteRefs from '@/mixins/note-refs';
 import waiting from '@/mixins/waiting';
 import streamFrame from '@/mixins/streamFrame';
 import orientation from '@/mixins/orientation';
+import mermaidCharts from '@/mixins/mermaid';
+import ModelSelect from '@/components/ModelSelect.vue';
 
 export default {
   name: 'StudyView',
-  components: { AppNav, Segmented, CloudPicker },
-  mixins: [waiting, streamFrame, orientation],
+  components: { AppNav, Segmented, CloudPicker, NotePicker, ModelSelect },
+  mixins: [waiting, streamFrame, orientation, noteRefs, mermaidCharts],
   data: function() {
     return {
+      // 点击题图放大时显示的原图 URL（空 = 不显示遮罩）
+      preview: '',
       taskKind: 'solve',
       paperMode: 'single',
       attachments: [],
       answer: '',
+      // 模型给出的思考过程（reasoning 事件）：与 Chat 页同一套处理，
+      // 目的只有一个——让推理型模型那段长达十几秒的沉默变成可见的推演。
+      reasoning: '',
+      reasoningOpen: false,
       // 预渲染的 HTML（流式时按帧节流更新），见 mixins/streamFrame
       answerHtml: '',
+      // 流式增量渲染的冻结段（见 utils/stream-paint）。
+      // 必须在这里声明：Vue 2 不追踪后加的属性，运行期再赋值视图不会更新。
+      answerHtmlFrozen: '',
       note: '',
       sending: false,
       streamError: '',
@@ -263,9 +336,24 @@ export default {
     attachmentHashes: function() {
       return this.attachments.map(function(a) { return a.hash; });
     },
+    // 同一个输入框承担两种身份：有图时它是"补充说明"，没图时它就是题目本身。
+    // 占位文案跟着变，学生不需要先猜"这个框能不能放题目"。
+    notePlaceholder: function() {
+      if (this.attachments.length) {
+        return this.taskKind === 'grade'
+          ? '补充说明（选填），如：这是第 3 次作业'
+          : '补充说明（选填），如：只讲第 2 问';
+      }
+      return this.taskKind === 'grade'
+        ? '把要批改的作答写进来（可直接粘贴文字）'
+        : '没拍照？直接把题目文字写进来，我照样一步步带你解';
+    },
     canSend: function() {
       if (this.sending) return false;
-      if (!this.attachments.length) return false;
+      // 有新题何苦非得拍照：群里转发的一道文字题、练习册上抄下来的题干，
+      // 都是学生的真实场景。有图或有题目文字都让它可点，
+      // 唯一的底线是不能两者皆空（后端同样这么判，这里是前置提示）。
+      if (!this.attachments.length && !String(this.note || '').trim()) return false;
       if (this.taskKind === 'solve' && this.paperMode === 'cross_page' && this.attachments.length < 2) {
         // 跨页题只有一张图时后端会降级，这里不拦，只是不提示
       }
@@ -273,10 +361,11 @@ export default {
     }
   },
   mounted: function() {
-    this.checkOrientation();
-    window.addEventListener('resize', this.checkOrientation);
-    window.addEventListener('orientationchange', this.checkOrientation);
-
+    // 方向不在这里判：isPortrait / useDrawer 由 mixins/orientation 订阅
+    // utils/device-orientation 的结果。曾经这里另算一份**视口比例**并直接覆写
+    // this.isPortrait（mixin 的同名属性、且不写 html class），于是本页的
+    // `.body.is-portrait` 与 global.css 认的 `html.is-portrait` 会互相打架
+    // —— 屏幕上就是"一半横一半竖"。已移除。
     this.$store.dispatch('auth/fetchWallet').catch(function() {});
     this.loadCapability();
     this.loadModels();
@@ -285,18 +374,18 @@ export default {
     // 从记录页跳过来时带 ?conversation=xxx，直接打开那条记录
     var target = this.$route.query.conversation;
     if (target) this.openConversation(String(target));
+    // 后台可能还挂着一轮生成（学生切走过又回来）：挂上去就能接着看
+    streamSession.attach('study', this);
   },
   beforeDestroy: function() {
-    window.removeEventListener('resize', this.checkOrientation);
-    window.removeEventListener('orientationchange', this.checkOrientation);
-    if (this._abort) this._abort.abort();
+    // ⚠️ 这里**绝不** abort 在途请求 —— 切页面不等于不想生成了。
+    // 请求交给 utils/stream-session 在后台继续消费，回来 attach 时接着显示。
+    // 只有学生主动点「停止生成」才真的掐断（见 stop）。
+    streamSession.detach(this);
+    this.destroyed = true;
+    this.clearServerPoll();
   },
   methods: {
-    checkOrientation: function() {
-      this.isPortrait = window.innerHeight >= window.innerWidth;
-      if (!this.isPortrait) this.drawerOpen = false;
-    },
-
     loadCapability: function() {
       var self = this;
       return this.$http.get('/study/capabilities').then(function(r) {
@@ -318,12 +407,43 @@ export default {
       }).catch(function() {});
     },
 
+    // 历史只认「真正走过拍题 / 批改」的会话：/study/records 以用户消息的
+    // source ∈ (solve, grade) 为判据。此前用 /study/conversations，而对话页
+    // 建的会话也是 study 模式 —— 结果学生在对话页随口问的一句会出现在这里，
+    // 点进去既没有图也没有解答，像是"记录坏了"。
+    // 两条链路各司其职：对话会话归对话页的学习/日常，这里只放有图有解的记录。
     loadConversations: function() {
       var self = this;
-      return this.$http.get('/study/conversations', { params: { limit: 50 } }).then(function(r) {
+      return this.$http.get('/study/records', { params: { limit: 50 } }).then(function(r) {
         if (r.data.code !== 200) return;
-        self.conversations = r.data.data.conversations || [];
+        var items = (r.data.data && r.data.data.items) || [];
+        self.conversations = items.map(function(x) {
+          return {
+            id: x.conversation_id,
+            title: x.title || '（无标题）',
+            type: x.type,
+            thumb_url: x.thumb_url || ''
+          };
+        });
       }).catch(function() {});
+    },
+
+    // 解答正文的唯一写入点：answer 与 answerHtml 必须**一起**改。
+    //
+    // 模板渲染的是 answerHtml（预计算好的 HTML，避免每次重渲染都重新解析
+    // 整篇 Markdown），answer 是原始文本。两者分开写一定会漏 ——
+    // 之前的 bug 就是 openConversation 只写了 answer，点历史题目时
+    // 页面还停在上一次的 answerHtml 上，看起来"没切换"。
+    // 流式路径不走这里（按帧节流写，见 paint），但同样遵守这条不变量。
+    // 答案的唯一写入口。清空答案时必须同时清掉思考过程：
+    // 换了一道题还在显示上一题的推演，比不显示更糟。
+    setAnswer: function(text) {
+      this.answer = text == null ? '' : String(text);
+      this.answerHtml = renderMarkdown(this.answer);
+      // 正文整体换掉了，增量渲染的冻结段作废（不清会与旧冻结段拼在一起）
+      this.answerHtmlFrozen = '';
+      this.reasoning = '';
+      this.reasoningOpen = false;
     },
 
     openConversation: function(id) {
@@ -332,10 +452,18 @@ export default {
         if (r.data.code !== 200) return;
         var msgs = r.data.data.messages || [];
         self.conversationId = id;
-        self.answer = '';
+        self.setAnswer('');
         // 取最后一条助手回复作为解答内容
+        // 必须走 setAnswer：只写 answer 的话 answerHtml 不会更新，
+        // 点历史题目就会"看起来没切换"（曾经的真实 bug）
+        var serverStreaming = false;
         for (var i = msgs.length - 1; i >= 0; i--) {
-          if (msgs[i].role === 'assistant') { self.answer = msgs[i].content; break; }
+          if (msgs[i].role === 'assistant') {
+            self.setAnswer(msgs[i].content);
+            // 服务端还在生成（换设备 / 重开应用回来）→ 下面是轮询补齐
+            serverStreaming = !!msgs[i].streaming;
+            break;
+          }
         }
         // 还原当时的题图
         self.attachments = [];
@@ -357,6 +485,8 @@ export default {
         self.streamError = '';
         self.drawerOpen = false;
         self.$nextTick(function() { self.scrollAnswer(); });
+        // 服务端还在写这一轮 → 轮询到它写完（stream-session 之外的第二条恢复路径）
+        self.pollServerStream(serverStreaming);
       }).catch(function(err) {
         self.$store.dispatch('toast', { message: err.message || '打开失败', type: 'error' });
       });
@@ -369,7 +499,7 @@ export default {
         self.conversations = self.conversations.filter(function(c) { return c.id !== id; });
         if (self.conversationId === id) {
           self.conversationId = '';
-          self.answer = '';
+          self.setAnswer('');
         }
       }).catch(function() {});
     },
@@ -384,7 +514,7 @@ export default {
         };
       });
       // 换图即换题，与拍照路径保持一致
-      this.answer = '';
+      this.setAnswer('');
       this.streamError = '';
       this.conversationId = '';
       void self;
@@ -392,7 +522,7 @@ export default {
 
     removeAttachment: function(hash) {
       this.attachments = this.attachments.filter(function(a) { return a.hash !== hash; });
-      this.answer = '';
+      this.setAnswer('');
     },
 
     // 拍照：上传后直接作为题图（不进选择器，少两步点击）
@@ -436,7 +566,7 @@ export default {
           self.conversationId = '';
         }
 
-        self.answer = '';
+        self.setAnswer('');
         self.$store.dispatch('toast', { message: '已拍照', type: 'success' });
       }).catch(function(err) {
         self.streamError = err.message || '上传失败';
@@ -468,31 +598,156 @@ export default {
     stop: function() {
       if (!this.sending) return;
       this.stopped = true;
+      // 先把这轮标记为结束 —— 否则学生停止后再切走，后台会话会以为它还在生成
+      streamSession.finish();
+      // controller 由后台会话持有：从后台恢复过来的组件自己没有 _abort，
+      // 走 session 才掐得断（两处是同一个 controller，abort 是幂等的）
+      streamSession.abort();
       if (this._abort) this._abort.abort();
+    },
+
+    // ---------- 后台流式会话（切页面不断流）----------
+
+    // 渲染当前答案。流式期间走轻量渲染（renderStream），
+    // 结束 / 中断的收尾那次走完整渲染 —— 公式与图表必须在最后真出来。
+    // answer 与 answerHtml 必须**一起**改（见 setAnswer 的说明），这里是流式路径的唯一出口
+    //
+    // 流式期间另外做**增量**渲染（换写 stream-paint）：冻结已稳定的前缀，
+    // 每帧只重渲染尾巴那一小块。实测长回答的每帧成本因此不再随长度增长。
+    paintStream: function() {
+      if (this.sending) {
+        if (!this._painter) this._painter = createStreamPainter(renderStream);
+        var out = this._painter.update(this.answer);
+        this.answerHtmlFrozen = out.frozen;
+        this.answerHtml = appendStreamCaret(out.tail);
+      } else {
+        this._painter = null;
+        this.answerHtmlFrozen = '';
+        this.answerHtml = renderMarkdown(this.answer);
+      }
+      if (this.atBottom) this.scrollAnswer();
+    },
+
+    // 后台会话每收到一个增量都会回调这里（组件已 detach 时不会回调）
+    _onStreamSync: function() {
+      if (!streamSession.isActive('study')) return;
+      var s = streamSession.getState();
+
+      // 还没接过线（组件是重新挂载的）→ 先把历史与题图补齐
+      if (!this.streamAttached) {
+        if (!this.resuming) this.resumeStream();
+        return;
+      }
+      // 这轮不属于当前打开的记录（学生切去看别的历史了）：只管累积，别动界面
+      if (s.conversationId && this.conversationId && s.conversationId !== this.conversationId) return;
+
+      this.answer = s.text;
+      this.reasoning = s.reasoning;
+      this.sending = !s.done;
+      // 恢复过来的组件没经历过"首字到达"那一刻（判定发生在旧组件里），补撤等待提示
+      if (s.streaming && this.waitText) this.stopWaiting();
+      this.scheduleFrame(this.paintStream);
+    },
+
+    // 从后台会话恢复：把历史（含题图）拉回来，再把累积到现在的正文补上
+    resumeStream: function() {
+      var self = this;
+      var s = streamSession.getState();
+      var load = s.conversationId ? this.openConversation(s.conversationId) : null;
+      this.resuming = true;
+
+      return Promise.resolve(load).then(function() {
+        if (!streamSession.isActive('study')) { self.resuming = false; return; }
+        var st = streamSession.getState();
+        // 学生正在看另一条记录（比如从记录页直接点开的）→ 别把他拽回后台那轮
+        if (self.conversationId && st.conversationId && self.conversationId !== st.conversationId) {
+          self.resuming = false;
+          return;
+        }
+
+        // 取较长的那份：历史里可能已经存了完整版（生成完入库），也可能一行都还没有
+        if (st.text && st.text.length > (self.answer || '').length) self.answer = st.text;
+        if (st.reasoning) self.reasoning = st.reasoning;
+        self.streamAttached = true;
+        self.sending = !st.done;
+        self.stopped = false;
+        self.resuming = false;
+        self.paintStream();
+
+        if (st.done) {
+          self.$store.dispatch('auth/fetchWallet').catch(function() {});
+          self.loadConversations();
+          streamSession.end();
+        } else {
+          self.startWaiting(self.taskKind === 'grade' ? 'grade' : 'study');
+        }
+      });
+    },
+
+    // ---------- 服务端"生成中"的轮询恢复 ----------
+    // 与 Chat 同理：库里那轮还在写、而本地没有活跃后台会话时，隔一会儿拉一次。
+    // 只在 openConversation 发现 streaming=1 时才启动（still 参数）。
+    pollServerStream: function(still) {
+      var self = this;
+      var convId = this.conversationId;
+      this.clearServerPoll();
+      if (!convId || !still) return;
+      // 本地这一轮正在流（后台会话在跑）→ 由它负责，别叠加两套更新
+      if (streamSession.isActive('study')) return;
+
+      this._serverPoll = setInterval(function() {
+        if (!self.conversationId || self.conversationId !== convId) { self.clearServerPoll(); return; }
+        if (streamSession.isActive('study')) { self.clearServerPoll(); return; }
+
+        self.$http.get('/conversations/' + convId).then(function(r) {
+          if (r.data.code !== 200) return;
+          var msgs = r.data.data.messages || [];
+          var last = null;
+          var streaming = false;
+          for (var i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i].role === 'assistant') {
+              last = msgs[i];
+              streaming = !!msgs[i].streaming;
+              break;
+            }
+          }
+          if (last && last.content && last.content !== self.answer) self.setAnswer(last.content);
+          if (!streaming) { self.clearServerPoll(); self.loadConversations(); }
+        }).catch(function() { /* 网络抖动，下一轮再试 */ });
+      }, 1500);
+    },
+
+    clearServerPoll: function() {
+      if (this._serverPoll) {
+        clearInterval(this._serverPoll);
+        this._serverPoll = null;
+      }
     },
 
     start: function() {
       var self = this;
       if (!this.canSend) return;
 
-      this.answer = '';
-      this.answerHtml = '';
+      this.setAnswer('');
       this.streamError = '';
       this.visionStatus = '';
       this.sending = true;
       this.stopped = false;
       this.atBottom = true;
+      // 这一轮交给后台会话托管：切走页面时组件会被销毁，但生成不能断
+      this.streamAttached = true;
+      this.resuming = false;
       // 批改要逐题核对，等待更久，文案分开给（见 utils/waiting.js）
       this.startWaiting(this.taskKind === 'grade' ? 'grade' : 'study');
 
-      // 渲染 + 跟随滚动合并成一次"上色"，交给 rAF 节流（见 mixins/streamFrame）
-      var paint = function() {
-        self.answerHtml = renderMarkdown(self.answer);
-        if (self.atBottom) self.scrollAnswer();
-      };
+      // 渲染 + 跟随滚动合并成一次"上色"，交给 rAF 节流（见 mixins/streamFrame）。
+      // 收口到 paintStream —— 组件重新挂载、从后台会话恢复之后，同一个方法还能接着用
+      var paint = function() { self.paintStream(); };
 
       var controller = new AbortController();
       this._abort = controller;
+      streamSession.begin('study', { conversationId: this.conversationId });
+      streamSession.setController(controller);
 
       var isGrade = this.taskKind === 'grade';
       var url = isGrade ? '/api/study/grade/stream' : '/api/study/solve/stream';
@@ -501,6 +756,7 @@ export default {
           conversation_id: this.conversationId || '',
           model_id: this.modelId || '',
           answer_hashes: this.attachmentHashes,
+          note_ids: this.noteIds,
           content: this.note.trim()
         }
         : {
@@ -508,26 +764,43 @@ export default {
           model_id: this.modelId || '',
           paper_mode: this.paperMode,
           image_hashes: this.attachmentHashes,
+          note_ids: this.noteIds,
           content: this.note.trim()
         };
 
       postStream(url, this.$store.state.auth.token, body, controller.signal).then(function(resp) {
         return readSseStream(resp, {
           onMeta: function(meta) {
-            if (meta.conversation_id) self.conversationId = meta.conversation_id;
+            if (meta.conversation_id) {
+              self.conversationId = meta.conversation_id;
+              // 会话 id 是服务端这一刻才给的，补进后台会话（发起时还不知道）
+              streamSession.setConversationId(meta.conversation_id);
+            }
           },
           onStatus: function(st) {
             if (st.stage === 'vision') self.visionStatus = st.message || '正在识别图片…';
             else if (st.stage === 'vision_done') self.visionStatus = '';
           },
+          onReasoning: function(text) {
+            if (self.waitText) self.stopWaiting();
+            self.reasoning += text;
+            streamSession.feed('', text);
+            // 组件已销毁（学生切走了）→ 别再为看不见的 DOM 排渲染帧
+            if (self.destroyed) return;
+            self.scheduleFrame(paint);
+          },
           onDelta: function(text) {
             // 第一个字一到就撤掉等待提示，别让它和正文并存
             if (self.waitText) self.stopWaiting();
             self.answer += text;
+            // 同步喂给后台会话：组件在不在都照样累积，切走回来才能接着看
+            streamSession.feed(text, '');
+            if (self.destroyed) return;
             // 合并到一帧渲染一次（见 mixins/streamFrame）
             self.scheduleFrame(paint);
           },
           onDone: function(done) {
+            streamSession.finish();
             self.visionStatus = '';
             self.$store.dispatch('auth/fetchWallet').catch(function() {});
             self.loadConversations();
@@ -541,13 +814,16 @@ export default {
             }
           },
           onError: function(message) {
+            streamSession.finish(message);
             self.visionStatus = '';
             self.streamError = message || '处理失败，请重试';
           }
         });
       }).catch(function(err) {
         self.visionStatus = '';
+        // 主动停止的那次在 stop() 里已经 finish 过了，这里不再覆盖
         if (err && err.name === 'AbortError') return;
+        streamSession.finish(err.message);
         self.streamError = err.message || '网络异常，请重试';
         if (err && err.status === 402) {
           self.$store.dispatch('auth/fetchWallet').catch(function() {});
@@ -563,12 +839,17 @@ export default {
         if (self.stopped) {
           self.stopped = false;
           // 一个字都没生成就停了：给个明确交代，否则学生看着空白不知道发生了什么
-          if (!self.answer) self.answer = '（已停止生成）';
+          if (!self.answer) self.setAnswer('（已停止生成）');
+          streamSession.end();
           return;
         }
         if (!self.answer && !self.streamError) {
           self.streamError = '未收到内容，请重试';
         }
+
+        // 学生没切走（组件还活着）→ 这一轮已经展示完了，后台会话可以收摊。
+        // 已经切走了就**不要**收 —— 留着它，回来还要接着看
+        if (!self.destroyed) streamSession.end();
       });
     }
   }
@@ -580,12 +861,18 @@ export default {
   display: flex;
   flex-direction: column;
   height: var(--app-height);
-  padding: var(--gap-md);
+  /* 完全贴边：去掉固定留白，仅保留安全区边距（无刘海设备上为 0） */
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   gap: var(--gap-md);
 }
 html.no-flex-gap .study-page > * + * {
   margin-top: var(--gap-md);
 }
+
+
+
+
+
 
 .body {
   display: grid;
@@ -609,6 +896,11 @@ html.no-flex-gap .sidebar > * + * {
   margin-top: var(--gap-md);
 }
 
+
+
+
+
+
 /* ---------- 模式卡 ---------- */
 .mode-card {
   display: flex;
@@ -621,6 +913,11 @@ html.no-flex-gap .sidebar > * + * {
 html.no-flex-gap .mode-card > * + * {
   margin-top: 8px;
 }
+
+
+
+
+
 
 .mode-card .section-label:not(:first-child) {
   margin-top: 6px;
@@ -674,6 +971,11 @@ html.no-flex-gap .hist-item > * + * {
   margin-left: 6px;
 }
 
+
+
+
+
+
 @media (hover: hover) {
 .hist-item:hover {
   background: var(--ink-1);
@@ -724,13 +1026,13 @@ html.no-flex-gap .hist-item > * + * {
 }
 
 .icon-btn {
-  width: 26px;
-  height: 26px;
+  width: clamp(26px, 17.36px + 0.9vw, 40px);
+  height: clamp(26px, 17.36px + 0.9vw, 40px);
   border: none;
   border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-tertiary);
-  font-size: 15px;
+  font-size: clamp(15px, 12.12px + 0.3vw, 20px);
   line-height: 1;
   cursor: pointer;
 }
@@ -775,6 +1077,11 @@ html.no-flex-gap .pane-head > * + * {
   margin-left: var(--gap-sm);
 }
 
+
+
+
+
+
 .pane-actions {
   display: flex;
   gap: 6px;
@@ -783,6 +1090,11 @@ html.no-flex-gap .pane-head > * + * {
 html.no-flex-gap .pane-actions > * + * {
   margin-left: 6px;
 }
+
+
+
+
+
 
 .pane-body {
   flex: 1;
@@ -808,27 +1120,84 @@ html.no-flex-gap .pane-foot > * + * {
   margin-left: 8px;
 }
 
+
+
+
+
+
 .pane-foot-action {
   align-items: flex-end;
+}
+
+/* 引用的笔记（与对话页同一套观感，改一处要一起改） */
+.note-refs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  flex-shrink: 0;
+}
+html.no-flex-gap .note-refs > * + * {
+  margin-left: 6px;
+}
+
+
+
+
+
+
+.note-refs-label {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.note-ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--accent-border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11.5px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html.no-flex-gap .note-ref-chip > * + * {
+  margin-left: 4px;
+}
+
+
+
+
+
+
+.note-ref-x {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+@media (hover: hover) {
+.note-ref-x:hover {
+  opacity: 1;
+}
 }
 
 .pane-error {
   margin-top: 0;
   margin-bottom: 8px;
   flex-shrink: 0;
-}
-
-.model-select-sm {
-  max-width: 160px;
-  padding: 6px 8px;
-  border: 1px solid var(--ink-3);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  font-family: inherit;
-  font-size: 12px;
-  color: var(--text-secondary);
-  outline: none;
-  cursor: pointer;
 }
 
 /* 拍照按钮：把 <input type=file> 藏进 label 里，做成普通按钮的外观 */
@@ -875,6 +1244,30 @@ html.no-flex-gap .pane-foot > * + * {
   object-fit: contain;
   display: block;
   background: var(--ink-1);
+  cursor: zoom-in;
+}
+
+/* 点开看原图（与错题本同一套写法） */
+.preview-mask {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--gap-lg);
+  background: var(--mask-deep);
+  cursor: zoom-out;
+}
+
+.preview-img {
+  max-width: 94vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: var(--radius-md);
 }
 
 .img-index {
@@ -926,7 +1319,9 @@ html.no-flex-gap .pane-foot > * + * {
 /* ---------- 补充说明输入 ---------- */
 .note-input {
   flex: 1;
-  min-height: 38px;
+  /* 38px 只装得下一行字：占位文案是两句（约两行），
+     矮一点就会切出"半行字"的破相。52px 恰好完整展示两行。 */
+  min-height: 52px;
   max-height: 80px;
   padding: 9px 12px;
   border: 1px solid var(--ink-3);
@@ -962,6 +1357,11 @@ html.no-flex-gap .vision-status > * + * {
   margin-left: 8px;
 }
 
+
+
+
+
+
 .spinner {
   width: 13px;
   height: 13px;
@@ -975,28 +1375,30 @@ html.no-flex-gap .vision-status > * + * {
   to { transform: rotate(360deg); }
 }
 
-.caret {
-  display: inline-block;
-  width: 7px;
-  height: 14px;
-  margin-left: 2px;
-  vertical-align: -2px;
-  background: var(--accent);
-  border-radius: 2px;
-  animation: blink 1s steps(2, start) infinite;
-}
-
-@keyframes blink {
-  to { visibility: hidden; }
-}
+/* 流式光标样式在 global.css（.stream-caret）：三页共用同一份 */
 
 @media (max-width: 900px) {
   .body {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .model-select-sm {
-    max-width: 110px;
+}
+
+/* 极矮屏（如 960×680）：图片栏头部一行要塞下「题目图片」+ 三个按钮，
+   默认的 .btn-sm 内边距会逼着按钮文字折行。压缩按钮并允许头部换行兜底。 */
+@media (orientation: landscape) and (max-height: 700px) {
+  .pane-head {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .pane-head .btn-sm {
+    padding: 6px 10px;
+    font-size: 12.5px;
+  }
+
+  .pane-head .section-label {
+    white-space: nowrap;
   }
 }
 </style>

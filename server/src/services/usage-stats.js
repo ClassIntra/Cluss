@@ -88,16 +88,19 @@ function summary(opts) {
 
   } else if (groupBy === 'user') {
     sql = 'SELECT l.user_id AS key, MAX(u.real_name) AS label, MAX(u.net_name) AS net_name,' +
-      ' MAX(u.class_no) AS class_no, ' + AGG_COLS +
+      ' MAX(u.class_no) AS class_no, MAX(IFNULL(u.is_admin, 0)) AS is_admin, ' + AGG_COLS +
       ' FROM cluss_usage_log l LEFT JOIN users u ON u.user_id = l.user_id' +
       ' WHERE ' + where.join(' AND ') +
       ' GROUP BY l.user_id ORDER BY cost_micro DESC LIMIT 500';
 
   } else {
-    // day：按 UTC 日期分组。substr(created_at,1,10) 比 date() 更稳——
-    // created_at 已经是 UTC 字符串，date() 在某些 sqlite 版本上会做本地化转换
+    // day：按**服务器本地日期**分组。created_at 存的是 UTC，直接 substr 会把
+    // 北京时间早上 8 点前的用量记到"昨天"，与「本月消耗」（本地月）、「峰谷」
+    // （本地钟）口径打架 —— 图表必须跟着墙上的钟走。
+    // 用 substr 包 datetime() 取前 10 位，而不是直接 date()：后者在
+    // 某些 sqlite 版本上会做一次多余的本地化转换
     keyName = false;
-    sql = 'SELECT substr(l.created_at, 1, 10) AS key, ' + AGG_COLS +
+    sql = "SELECT substr(datetime(l.created_at, 'localtime'), 1, 10) AS key, " + AGG_COLS +
       ' FROM cluss_usage_log l WHERE ' + where.join(' AND ') +
       ' GROUP BY key ORDER BY key ASC LIMIT 400';
   }
@@ -121,6 +124,8 @@ function summary(opts) {
     if (groupBy === 'user') {
       shaped.net_name = rows[i].net_name || '';
       shaped.class_no = rows[i].class_no || '';
+      // 管理员（含班管本人）也在榜里 —— 与金额汇总同口径；前端据此加标记
+      shaped.is_admin = rows[i].is_admin === 1 ? 1 : 0;
     }
     list.push(shaped);
     totals.calls += shaped.calls;
@@ -221,6 +226,10 @@ var SOURCE_LABELS = {
   study: '学习',
   solve: '拍题',
   grade: '批改',
+  writing: '作文',
+  writing_generate: '作文',
+  writing_grade: '作文批改',
+  writing_outline: '写作提纲',
   vision_relay: '图片识别'
 };
 
@@ -244,7 +253,7 @@ function studentGroupRow(r) {
     // 分组名：来源类分组翻译成中文（对话/拍题/批改），日期类直接用
     label: SOURCE_LABELS[key] || r.label || key,
     calls: r.calls || 0,
-    cost_points: config.microToPoints(r.cost_micro || 0),
+    cost_points: config.microToPointsExact(r.cost_micro || 0),
     image_count: r.image_count || 0
   };
 }
@@ -253,7 +262,7 @@ function studentTotals(t) {
   var v = t || {};
   return {
     calls: v.calls || 0,
-    cost_points: config.microToPoints(v.cost_micro || 0),
+    cost_points: config.microToPointsExact(v.cost_micro || 0),
     image_count: v.image_count || 0
   };
 }
@@ -266,12 +275,20 @@ function studentRecordRow(r) {
     source_label: sourceLabel(r.source),
     // 会话标题就是学生当初那句提问的前 20 字，比"模型名"有用得多
     title: r.conversation_title || '',
-    cost_points: config.microToPoints(r.cost_micro || 0),
+    cost_points: config.microToPointsExact(r.cost_micro || 0),
     image_count: r.image_count || 0,
     estimated: r.estimated ? 1 : 0
   };
 }
 
+// 学生 CSV 的时间列：转服务器本地时间（与页面显示同口径），不直出 UTC
+function localText(iso) {
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso || '').replace('T', ' ').slice(0, 19);
+  function pad(n) { return n < 10 ? '0' + n : String(n); }
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+    pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
 // 明细导出为 CSV（带 BOM，Excel 打开不乱码）
 //
 // opts.unit: 'yuan'（管理台，默认）| 'points'（学生端）
@@ -287,7 +304,7 @@ function recordsToCsv(items, opts) {
     for (var i = 0; i < items.length; i++) {
       var s = items[i];
       simple.push([
-        String(s.created_at || '').replace('T', ' ').slice(0, 19),
+        localText(s.created_at),
         esc(s.source_label || sourceLabel(s.source)),
         '"' + esc(s.title) + '"',
         (s.estimated ? '约' : '') + (s.cost_points || 0)

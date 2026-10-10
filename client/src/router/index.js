@@ -42,6 +42,12 @@ var routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/notes',
+    name: 'Notes',
+    component: function() { return import('@/views/Notes.vue'); },
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/records',
     name: 'Records',
     component: function() { return import('@/views/Records.vue'); },

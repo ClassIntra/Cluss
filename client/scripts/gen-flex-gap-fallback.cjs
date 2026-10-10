@@ -112,10 +112,30 @@ function buildFallback(rule) {
 }
 
 function applyFallbacks(css) {
+  const rules = scanRules(css);
+
+  // 幂等的前提：**先看看这份样式里已经有哪些回退规则了**。
+  //
+  // 曾经的写法只判断"当前这条规则的**选择器**里有没有 no-flex-gap"，
+  // 那只挡得住"别拿回退规则再生成回退规则"，挡不住"同一条源规则再生成一条"。
+  // 于是每跑一次就往每条源规则后面再插一份 —— 实测跑多了之后
+  // WrongBook.vue 里堆到 108 条，其中 90 条是逐字重复的；Chat.vue 同样 107/89。
+  // 现在按「媒体上下文 + 目标选择器」先去重登记，已有就不再生成。
+  const keys = new Set();
+  for (const r of rules) {
+    if (/^html\.no-flex-gap /.test(r.selector)) {
+      keys.add((r.media || '') + '|' + r.selector.replace(/\s*>\s*\*\s*\+\s*\*\s*$/, ''));
+    }
+  }
+
   const items = [];
-  for (const r of scanRules(css)) {
+  for (const r of rules) {
     const fb = buildFallback(r);
-    if (fb) items.push({ close: r.close, text: fb.text });
+    if (!fb) continue;
+    const key = (r.media || '') + '|html.no-flex-gap ' + r.selector;
+    if (keys.has(key)) continue;   // 这份样式里已经有了
+    keys.add(key);                 // 同一轮里同一目标也只生成一次
+    items.push({ close: r.close, text: fb.text });
   }
   if (!items.length) return { css: css, count: 0 };
 

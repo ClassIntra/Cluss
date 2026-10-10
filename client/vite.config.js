@@ -11,11 +11,45 @@ export default defineConfig({
       '@': path.resolve(__dirname, 'src')
     }
   },
+  // 统一按设备基线降级，避免出现"打包后能用、开发时不能用"（或反过来）这种
+  // 只有真机能暴露的差别。设备基线：Chrome 80 / Android 9 / 微信 X5。
+  esbuild: {
+    target: 'chrome80'
+  },
+  // 预打包的依赖同样按 chrome80 降级：Vite 的依赖优化器默认目标是更新的语法，
+  // 不改这里的话，依赖里带的新语法会在旧内核上解析失败（白屏，且控制台只报语法错）。
+  optimizeDeps: {
+    esbuildOptions: {
+      target: 'chrome80'
+    }
+  },
   server: {
+    // 监听全部网卡，内网其它设备（平板 / 手机 / 另一台电脑）才能用本机 IP 直接打开。
+    // 为什么不能省：Vite 默认 host 是 `localhost`，在本机解析到的是 `::1`（IPv6 回环），
+    // 于是连 `127.0.0.1` 都连不上，更别说内网 IP —— 表现是"服务起来了但别人打不开"。
+    // 只想留本机看：`VITE_DEV_HOST=localhost npm run dev`。
+    host: process.env.VITE_DEV_HOST || true,
+    // 开发服务器自身端口。必须与服务端端口（server/src/config 的默认 9003）区分开，
+    // 两者共用同一个 PORT 环境变量，这里写死避免误读成服务端端口。
     port: 9102,
+    // 端口被占时**直接失败**而不是悄悄换到 9103：一旦漂移，内网那台设备
+    // 按约定 IP:9102 访问就会连不上，而错误只出现在没人看的那台机器上。
+    strictPort: true,
+    // 开发期一律不做强缓存。Vite 默认会给预打包依赖（/node_modules/.vite/deps/*）
+    // 发 `max-age=31536000, immutable`，于是平板那边会攥着旧依赖不放 ——
+    // 改了依赖版本或配置后，设备上跑的还是老代码，且现象是"我明明改好了它没变"。
+    // no-store 是最强的一档：连再验证都省掉，任何一次加载都拿新的。
+    // 代价是每次刷新都要重下依赖（本机走回环无感；内网设备会稍慢），
+    // 调试期要"肯定是新的"比省这点流量重要。
+    headers: {
+      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    },
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:9101',
+        // 服务端默认端口已统一为 9003（见 server/src/config/index.js 与 server/.env）
+        target: 'http://127.0.0.1:9003',
         changeOrigin: true
       }
     }
@@ -25,6 +59,14 @@ export default defineConfig({
     assetsDir: 'assets',
     // 关闭 sourcemap 减小产物体积（低端设备上加载更快）
     sourcemap: false,
-    target: 'es2015'
-  }
+    // 语法降级到 ES2015。注意 esbuild 只降级**语法**，不补运行时 API ——
+    // 缺的那几个由 src/legacy/polyfills.js 补齐（见该文件说明）。
+    target: 'es2015',
+    // CSS 也按 Chrome 80 定目标，且**必须显式写**。
+    // 不写或写 es2015 时，压缩器会把 `top:0;right:0;bottom:0;left:0` 合并成
+    // `inset:0` —— 那是 Chrome 87 的属性，Chrome 80 整条忽略。
+    // 实测踩到：图表查看器浮层 `.chart-viewer` 因此失去定位，点开图表不铺屏。
+    // 写 chrome80 后 esbuild 才肯保留四条属性（实测确认）。
+    cssTarget: 'chrome80'
+  },
 });

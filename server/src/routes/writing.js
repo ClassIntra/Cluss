@@ -84,6 +84,7 @@ router.post('/generate/stream', auth.requireAuth, function(req, res) {
       study_style: 'guided'
     },
     attachmentHashes: normalizeHashes(req.body.image_hashes),
+    noteIds: req.body.note_ids || [],
     task: { kind: 'writing_generate', requiresImage: false, writing: params },
     source: 'writing'
   });
@@ -116,6 +117,7 @@ router.post('/grade/stream', auth.requireAuth, function(req, res) {
       study_style: 'guided'
     },
     attachmentHashes: hashes,
+    noteIds: req.body.note_ids || [],
     task: { kind: 'writing_grade', requiresImage: false, writing: params },
     source: 'writing'
   });
@@ -142,6 +144,7 @@ router.post('/outline/stream', auth.requireAuth, function(req, res) {
       study_style: 'guided'
     },
     attachmentHashes: normalizeHashes(req.body.image_hashes),
+    noteIds: req.body.note_ids || [],
     task: { kind: 'writing_outline', requiresImage: false, writing: params },
     source: 'writing'
   });
