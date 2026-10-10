@@ -219,6 +219,7 @@ CI_JWT_SECRET=<与 ClassIntra 的 JWT_SECRET 一致>   # 填了才支持 token �
 | [ui.md](docs/ui.md)                                 | 界面实现与动效：触屏手感、低端设备性能取舍、深色模式、平板横竖屏  |
 | [architecture.md](docs/architecture.md)             | 目录结构、编排器、技术栈与安全基线                 |
 | [verification.md](docs/verification.md)             | 端到端验证套件、mock 上游与断言清单              |
+| [performance.md](docs/performance.md)               | 性能基线、测量方法与门槛（`npm run perf:gate`）  |
 | [cluss-cloud-design.md](docs/cluss-cloud-design.md) | 中枢上云与 Cluss Cloud 公共中枢设计          |
 
 ---
