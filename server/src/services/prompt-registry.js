@@ -631,7 +631,7 @@ var WRITING_OUTLINE = [
 //
 // 只陈述事实，不做评价：不写"该生数学较差"，只写"数学 5 道待复习"。
 // 判断交给模型，避免系统替学生贴标签。
-function buildProfileSection(p) {
+function buildProfileSection(p, notesReferenced) {
   if (!p) return '';
 
   var lines = [];
@@ -683,9 +683,17 @@ function buildProfileSection(p) {
     lines.join('\n'),
     '用法：当背景用。不要复述给他听，不要说"你某某科不好"，不要当成他已告诉你的信息。',
     '若他正在问的题正好落在「常错类型」里，讲这一类题时可以直接点明他上次栽在哪一步。',
-    '若他正在问的内容他已经记过笔记（见「最近在记 / 笔记分类」），可以直接沿用他自己整理的说法，',
-    '不必从零讲一遍 —— 但要注意：你只知道笔记的标题与分类，并不知道正文，',
-    '别编造笔记里的内容，需要时请他引用那篇笔记。'
+    // ⚠️ 这段措辞必须区分「本轮有没有引用笔记」，两种情况给的话互相矛盾：
+    //   未引用时说"你并不知道正文"是对的（防模型编造）；
+    //   但本轮引用了笔记时，正文就注入在同一条消息的【我引用的笔记】里 ——
+    //   两句话同时出现，模型按更保守的那条执行，学生会听到
+    //   "我看不到你引用的笔记"（实测踩到：引用了笔记 AI 却说看不见）。
+    notesReferenced
+      ? '若他本轮引用了笔记（见这条消息末尾的【我引用的笔记】），那几篇的正文你**看得到**，' +
+        '直接用，不要再说"看不到"。上面"只有标题与分类"只针对**没有**被引用的那部分笔记。'
+      : '若他正在问的内容他已经记过笔记（见「最近在记 / 笔记分类」），可以直接沿用他自己整理的说法，' +
+        '不必从零讲一遍 —— 但要注意：你只知道笔记的标题与分类，并不知道正文，' +
+        '别编造笔记里的内容，需要时请他引用那篇笔记。'
   ].join('\n');
 }
 
@@ -977,7 +985,10 @@ function getSystemPromptParts(opts) {
   // ---- 以下为**逐轮变化段**，一律不进 system（见 getSystemPromptParts 顶部说明）----
   var dyn = [];
 
-  var profile = buildProfileSection(o.studentProfile);
+  // notesReferenced：本轮是否注入了引用笔记的正文（o.noteText 非空）。
+  // 画像里"你并不知道正文"那句要据此改口，否则与注入的正文自相矛盾，
+  // 模型会声称看不到笔记 —— 见 buildProfileSection 里的说明。
+  var profile = buildProfileSection(o.studentProfile, !!o.noteText);
   if (profile) dyn.push(profile);
 
   // ClassIntra 活动素材段：紧跟在画像之后。

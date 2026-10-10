@@ -24,7 +24,8 @@
     "verify:notes": "node scripts/verify-notes-sidebar.cjs",
     "perf:cold": "node scripts/measure-cold-load.cjs",
     "perf:timeline": "node scripts/trace-timeline.cjs",
-    "verify:katex": "node scripts/verify-katex-lazy.cjs"
+    "verify:katex": "node scripts/verify-katex-lazy.cjs",
+    "verify:note-ref": "node scripts/verify-note-ref.cjs"
   },
   "dependencies": {
     "axios": "^1.19.0",

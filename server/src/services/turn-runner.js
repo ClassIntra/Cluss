@@ -190,7 +190,13 @@ function runStreamTurn(ctx) {
   if (requiresImage && !hasImages) {
     return fail(res, 400, '请先选择题目图片');
   }
-  if (!task.kind && !content && !hasImages) {
+  // ⚠️ 空内容判定必须把**引用的笔记**也算作输入 ——
+  //   只引了笔记不写字是完全合法的用法，之前只看文字和图片，
+  //   note-only 的请求被误杀「消息内容不能为空」（实测踩到）。
+  //   客户端 canSend 早已放行，服务端这里却拦下，
+  //   表现为"按钮能点、一发就报错"。
+  var hasNotes = Array.isArray(ctx.noteIds) && ctx.noteIds.length > 0;
+  if (!task.kind && !content && !hasImages && !hasNotes) {
     return fail(res, 400, '消息内容不能为空');
   }
 
@@ -527,6 +533,9 @@ function runStreamTurn(ctx) {
         writing: task.writing || null,
         hasAttachment: attachmentMeta.length > 0,
         studentProfile: profile,
+        // 本轮是否注入了引用笔记正文（非空即真）。画像段"你并不知道笔记正文"
+        // 要据此改口 —— 不然与注入的【我引用的笔记】自相矛盾，模型会声称看不到。
+        noteText: noteText,
         // ClassIntra 侧脱敏活动素材（可能为 null = CI 未联动 / 取不到）
         ciProfile: ciProfile,
         memories: memories,
