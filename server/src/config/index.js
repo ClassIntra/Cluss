@@ -121,7 +121,18 @@ module.exports = {
   ci: {
     bridgeUrl: String(process.env.CI_BRIDGE_URL || '').trim().replace(/\/+$/, ''),
     secret: String(process.env.CI_BRIDGE_SECRET || '').trim(),
-    jwtSecret: String(process.env.CI_JWT_SECRET || '').trim()
+    jwtSecret: String(process.env.CI_JWT_SECRET || '').trim(),
+    // CI 的 RS256 **公钥**（PEM，换行用 \n 或直接贴多行）。
+    //
+    // 为什么要有这个：jwtSecret 是**对称共享密钥**，持有它的一方都能自签
+    // 任意 payload —— 于是任何持有者都能伪造出 is_admin 的 token 改写本地
+    // 账号的管理标志（见 middleware/auth.js 的 syncCiAdminFlag 说明）。
+    // 改成非对称签名后，Cluss 只拿公钥：能验真，**但造不出假**。
+    //
+    // 两者可以并存：配了公钥就优先用公钥验，同时保留共享密钥兜底，
+    // 这样 CI 可以分步切换（先在 Cluss 配公钥、再让 CI 改用私钥签名），
+    // 切换期间联登不会中断。全部留空则联动关闭。
+    jwtPublicKey: String(process.env.CI_JWT_PUBLIC_KEY || '').trim().replace(/\\n/g, '\n')
   },
 
   aiSeed: {
