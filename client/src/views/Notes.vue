@@ -137,7 +137,7 @@
           :class="{ 'is-open': drawerOpen }"
           :style="drawerStyle"
         >
-          <div class="sidebar-top">
+          <div class="sidebar-top glass sidebar-card">
             <div class="sidebar-search">
               <i class="fa-solid fa-magnifying-glass sidebar-search-icon"></i>
               <input
@@ -151,7 +151,7 @@
 
           <!-- 文件夹下拉带篇数：不然新建一个文件夹切进去是空的，
                分不清「刚建还没放东西」和「功能坏了」 -->
-          <div class="folder-bar">
+          <div class="folder-bar glass sidebar-card">
             <select v-model="activeFolder" class="folder-select">
               <option v-for="f in folders" :key="f" :value="f">{{ f }}（{{ folderCounts[f] || 0 }}）</option>
             </select>
@@ -170,7 +170,7 @@
             </button>
           </div>
 
-          <div class="sidebar-file-list scrollbar-thin" :class="{ 'has-vlist': filteredFiles.length > 30 }">
+          <div class="sidebar-file-list sidebar-file-card glass scrollbar-thin" :class="{ 'has-vlist': filteredFiles.length > 30 }">
             <!--
               虚拟滚动：只渲染可视区附近的条目。
 
@@ -234,12 +234,8 @@
             </div>
           </div>
 
-          <div class="sidebar-bottom">
-            <button class="sidebar-paste-btn" @click="pasteFromClipboard" title="从剪贴板粘贴">
-              <i class="fa-solid fa-clipboard"></i>
-              <span>粘贴创建</span>
-            </button>
-            <button class="sidebar-paste-btn" @click="showCloudPanel = true" title="云端笔记">
+          <div class="sidebar-bottom glass sidebar-card">
+            <button class="sidebar-entry" @click="showCloudPanel = true" title="云端笔记">
               <i class="fa-solid fa-cloud"></i>
               <span>云端笔记</span>
             </button>
@@ -2936,38 +2932,6 @@ showFileMenuModal: false,
         apply();
       }
     },
-    pasteFromClipboard: function() {
-      var self = this;
-      if (navigator.clipboard && window.isSecureContext && navigator.clipboard.readText) {
-        navigator.clipboard.readText().then(function(text) {
-          if (!text) {
-            self.$store.commit('SHOW_TOAST', { message: '剪贴板为空', type: 'error' });
-            return;
-          }
-          var newFile = {
-            id: generateId(),
-            title: '粘贴笔记 - ' + new Date().toLocaleDateString(),
-            content: text,
-            tags: [],
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            isPrivate: false,
-            canvasData: [],
-            templateId: 'blank',
-            versions: [],
-            folder: self.targetFolder()
-          };
-          self.files.unshift(newFile);
-          self.activeFileId = newFile.id;
-          self.saveData();
-          self.$store.commit('SHOW_TOAST', { message: '已从剪贴板创建笔记', type: 'success' });
-        }).catch(function() {
-          self.$store.commit('SHOW_TOAST', { message: '无法读取剪贴板', type: 'error' });
-        });
-      } else {
-        self.$store.commit('SHOW_TOAST', { message: '浏览器不支持剪贴板读取', type: 'error' });
-      }
-    },
     highlightSearch: function(text) {
       var self = this;
       if (!self.searchQuery || self.searchQuery.indexOf('#') === 0) {
@@ -4190,17 +4154,52 @@ html.no-flex-gap .create-menu-item > * + * {
 
 .notes-sidebar {
   width: var(--sidebar-w);
-  background: var(--glass-bg);
+  /* 侧栏本身**透明**，内容分块装进 glass 卡片 —— 与对话页同一套层次。
+     原来这里给整个侧栏铺一层 --glass-bg 毛玻璃，于是：
+       对话页：透明底 + 若干独立卡片（有圆角、阴影、层次）
+       笔记页：一整块大玻璃，控件直接摊在上面（无圆角、无层次）
+     同一位置两种做法，学生来回切页会觉得「笔记的文件栏不像别的页面」。
+     实测数据（server/scripts/audit-sidebar-visual.cjs）：
+       对话页 2 个子块全部 glass/20px 圆角/有阴影
+       笔记页 4 个子块全部透明/0px 圆角/无阴影
+     玻璃拟态本身也更适合「铺在固定装饰背景上的卡片」，
+     整块大玻璃会让里面的文字与背后渐变叠在一起、对比度变差。 */
   border-right: 0.5px solid var(--menu-border);
   backdrop-filter: var(--glass-blur-container);
   -webkit-backdrop-filter: var(--glass-blur-container);
   display: flex;
   flex-direction: column;
+  gap: var(--gap-md);
+  padding: var(--gap-md);
   flex-shrink: 0;
   box-shadow: var(--shadow-sm);
   z-index: 20;
   /* 收起 / 展开文件栏时宽度做过渡，编辑区随之铺满 */
   transition: width var(--duration-normal) var(--ease-standard);
+}
+html.no-flex-gap .notes-sidebar > * + * {
+  margin-top: var(--gap-md);
+}
+
+/* 文件栏里的三块内容：搜索 / 文件夹栏 / 列表，统一成卡片。
+   padding 16px、圆角 --radius-lg —— 直接照对话页的 wallet-card / conv-panel 规格，
+   不要自己另定一套，那是「不统一」的开始。 */
+.sidebar-card {
+  padding: 16px;
+  border-radius: var(--radius-lg);
+}
+
+/* 列表卡片要吃掉剩余高度，否则它后面的「新建笔记」按钮会被顶到列表下面。
+   padding 与对话页的 wallet-card / conv-panel 保持 16px ——
+   「统一」不只是有卡片，卡片内边距也要一样，
+   否则三个 20px 圆角的卡片并排却有两种内缩，看着仍然不像一套。 */
+.sidebar-file-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  border-radius: var(--radius-lg);
 }
 
 /* 手动收起文件栏：宽度归零并裁剪内容，把横向空间让给编辑区 */
@@ -4360,7 +4359,8 @@ html.no-flex-gap .sidebar-top > * + * {
 .sidebar-file-list {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 12px;
+  /* 内边距由 .sidebar-file-card 提供，这里不再重复加 ——
+     两层 padding 叠加会让列表比卡片内容区窄一截，右侧留白比左边宽。 */
 }
 
 /* 虚拟列表接管滚动后，.sidebar-file-list 自己不能再滚 ——
@@ -4375,12 +4375,11 @@ html.no-flex-gap .sidebar-top > * + * {
   overflow-y: hidden;
 }
 
-/* 虚拟列表容器：内边距从 .sidebar-file-list 挪到这里 ——
-   外层若还留着 padding，占位 div（上下两条撑高度的）也会被撑开，
-   导致总高度多出两个 padding，滚动条比例失真。 */
+/* 虚拟列表容器：内边距由 .sidebar-file-card 提供，这里**不能再加**。
+   占位 div（上下两条撑总高度的）也会被 padding 撑开，
+   一旦这里再加一份，总高度就多出两个 padding，滚动条比例会失真。 */
 .file-list-virtual {
   height: 100%;
-  padding: 4px 12px;
 }
 
 .file-item {
@@ -4499,8 +4498,10 @@ html.no-flex-gap .sidebar-empty > * + * {
 }
 
 .sidebar-bottom {
-  padding: 8px 12px;
-  border-top: 0.5px solid var(--menu-border);
+  padding: 16px;
+  /* 原来用 border-top 把「操作区」与「列表」分开。
+     改成卡片布局后，卡片之间的 gap 已经承担了分隔作用，
+     这条线会变成「卡片里还画了一条分隔线」的双重边界，看着多余。 */
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -4514,7 +4515,7 @@ html.no-flex-gap .sidebar-bottom > * + * {
 /* 底部三行：与上面的控件同高 44px（原来 37px，同一列最后一段又矮一截）。
    保持透明底 —— 它们是「入口」不是「输入控件」，和上面那排实底控件分工不同，
    不硬凑成一种材质。 */
-.sidebar-paste-btn {
+.sidebar-entry {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -4529,12 +4530,12 @@ html.no-flex-gap .sidebar-bottom > * + * {
   background: none;
   transition: background var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard);
 }
-html.no-flex-gap .sidebar-paste-btn > * + * {
+html.no-flex-gap .sidebar-entry > * + * {
   margin-left: 8px;
 }
 
 @media (hover: hover) {
-  .sidebar-paste-btn:hover {
+  .sidebar-entry:hover {
     background: var(--accent-soft);
     color: var(--accent);
   }
@@ -6371,7 +6372,7 @@ html.no-flex-gap .chart-preview-empty > * + * {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 12px 8px;
+  padding: 0;
   flex-shrink: 0;
 }
 html.no-flex-gap .folder-bar > * + * {

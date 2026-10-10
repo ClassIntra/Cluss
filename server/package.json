@@ -19,7 +19,9 @@
     "perf:real-data": "node scripts/perf-real-data.cjs",
     "perf:nav": "node scripts/measure-nav-perf.cjs",
     "verify:touch": "node scripts/verify-touch-target.cjs",
-    "audit:visual": "node scripts/audit-visual.cjs"
+    "audit:visual": "node scripts/audit-visual.cjs",
+    "audit:sidebar": "node scripts/audit-sidebar-visual.cjs",
+    "verify:notes": "node scripts/verify-notes-sidebar.cjs"
   },
   "dependencies": {
     "axios": "^1.19.0",
