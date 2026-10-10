@@ -80,11 +80,12 @@ router.post('/register', function(req, res) {
   var schoolName = String(b.school_name || '').trim().slice(0, 40);
   var region = String(b.region || '').trim().slice(0, 40);
   var netName = String(b.admin_net_name || '').trim().slice(0, 20);
-  var realName = String(b.admin_real_name || '').trim().slice(0, 20);
+  // 真实姓名**刻意不收**（PII 做减法，设计文档 §4.1）：库字段非空，用用户名兜底
+  var realName = String(b.admin_real_name || '').trim().slice(0, 20) || netName;
   var password = String(b.admin_password || '');
 
   if (schoolName.length < 2) return res.status(400).json({ code: 400, message: '请填写学校名称（至少 2 个字）' });
-  if (!netName || !realName) return res.status(400).json({ code: 400, message: '请填写管理员的用户名与姓名' });
+  if (!netName) return res.status(400).json({ code: 400, message: '请填写管理员用户名' });
   if (password.length < 8) return res.status(400).json({ code: 400, message: '管理员密码至少 8 位' });
 
   var dupOrg = db.prepare('SELECT id FROM cluss_orgs WHERE name = ?').get(schoolName);
@@ -98,14 +99,16 @@ router.post('/register', function(req, res) {
     return res.status(400).json({ code: 400, message: strength.message || '密码强度不足' });
   }
 
-  // 学校编号：10 位 base32（不可枚举），冲突则重掷
-  var orgId = randomCode(10);
+  // 学校编号：6 位去混淆字符（约 7 亿组合）。id 只用于定位学校，本身不是
+  // 凭证 —— 准入靠 24 位接入密钥（约 118 bit），所以 id 短一点方便填写
+  var orgId = randomCode(6);
   while (db.prepare('SELECT id FROM cluss_orgs WHERE id = ?').get(orgId)) orgId = randomCode(10);
 
-  // 管理员编号：9 开头 8 位数字（与学生学号段不冲突，唯一性循环保证）
+  // 管理员编号：5 位短号（9 + 4 位数字）。学号是 6 位，串长不同天然不冲突；
+  // 登录用用户名或编号都行，编号只是「忘了用户名时的备用凭据」
   var adminId = '';
   for (var tries = 0; tries < 20; tries++) {
-    var cand = '9' + String(crypto.randomInt(0, 100000000)).padStart(7, '0');
+    var cand = '9' + String(crypto.randomInt(0, 10000)).padStart(4, '0');
     if (!db.prepare('SELECT user_id FROM users WHERE user_id = ?').get(cand)) { adminId = cand; break; }
   }
   if (!adminId) return res.status(500).json({ code: 500, message: '编号分配失败，请重试' });

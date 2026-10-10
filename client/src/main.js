@@ -8,6 +8,7 @@ import App from './App.vue';
 import router from './router';
 import store, { showToast } from './store';
 import api from './utils/api';
+import { fmtLocal } from './utils/fmt-time';
 import { applyToDom } from './store/theme';
 import { startOrientation } from './utils/device-orientation';
 import './styles/global.css';
@@ -26,6 +27,16 @@ startOrientation();
 
 // 挂到原型：组件内用 this.$http 统一走带鉴权与错误净化的实例
 Vue.prototype.$http = api;
+
+// 时间格式化也挂全局：它只有 30 行，却被 6 个页面 import。
+// 每次 import 都会让 Rollup 为它单独切一个 chunk —— 实测冷加载管理台时，
+// fmt-time 这个 30 行的模块单独占了 60ms 主线程（一次请求 + 一次解析 +
+// 一个模块边界，收益不到 1KB）。挂在原型上则直接进主包，零额外开销。
+//
+// ⚠️ fmt-time.js 本身**不要删**：它仍是时间的**唯一实现**，
+// 这里只是改变分发方式。保留单点实现是为了防止各页各写一份又漂移
+//（这个坑项目里已经踩过，见 fmt-time.js 开头的说明）。
+Vue.prototype.$fmtLocal = fmtLocal;
 
 // 探测 flex 容器是否支持 gap（Chrome 84 才支持，设备基线是 Chrome 80）。
 // 不支持时给 <html> 加 .no-flex-gap，由 gen-flex-gap-fallback.cjs 生成的回退规则接手。

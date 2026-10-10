@@ -98,10 +98,15 @@ function touchNode(req, orgId) {
   ).get(instanceId, orgId);
   if (existing) {
     if (existing.status === 'revoked') return { revoked: true };
+    // 头缺席时保留旧值：显式 /org/join 写入的 node_version 不该被没带头的
+    // 老客户端抹掉；版本号 0 = 从未应用，同样不覆盖
     db.prepare([
-      'UPDATE cluss_nodes SET last_seen_at = ?, last_assign_version = ?,',
-      'last_model_version = ?, node_version = ? WHERE instance_id = ? AND org_id = ?'
-    ].join('\n')).run(now, assignV, modelV, nodeV, instanceId, orgId);
+      'UPDATE cluss_nodes SET last_seen_at = ?,',
+      '  last_assign_version = CASE WHEN ? > 0 THEN ? ELSE last_assign_version END,',
+      '  last_model_version = CASE WHEN ? > 0 THEN ? ELSE last_model_version END,',
+      "  node_version = CASE WHEN ? != '' THEN ? ELSE node_version END",
+      'WHERE instance_id = ? AND org_id = ?'
+    ].join('\n')).run(now, assignV, assignV, modelV, modelV, nodeV, nodeV, instanceId, orgId);
     return { revoked: false };
   }
 

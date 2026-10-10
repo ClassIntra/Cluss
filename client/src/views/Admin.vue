@@ -767,7 +767,6 @@ import Segmented from '@/components/Segmented.vue';
 import UsageChart from '@/components/UsageChart.vue';
 import ModelForm from '@/components/ModelForm.vue';
 import SourceForm from '@/components/SourceForm.vue';
-import { fmtLocal } from '@/utils/fmt-time';
 
 var SOURCE_LABELS = {
   chat: '对话', study: '学习', solve: '拍题', grade: '批改', vision_relay: '图片识别'
@@ -1320,11 +1319,11 @@ export default {
 
     // 限免徽标 / 流水时间：UTC ISO → 本地可读时间（统一走 utils/fmt-time）
     formatTime: function(iso) {
-      return fmtLocal(iso);
+      return this.$fmtLocal(iso);
     },
 
     formatTimeShort: function(iso) {
-      return fmtLocal(iso, { short: true });
+      return this.$fmtLocal(iso, { short: true });
     },
 
     // 库存单价（微元/千 token）→ 元/百万 token 展示（2000 → 2，40 → 0.04）

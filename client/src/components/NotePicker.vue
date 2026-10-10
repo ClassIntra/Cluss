@@ -67,7 +67,6 @@
 // 与 CloudPicker 刻意分成两个组件：
 //   云盘选的是"文件"（按 hash），笔记选的是"笔记"（按 id，带标题与标签）。
 //   语义不同、数据源不同、展示也不同（笔记没有缩略图，标题才是关键信息）。
-import { fmtLocal } from '@/utils/fmt-time';
 
 export default {
   name: 'NotePicker',
@@ -181,7 +180,7 @@ export default {
     },
 
     formatDate: function(iso) {
-      return fmtLocal(iso);
+      return this.$fmtLocal(iso);
     }
   }
 };

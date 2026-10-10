@@ -311,7 +311,6 @@
 import AppNav from '@/components/AppNav.vue';
 import Segmented from '@/components/Segmented.vue';
 import { renderMarkdown } from '@/utils/markdown';
-import { fmtLocal } from '@/utils/fmt-time';
 import mermaidCharts from '@/mixins/mermaid';
 
 export default {
@@ -666,7 +665,7 @@ export default {
     },
 
     formatTime: function(iso) {
-      return fmtLocal(iso);
+      return this.$fmtLocal(iso);
     }
   }
 };

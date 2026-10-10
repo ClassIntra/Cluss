@@ -131,7 +131,6 @@
 </template>
 
 <script>
-import { fmtLocal } from '@/utils/fmt-time';
 import AppNav from '@/components/AppNav.vue';
 import Segmented from '@/components/Segmented.vue';
 import UsageChart from '@/components/UsageChart.vue';
@@ -235,7 +234,7 @@ export default {
     // 分组的可读名与「类型」的中文都由服务端给（见 usage-stats 的 student* 系列），
     // 前端不再自己维护一份映射表 —— 两处各写一份迟早会不一致。
     formatTime: function(iso) {
-      return fmtLocal(iso, { short: true });
+      return this.$fmtLocal(iso, { short: true });
     }
   }
 };

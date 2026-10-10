@@ -84,7 +84,6 @@
 <script>
 import AppNav from '@/components/AppNav.vue';
 import Segmented from '@/components/Segmented.vue';
-import { fmtLocal } from '@/utils/fmt-time';
 
 export default {
   name: 'RecordsView',
@@ -167,7 +166,7 @@ export default {
     },
 
     formatTime: function(iso) {
-      return fmtLocal(iso);
+      return this.$fmtLocal(iso);
     }
   }
 };

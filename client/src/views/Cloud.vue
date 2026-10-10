@@ -91,7 +91,6 @@
 </template>
 
 <script>
-import { fmtLocal } from '@/utils/fmt-time';
 import AppNav from '@/components/AppNav.vue';
 import Segmented from '@/components/Segmented.vue';
 
@@ -253,7 +252,7 @@ export default {
     },
 
     formatDate: function(iso) {
-      return fmtLocal(iso);
+      return this.$fmtLocal(iso);
     }
   }
 };

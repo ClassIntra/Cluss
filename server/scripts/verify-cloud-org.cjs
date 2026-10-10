@@ -117,9 +117,10 @@ function main() {
     db.prepare('UPDATE users SET is_admin = 1 WHERE user_id = ?').run(ADMIN_ID);
 
     section('① 注册学校 A / B');
+    // 真实姓名不再收集：注册只收 学校名/用户名/密码（024 后的 PII 减法）
     return axios.post(relayUrl + '/api/org/register', {
       school_name: '第一中学', region: '测试省', admin_net_name: 'yzAdmin',
-      admin_real_name: '一中管理员', admin_password: 'yz-admin-pass-123'
+      admin_password: 'yz-admin-pass-123'
     }, { timeout: 5000 });
   }).then(function(resp) {
     ok('学校 A 注册成功', resp.data.code === 200 && resp.data.data.org_id, JSON.stringify(resp.data.message));
@@ -127,7 +128,7 @@ function main() {
 
     return axios.post(relayUrl + '/api/org/register', {
       school_name: '第二中学', region: '测试省', admin_net_name: 'ezAdmin',
-      admin_real_name: '二中管理员', admin_password: 'ez-admin-pass-123'
+      admin_password: 'ez-admin-pass-123'
     }, { timeout: 5000 });
   }).then(function(resp) {
     ok('学校 B 注册成功', resp.data.code === 200 && resp.data.data.org_id !== global.orgA.org_id);

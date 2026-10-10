@@ -73,34 +73,57 @@ export default {
     // 空闲时把其余页面的代码先拉下来。
     //
     // 为什么需要：所有页面都是异步组件（router 里一律 import()），
-    // 首次点某个标签要现场下载它的 chunk —— Notes 243KB、Chat 41KB，
+    // 首次点某个标签要现场下载它的 chunk —— Notes 243KB / Chat 41KB，
     // 在平板的移动网络上这一下就是好几秒的空白，体感就是「点击没反应」。
     //
-    // 为什么用 requestIdleCallback 而不是 mounted 里直接 import：
-    // 首屏还在渲染、正在跑 mermaid/katex 初始化，这时候抢主线程会把
-    // 首屏也拖慢。空闲回调里做，既不抢首屏，又能保证大部分时候
-    // 在用户点之前就下好了。
+    // ⚠️ 但这一段曾经**把首屏拖慢了 1.5 秒**（实测 LCP 1.3s → 2.76s）：
+    //   原实现是 mounted 里就 requestIdleCallback(fn, { timeout: 3000 }) ——
+    //   timeout 的意思是「主线程一直忙也强制在 3 秒后跑」。而冷加载时
+    //   主线程恰恰一直忙（下载 chunk、跑 mermaid/katex、渲染），
+    //   于是 7 个页面 chunk 在首屏渲染期间被一次性全量拉下来，
+    //   实测占用主线程 1549ms，把首屏的绘制挤到最后。
+    //   管理台尤其惨：LCP 元素是名册卡片里的一句说明文字 ——
+    //   因为在那之前整个卡片区都还是空的。
+    //
+    // 现在改成两道保险：
+    //   1. 等首屏**真正画完**（requestAnimationFrame 两次）才开始，
+    //      而不是 mounted 就挂上
+    //   2. 逐个串行加载，每个之间让出一次主线程，
+    //      且**不设 timeout** —— 忙就等着，宁可晚点预取也不抢首屏
+    //      （预取晚 3 秒没人察觉，首屏慢 1.5 秒人人可感）
     //
     // 失败静默：预取是纯优化，取不到就退化成原来的「点的时候再下」，
     // 不该因为它影响任何功能。
     prefetchRoutes: function() {
-      var self = this;
-      var run = function() {
-        navItems.forEach(function(item) {
-          if (!item.chunk) return;
-          // import() 失败会返回 rejected promise，这里吞掉即可
-          var p = item.chunk();
-          if (p && p.catch) p.catch(function() {});
-        });
-      };
+      var list = navItems.filter(function (item) { return !!item.chunk; });
+      var index = 0;
 
-      if (typeof window.requestIdleCallback === 'function') {
-        var idle = window.requestIdleCallback(run, { timeout: 3000 });
-      } else {
-        // 旧内核（Chrome 80 有 requestIdleCallback，但个别 WebView 壳可能没有）
-        setTimeout(run, 1200);
+      function prefetchOne() {
+        if (index >= list.length) return;
+        var item = list[index++];
+        // import() 失败会返回 rejected promise，吞掉即可
+        var p = item.chunk();
+        if (p && p.catch) p.catch(function () {});
+        // 让出一次主线程再取下一个：一次只压一个 chunk 进来，
+        // 避免七个一起解析把某个交互卡住
+        scheduleIdle(prefetchOne);
       }
-      void self;
+
+      function scheduleIdle(fn) {
+        if (typeof window.requestIdleCallback === 'function') {
+          // 不传 timeout —— 忙就等着
+          window.requestIdleCallback(fn);
+        } else {
+          setTimeout(fn, 300);
+        }
+      }
+
+      // 等首屏画完（两次 rAF = 浏览器已经提交了这一帧）再开始
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          scheduleIdle(prefetchOne);
+        });
+      });
     }
   },
   beforeDestroy: function() {
