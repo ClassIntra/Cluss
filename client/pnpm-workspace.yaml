@@ -1,0 +1,10 @@
+# pnpm 构建脚本放行清单
+#
+# pnpm 10 起，依赖的 install/postinstall 脚本默认不执行，必须显式放行。
+# 这里放行 esbuild：vite 依赖它，安装时要落地平台二进制（@esbuild/win32-x64 等），
+# 不放行的话构建会报 "esbuild binary is missing"。
+#
+# ⚠️ 若以后升级 vite/esbuild 后出现新的构建类依赖，需在此补一行 true，
+#    否则会出现「本机装好了、换台机器装就崩」的隐蔽故障。
+allowBuilds:
+  esbuild: true
