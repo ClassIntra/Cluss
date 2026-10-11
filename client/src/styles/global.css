@@ -20,7 +20,13 @@
 
   /* 漂浮层底（下拉菜单、右键菜单等「没有遮罩、直接盖在内容上」的浮层）。
      玻璃拟态只适合铺在固定装饰背景上的卡片；盖在任意内容上时 0.7 的透明度
-     会让下层文字透出来，读不清。浮层必须近不透明，靠投影分层。 */
+     会让下层文字透出来，读不清。浮层必须近不透明，靠投影分层。
+
+     ⚠️ 别拿 --surface-1/2/3 当浮层背景 —— 那是「层叠表面」：
+     卡片浮在页面背景上，0.8/0.9 的透明度恰好让层次看得见，那是对的；
+     同一个值盖在正文上就成了「这个菜单怎么是透明的」。
+     深色下更糟：--surface-2 是 rgba(255,255,255,0.08)，只有 8% 的白。
+     （Notes 的 5 个菜单曾这么写，被学生一眼看出来「和别处格格不入」） */
   --menu-bg: rgba(255, 255, 255, 0.98);
   --menu-border: rgba(31, 41, 72, 0.12);
 
@@ -751,7 +757,13 @@ a:focus-visible,
 .tab-item:focus-visible,
 .menu-item:focus-visible,
 .input:focus-visible,
-.select:focus-visible {
+.select:focus-visible,
+/* 列表行 / 卡片这一批"被改造成按钮"的元素（会话行、历史记录行、笔记文件行、
+   记录卡片、云盘格子…）：它们不在上面的类名清单里，但既然给了 tabindex
+   让它们可聚焦，就必须给它们一致的焦点环 —— 否则 Tab 走过去屏幕上毫无提示。
+   用属性选择器一次覆盖：这类元素只会越来越多，逐个列类名必然漏。 */
+[role="button"]:focus-visible,
+[tabindex="0"]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -1147,10 +1159,16 @@ html.no-flex-gap .mermaid-skeleton > * + * {
   border-radius: 50%;
   border: 2px solid var(--ink-4);
   border-top-color: var(--accent);
-  animation: mermaid-spin 0.8s linear infinite;
+  animation: spin 0.8s linear infinite;
 }
 
-@keyframes mermaid-spin {
+/* 全站唯一的一份旋转动画。
+   原先有 4 份等价定义：Chat / Study / Writing 各写了一份 `spin`，
+   这里还有一份 `mermaid-spin` —— 四份内容完全一样（都是
+   `to { transform: rotate(360deg) }`）。同一效果抄四遍的代价是
+   改一次要记得改四处，而且很难知道有没有漏。
+   统一成这一份，各页面直接 `animation: spin …` 引用。 */
+@keyframes spin {
   to { transform: rotate(360deg); }
 }
 
@@ -1390,23 +1408,35 @@ html.no-flex-gap .chart-viewer-actions > * + * {
   z-index: 2;
 }
 
-/* ⚠️ leave 页**不能**用 position: absolute —— 这是切页卡顿的根因。
-   绝对定位会让整个页面在动画期间脱离文档流，于是每帧都要重新布局：
-   页面里有多少元素就重排多少（Notes.vue 有 7000+ 行 DOM、AppNav 700 行），
-   而 transform/opacity 本来是合成器能独立处理、不触发重排的属性，
-   被 absolute 一搅就退化成「每帧重排 + 重绘 + 合成」，平板上直接掉帧。
-
-   正确做法：让两页都在文档流里，用**负 margin 把 leave 页拉出可视区**。
-   margin 变化同样会触发重排，但它只发生**一次**（进出场开始时），
-   而绝对定位方案的「脱离文档流」会让浏览器在整段动画里持续重算。
-   动画过程中只有 transform 在动 —— 那才是合成器能独立吃下的部分。
-*/
+/* ⚠️ leave 页的定位：两个坑都在这里踩过，按下面的写法来。
+ *
+ * 坑一：不能用 `margin-top: -10000px` 把离场页「拉出视口」——
+ *   **页面自身的背景会跟着一起移走**。本项目每个页面根容器都铺着
+ *   不透明底（glass 卡片 / 渐变底），于是离场页移走的瞬间，
+ *   新页还处在 opacity:0（未显示），视口里什么都不剩，
+ *   只剩 html 的底色 —— 深色模式下那是 #14161d（近黑），就是「黑屏」；
+ *   浅色下是 #eef1f8，看着像「闪一下白」，同样不好看。
+ *   实测特征：容器高度全程稳定（不是塌陷），但画面里两页都不在。
+ *
+ * 坑二：也不能让两页都留在文档流里各占一段高度 ——
+ *   切换瞬间高度翻倍，页面会「长高再缩回」，比黑屏更明显。
+ *
+ * 现在这样：absolute 让两页**叠在同一位置**（enter 页 z-index 更高盖住
+ * leave 页），高度由 enter 页撑开，与切换前一致。
+ *
+ * 为什么 absolute 不会重新引入卡顿：
+ *   absolute 本身**不**逐帧重排 —— 触发重排的是「脱离文档流导致文档高度
+ *   每帧变化、引起整页回流」。这里两页叠放、文档高度始终由 enter 页决定，
+ *   动画期间只有 transform/opacity 在动，而它们跑在合成器上，不触发布局。
+ *   早期卡顿的真正元凶是「离场页被拉出视口 → 文档高度突变 → 整页重排」。
+ */
 .page-slide-left-leave-active,
 .page-slide-right-leave-active,
 .page-fade-leave-active {
-  position: relative;
-  /* 拉到视口外而不是 display:none —— 后者会让高度塌陷、页面跳一下 */
-  margin-top: -10000px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
   z-index: 1;
   /* 离场期间禁止指针事件：否则旧页还能被点到，点到看不见的元素上 */
   pointer-events: none;
@@ -1473,10 +1503,114 @@ html.no-flex-gap .chart-viewer-actions > * + * {
  * - animation-duration 保留 0.01ms：它不参与布局测量，且保留一个非零时长
  *   可以让 animationend 事件照常触发，万一有依赖它的收尾逻辑不会被挂住。
  */
+/* ---------- 列表淡入：list-fade ----------
+   用法：把列表容器用 <transition name="list-fade"> 包起来，
+   外层保留"读取中…"的占位。
+
+   为什么需要它：数据到达时，界面是"一片空白 → 一屏卡片"的硬切换。
+   这种突变会让人下意识觉得界面"闪了一下"（哪怕数据来得很慢、
+   他其实一直在等）。渐入 200ms 让这次变化有个交代 ——
+   更重要的是，它让学生能分清"正在加载"和"已经加载完了"。
+
+   只动 opacity：列表里元素多，带 transform 的入场在低端设备上
+   会让整屏同时做合成层变换，代价不划算。 */
+.list-fade-enter-active {
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+
+.list-fade-enter {
+  opacity: 0;
+}
+
+/* 列表页的"数据到达"淡入：.list-wrap 里的直接子元素在被**创建**时播一次。
+   触发点是 v-if 的切换（"读取中…" 的占位 → 真正的列表容器），
+   所以它天然只在数据到达那一刻播放；
+   翻页时容器是复用（key 不变）的，不会重播、不会整屏闪。
+
+   ⚠️ 这是 CSS animation 而不是 transition 的关键原因：
+     animation 只在元素创建时跑一次，transition 则需要属性变化来触发 ——
+     用 transition 的话每次重渲染都得比对状态，且容易误触发。 */
+.list-wrap > * {
+  animation: listIn var(--dur-base) var(--ease-out);
+}
+
+@keyframes listIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ---------- 列表页的公共骨架 ----------
+   下面几个类此前在 2~3 个页面里各写了一份**逐字相同**的定义
+   （提取前逐个核对过：每个文件里只出现一次，且没有媒体查询覆盖）。
+   它们描述的不是"某个页面的样子"，而是"列表页这个场景的样子" ——
+   放在全局，改一次就都改到；分散在各页时，改一个忘一个几乎必然发生。 */
+.list-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  border-radius: var(--radius-lg);
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--gap-md);
+  margin-top: var(--gap-md);
+}
+html.no-flex-gap .pager > * + * {
+  margin-left: var(--gap-md);
+}
+
+.hist-empty {
+  padding: 12px 10px;
+  text-align: center;
+}
+
+.empty-cell {
+  padding: 22px;
+  text-align: center;
+}
+
+/* ---------- 主题切换的过渡窗口 ----------
+   切换主题时给颜色属性一个 0.22s 的过渡，避免整页"啪"地跳色。
+
+   只在 html.theme-switching 这个临时类存在时生效（JS 在 260ms 后摘掉）。
+   **不能常驻**：常驻会让首屏渲染也带上颜色渐变（深色用户会看到页面
+   从浅色"呼吸"过来），而且低端设备上全站属性过渡的开销会一直挂着。
+
+   ⚠️ mermaid 子树必须豁免：切主题会触发图表按新主题重绘，而 mermaid 靠
+     "插入 DOM 后立刻测量"来决定布局（见下面 prefers-reduced-motion 段里
+     关于 transition-duration 必须是 0s 的那段说明）。测量期带着过渡的话，
+     量到的是起始值，图表会被排成畸形。 */
+html.theme-switching,
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after {
+  transition: background-color 0.22s ease, color 0.22s ease,
+    border-color 0.22s ease, fill 0.22s ease, stroke 0.22s ease !important;
+}
+
+/* 特异性更高（多一个类选择器）+ 同样 !important → 稳稳压过上面那条 */
+html.theme-switching .mermaid-chart,
+html.theme-switching .mermaid-chart * {
+  transition: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     transition-duration: 0s !important;
     animation-duration: 0.01ms !important;
+  }
+
+  /* 主题切换的过渡窗口也要让路。
+     上面那条 `*` 的特异性是 (0,0,0)，压不过 html.theme-switching * (0,1,1) ——
+     不写这一段的话，"减弱动态效果"的用户反而会看到整页颜色渐变
+     （正好是 reduced-motion 要避免的那种大范围动效）。 */
+  html.theme-switching,
+  html.theme-switching * {
+    transition-duration: 0s !important;
   }
 }
 
@@ -2124,7 +2258,14 @@ html.no-flex-gap .empty-hint > * + * {
   --duration-normal: var(--dur-base);
   --duration-slow: var(--dur-slow);
   --transition-fast: var(--dur-fast);
-  --ease-standard: var(--ease-inout);
+  /* ⚠️ 这个别名原先指向 --ease-inout（慢起慢收），是错的。
+     它底下挂着 48 处过渡（Notes 36、CloudImagePicker 6、DrawCanvas 5、AppNavBar 1），
+     而这些几乎全是 hover / 按压 / 状态切换 —— 恰恰是**最需要"快起慢收"**的场景：
+     慢起会让人觉得"按下去没反应，过一会儿才动"，也就是"不跟手"。
+     而 --ease-inout 的本意（位置互换这类对称运动）在全项目**一次都没有被真正用到**
+     （唯一出现就是这行别名定义本身），所以改过来零风险。
+     改这一行 = 48 处过渡同时恢复跟手感。 */
+  --ease-standard: var(--ease-out);
   --ease-emphasized: var(--ease-out);
   --ease-decelerate: var(--ease-out);
 
@@ -2153,6 +2294,102 @@ html.no-flex-gap .empty-hint > * + * {
      真实的取舍是「偶尔点错」vs「经常点空」，后者更糟。
      但不要用在并列且各自独立的按钮组上 —— 那种场景应该改视觉尺寸。
    ============================================================ */
+
+/* 图标按钮统一撑命中区。
+   ------------------------------------------------
+   背景：.icon-btn 被逐页复制粘贴定义了 10 份，视觉尺寸一律 26~28px，
+   远低于触屏建议的 40px 下限 —— 在平板上就是"经常点空"。
+
+   ⚠️ 为什么是 32px 而不是 40px：
+     它多数出现在工具条里，相邻间距只有 6px 左右。
+     26px 按钮 + 6px 间距 = 两个中心相距 32px —— 命中区一旦超过 32px
+     就会互相重叠，点左边那个可能触发右边那个（而右边往往是删除）。
+     "偶尔点空"和"偶尔点错"之间，32px 是这两排按钮的平衡点：
+     比原来大了一圈，又不会抢到邻居。
+     真正需要 40px 的孤立图标按钮（各页头部那类），用 .touch-target 单独加。
+
+   ⚠️ 为什么写在全局而不是逐页加：它有 10 份拷贝，逐页加必然漏 ——
+     而"点空"的挫败感恰恰出现在没改到的那个页面上。
+     这里只加 ::after（不碰 width/height），所以不会影响任何版面：
+     各页面的 scoped 规则特异性更高，视觉尺寸仍由它们说了算。 */
+.icon-btn {
+  position: relative;
+}
+
+.icon-btn::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 32px;
+  height: 32px;
+  transform: translate(-50%, -50%);
+  background: transparent;
+  pointer-events: auto;
+  z-index: 1;
+}
+
+/* ============================================================
+   触屏按压反馈（补漏）
+   ------------------------------------------------------------
+   下面这些元素都"点得着、但没有 :active 状态"。桌面端没问题
+   （有光标变化和 hover），但**触屏上按下去屏幕上毫无反应** ——
+   学生无法确认自己有没有按到，于是重复点，或者干脆以为界面卡住了。
+
+   分三档给反馈，幅度按元素体积走：
+   ============================================================ */
+
+/* ① 小控件（按钮 / 芯片 / 选项）：0.94 —— 看得出但不夸张 */
+.attach-btn:active,
+.ctx-btn:active,
+.prefs-btn:active,
+.think-btn:active,
+.msel-trigger:active,
+.msel-opt:active,
+.picker-tab:active,
+.picker-folder-tab:active,
+.picker-close:active,
+.picker-fullscreen-btn:active,
+.img-remove:active,
+.user-chip:active,
+.tag-item:active,
+.sidebar-new-btn:active,
+.sidebar-import-btn:active,
+.command-palette-item:active,
+.sidebar-entry:active,
+.privacy-entry:active {
+  transform: scale(0.94);
+}
+
+/* ② 用 transform 做定位的两个：**必须把定位一起写回去**。
+      直接 scale 会把原来的 translate 顶掉 —— 按钮会瞬间跳到容器角上。
+      这是"给一批元素加通用规则"时最容易炸的一类，
+      加之前一定要先确认目标有没有在用 transform 定位。 */
+.scroll-bottom:active {
+  transform: translateX(-50%) scale(0.94);
+}
+.search-clear:active {
+  transform: translateY(-50%) scale(0.94);
+}
+
+/* ③ 大块（卡片 / 格子 / 列表项）：幅度必须更小。
+      0.94 用在这种体积上会像"整块在抖"，还会把容器底色从边缘露出来；
+      0.985 是列表项按压的常见幅度（iOS 也是这个量级），
+      效果是轻微内陷，恰好够察觉到"按下去了"。 */
+.card:active,
+.cell:active,
+.note-cell:active,
+.picker-item:active,
+.template-card:active,
+.resource-picker-item:active,
+.public-note-item:active,
+.cloud-note-item:active {
+  transform: scale(0.985);
+}
+
+/* 刻意只动 transform，不碰 background ——
+   这些元素各自的底色承载着"选中 / 危险 / 禁用"的语义，
+   统一改色会把这些语义一起抹掉（那比没有反馈更糟）。 */
 
 /* 加在元素自身上：把命中区向外撑到指定尺寸 */
 .touch-target {
