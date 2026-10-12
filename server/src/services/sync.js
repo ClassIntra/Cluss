@@ -49,6 +49,10 @@ var status = {
   is_seat_admin: false,
   seat_instance: '',
   seat_admin_at: null,
+  // 本机自己推上去时拿到的云端版本号。「本地推送的不要再拉回来覆盖」就是靠它：
+  // 下行判断版本号等于这个值 → 说明云端上那份就是我自己推的，跳过拉取。
+  self_pushed_model_version: 0,
+  self_pushed_assign_version: 0,
   // 待上行推给云端的变更。推失败不清空，下次轮询重试 —— 断网不能丢管理员的操作。
   pending_policy: false,
   pending_allocations: 0,
@@ -114,6 +118,14 @@ function fetchAssignments() {
     var list = (data && data.assignments) || [];
     var applied = 0;
 
+    // 和模型配置同理：这一版是本机自己推上去的，内容已经一致，回拉没有意义
+    if (version > 0 && version === status.self_pushed_assign_version) {
+      status.assign_version = version;
+      status.pulled_at = time.nowUtc();
+      console.log('[Sync] 云端额度 v%s 是本机自己推的，跳过回拉', version);
+      return { version: version, applied: 0 };
+    }
+
     for (var i = 0; i < list.length; i++) {
       var a = list[i];
       // 只对该节点已存在的用户落地：节点上没有这个账号，分配过来也没有意义
@@ -151,6 +163,34 @@ function fetchModelConfig() {
   }).then(function(resp) {
     var data = (resp.data && resp.data.data) || {};
     var version = data.model_config_version || 0;
+    var models = data.models || [];
+
+    // 云端没有配置时**不动本机**。
+    //
+    // applySnapshot 是「先 DELETE 再插入」的整表替换（设计如此：云端删掉的模型
+    // 不许在节点上残留）。所以只要云端是空的，下发空快照就等于把本机配置
+    // 全清空 —— 而云端在平台还没发布任何配置时（model_config_version = 0）
+    // 恰恰就是空的。于是每 60 秒清一次，管理员配好的模型凭空消失。
+    //
+    // 这里把「云端从未配置过」与「云端配置了但是空的」区分开：
+    //   · version <= 0 = 从未发布过 → 保留本机，等云端有东西了再接管
+    //   · version > 0 且 models 为空 = 云端明确清空 → 尊重它
+    var localModels = db.prepare('SELECT COUNT(*) AS c FROM ai_models').get();
+    if (version <= 0 && localModels && localModels.c > 0) {
+      status.model_version = 0;
+      status.model_pulled_at = time.nowUtc();
+      console.log('[Sync] 云端尚未发布模型配置（v0），保留本机 %d 个模型不改', localModels.c);
+      return { version: 0, models: localModels.c, skipped: true };
+    }
+
+    // 云端这一版就是本机自己推上去的：内容本来就一样，重复拉一遍只会
+    // 有机会把「刚推的」当成「别人的」再覆盖一遍。跳过。
+    if (version > 0 && version === status.self_pushed_model_version) {
+      console.log('[Sync] 云端模型配置 v%s 是本机自己推的，跳过回拉', version);
+      status.model_version = version;
+      status.model_pulled_at = time.nowUtc();
+      return { version: version, models: localModels ? localModels.c : 0, skipped: true };
+    }
 
     // 全量快照直接落地；重复拉同一版本无害（整表替换幂等）
     var result = modelConfig.applySnapshot(data);
@@ -367,6 +407,7 @@ function pushModelConfig(classUserId) {
     // 云端返回的权威版本号：本机立刻对齐，避免下一轮又去拉一次
     if (data.model_config_version) {
       status.model_version = data.model_config_version;
+      status.self_pushed_model_version = data.model_config_version;
       initDb.setMeta('model_config_version', data.model_config_version);
     }
     console.log('[Sync] 已上行模型配置到云端: v%s', data.model_config_version);
@@ -424,6 +465,7 @@ function pushAllocations() {
     status.last_push_alloc_at = time.nowUtc();
     if (data.assign_version) {
       status.assign_version = data.assign_version;
+      status.self_pushed_assign_version = data.assign_version;
       initDb.setMeta('assign_version', data.assign_version);
     }
     console.log('[Sync] 已上行额度到云端: %s 条生效、%s 条跳过', data.applied, data.skipped);
@@ -553,6 +595,8 @@ function getStatus() {
     is_seat_admin: status.is_seat_admin,
     seat_instance: status.seat_instance,
     seat_admin_at: status.seat_admin_at,
+    self_pushed_model_version: status.self_pushed_model_version,
+    self_pushed_assign_version: status.self_pushed_assign_version,
     pending_policy: status.pending_policy,
     pending_allocations: status.pending_allocations,
     last_push_policy_at: status.last_push_policy_at,

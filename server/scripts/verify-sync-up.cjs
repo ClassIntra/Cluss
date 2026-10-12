@@ -236,9 +236,110 @@ function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
   var st4 = sync4.getStatus();
   ok('推送失败时记录了错误', !!st4.last_push_alloc_error, String(st4.last_push_alloc_error));
   ok('队列保留（管理员的操作不丢）', st4.pending_allocations === 1, String(st4.pending_allocations));
-  // 再推一次：这回云端正常，应该成功并清空
-  relay4.seen.length = 0;
   await relay4.close();
+
+  section('⑨ 云端空配置不清空本机模型（这是丢过数据的 bug）');
+  // 云端从未发布过配置（v0）+ 列表为空 —— 平台还没配模型时就是这个状态。
+  // applySnapshot 是整表替换（先 DELETE 再插），无脑下发空快照会把本机配置全清空。
+  var relay5 = await startFakeRelay(function(url) {
+    if (url.indexOf('/api/sync/version') >= 0) {
+      return { json: { code: 200, message: 'ok', data: {
+        assign_version: 3, model_config_version: 0,
+        is_seat_admin: true, seat_instance: 'class-seat',
+        server_time: '2026-10-12 08:00:00'
+      } } };
+    }
+    if (url.indexOf('/api/sync/model-config') >= 0) {
+      return { json: { code: 200, message: 'ok', data: {
+        model_config_version: 0, models: [], sources: [], meta: {}
+      } } };
+    }
+    return {};
+  });
+  // 直接验 fetchModelConfig 的判定：先给 ai_models 塞一行「本机已有配置」
+  var relay6 = await startFakeRelay(function(url) {
+    if (url.indexOf('/api/sync/version') >= 0) {
+      return { json: { code: 200, message: 'ok', data: {
+        assign_version: 3, model_config_version: 0,
+        is_seat_admin: true, seat_instance: 'class-seat',
+        server_time: '2026-10-12 08:00:00'
+      } } };
+    }
+    if (url.indexOf('/api/sync/model-config') >= 0) {
+      return { json: { code: 200, message: 'ok', data: {
+        model_config_version: 0, models: [], sources: [], meta: {}
+      } } };
+    }
+    return {};
+  });
+  var sync5 = loadSync(baseEnv(relay6.port));
+  // 造一个本机模型（走 db 依赖，需要 sync 已加载）
+  var dbMod = require(path.join(SERVER_DIR, 'src', 'utils', 'db.js'));
+  dbMod.prepare([
+    'INSERT OR REPLACE INTO ai_models (id, label, api_url, api_key, model_name, api_style,',
+    '  price_in, price_out, price_cache_hit, is_free, enabled, is_default, sort_order, created_at)',
+    "VALUES ('keepme', '要保住的模型', 'http://127.0.0.1:9200', 'sk-x', 'keepme', 'openai',",
+    '  2000, 8000, 200, 0, 1, 1, 0, ?)'
+  ].join('\n')).run('2026-10-12 08:00:00');
+  ok('本机先有一个模型', dbMod.prepare('SELECT COUNT(*) AS c FROM ai_models').get().c === 1);
+
+  await sync5.pollOnce(true);
+  var kept = dbMod.prepare('SELECT id FROM ai_models').get();
+  ok('云端 v0 空配置不会清空本机模型', kept && kept.id === 'keepme',
+    '本机现有: ' + JSON.stringify(kept));
+  ok('状态里标出云端尚未接管', sync5.getStatus().model_version === 0,
+    String(sync5.getStatus().model_version));
+  // 清理，别污染后续运行
+  dbMod.prepare("DELETE FROM ai_models WHERE id = 'keepme'").run();
+  await relay5.close();
+  await relay6.close();
+
+  section('⑩ 本机推的版本不再回拉覆盖');
+  // 云端那一份就是本机推上去的 → 回拉等于把自己覆盖自己，白折腾且有机会覆盖错
+  var relay7 = await startFakeRelay(function(url) {
+    if (url.indexOf('/api/sync/version') >= 0) {
+      return { json: { code: 200, message: 'ok', data: {
+        assign_version: 3, model_config_version: 5,
+        is_seat_admin: true, seat_instance: 'class-seat',
+        server_time: '2026-10-12 08:00:00'
+      } } };
+    }
+    if (url.indexOf('/api/sync/policy') >= 0) {
+      return { json: { code: 200, message: 'ok', data: { model_config_version: 9 } } };
+    }
+    if (url.indexOf('/api/sync/allocations') >= 0) {
+      return { json: { code: 200, message: 'ok', data: { assign_version: 11, applied: 1, skipped: 0 } } };
+    }
+    if (url.indexOf('/api/sync/model-config') >= 0) {
+      return { json: { code: 200, message: 'ok', data: {
+        model_config_version: 9, models: [], sources: [], meta: {}
+      } } };
+    }
+    if (url.indexOf('/api/sync/assignments') >= 0) {
+      return { json: { code: 200, message: 'ok', data: { assign_version: 11, assignments: [] } } };
+    }
+    return {};
+  });
+  var sync7 = loadSync(baseEnv(relay7.port));
+  await sync7.pollOnce();
+  sync7.markPolicyDirty();
+  sync7.queueAllocation('1001', 4242000, 0, '本机推的', '999999');
+  await sync7.pushPending('999999');
+  var st7 = sync7.getStatus();
+  ok('记住本机推的模型版本', st7.self_pushed_model_version === 9, String(st7.self_pushed_model_version));
+  ok('记住本机推的额度版本', st7.self_pushed_assign_version === 11, String(st7.self_pushed_assign_version));
+  // 云端现在回 v9（就是本机推的），模型列表为空 —— 若无保护就会被清空
+  dbMod.prepare([
+    'INSERT OR REPLACE INTO ai_models (id, label, api_url, api_key, model_name, api_style,',
+    '  price_in, price_out, price_cache_hit, is_free, enabled, is_default, sort_order, created_at)',
+    "VALUES ('keepme2', '要保住的模型2', 'http://127.0.0.1:9200', 'sk-x', 'keepme2', 'openai',",
+    '  2000, 8000, 200, 0, 1, 1, 0, ?)'
+  ].join('\n')).run('2026-10-12 08:00:00');
+  await sync7.pollOnce(true);
+  var kept2 = dbMod.prepare('SELECT id FROM ai_models').get();
+  ok('回拉时跳过自己推的版本，模型保住', kept2 && kept2.id === 'keepme2', JSON.stringify(kept2));
+  dbMod.prepare("DELETE FROM ai_models WHERE id = 'keepme2'").run();
+  await relay7.close();
 
   await relay.close();
 
