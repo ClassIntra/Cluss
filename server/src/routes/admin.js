@@ -197,6 +197,29 @@ router.get('/users', auth.requireAuth, auth.requireAdmin, function(req, res) {
 });
 
 // ============================================================
+// 额度写入闸门（node 模式）
+// ============================================================
+// 和模型配置同一套逻辑：**持有云端管理员席位的班**改的额度会同步全校，
+// 非席位班改了只在本机生效、下一次云端下发就被覆盖 —— 那等于让管理员
+// 以为改成功了其实没有。所以非席位班直接拒，并把席位在哪个班说清楚。
+//
+// 注意：这条闸门以前**根本不存在**。额度路由从来不受 requireCanEditModelConfig
+// 管，所以任何班改了都「成功」了，但改动只留在本机——就是那个静默丢数据的 bug。
+function requireCanEditQuota(req, res, next) {
+  if (config.mode !== config.MODES.NODE) return next();
+  if (!syncService.isEnabled()) {
+    return res.status(403).json({ code: 403, message: '本机未接入中继，无法修改全校额度' });
+  }
+  var st = syncService.getStatus();
+  if (!st.is_seat_admin) {
+    var where = st.seat_instance ? ('本校管理员席位在 ' + st.seat_instance + ' 班，本班只能查看') : '本校还没有认领管理员席位';
+    return res.status(403).json({ code: 403, message: where + '。请到管理员班操作，或在云端完成账号绑定。' });
+  }
+  syncService.rememberSeatUser(req.user.user_id);
+  next();
+}
+
+// ============================================================
 // PUT /admin/users/:userId/quota —— 追加充值（叠加式）
 // body: { quota_yuan, weekly_yuan?, reason? }
 //
@@ -205,7 +228,7 @@ router.get('/users', auth.requireAuth, auth.requireAdmin, function(req, res) {
 // weekly_yuan 选填：不填则保留原周限额，避免重复填写基础信息。
 // 需要下调/纠错时走 DELETE /users/:userId/quota（收回额度）。
 // ============================================================
-router.put('/users/:userId/quota', auth.requireAuth, auth.requireAdmin, function(req, res) {
+router.put('/users/:userId/quota', auth.requireAuth, auth.requireAdmin, requireCanEditQuota, function(req, res) {
   var userId = String(req.params.userId || '').trim();
   var user = db.prepare('SELECT user_id, net_name, real_name FROM users WHERE user_id = ?').get(userId);
   if (!user) return res.status(404).json({ code: 404, message: '用户不存在：' + userId });
@@ -271,7 +294,7 @@ router.put('/users/:userId/quota', auth.requireAuth, auth.requireAdmin, function
 // 与单用户一致：quota_yuan 是「本次追加金额」，逐人在各自现有额度上累加；
 // weekly_yuan 不填则保留该用户原有周限额。
 // ============================================================
-router.post('/users/quota/batch', auth.requireAuth, auth.requireAdmin, function(req, res) {
+router.post('/users/quota/batch', auth.requireAuth, auth.requireAdmin, requireCanEditQuota, function(req, res) {
   var items = Array.isArray(req.body.items) ? req.body.items : [];
   if (!items.length) return res.status(400).json({ code: 400, message: '没有要处理的用户' });
   if (items.length > 200) return res.status(400).json({ code: 400, message: '单次最多处理 200 个用户' });
@@ -364,7 +387,7 @@ router.post('/users/quota/batch', auth.requireAuth, auth.requireAdmin, function(
 // ============================================================
 // DELETE /admin/users/:userId/quota —— 收回额度（清零）
 // ============================================================
-router.delete('/users/:userId/quota', auth.requireAuth, auth.requireAdmin, function(req, res) {
+router.delete('/users/:userId/quota', auth.requireAuth, auth.requireAdmin, requireCanEditQuota, function(req, res) {
   var userId = String(req.params.userId || '').trim();
   var user = db.prepare('SELECT user_id FROM users WHERE user_id = ?').get(userId);
   if (!user) return res.status(404).json({ code: 404, message: '用户不存在' });
