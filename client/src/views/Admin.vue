@@ -166,6 +166,47 @@
             <p v-else class="tiny muted" style="padding: 6px 2px;">还没有用量记录</p>
           </section>
         </div>
+
+        <!-- Cluss-Cloud 账号绑定：把「本班班管」和「云端学校管理员」认成同一个人。
+             两边原本是两个账号两套密码，交接/换届时最容易乱；绑定后管理员在云端
+             的每一次操作都落在「哪个班 + 哪个学号」上。方向必须从这台电脑发起 ——
+             云端不存班级密码，网页上填学号等于谁都能声称自己是任何人，只有本机
+             能证明「此刻登录的是本班学号 X 且他是班管」。 -->
+        <section class="panel glass bind-panel">
+          <h2 class="panel-title">Cluss-Cloud 账号绑定</h2>
+          <div class="row-line">
+            <span class="line-key">本机身份</span>
+            <span class="line-amount mono">{{ meUserId || '未知' }} · {{ isNodeMode ? 'node 模式（可发起）' : '未接入中继' }}</span>
+          </div>
+          <div class="row-line">
+            <span class="line-key">云端管理员</span>
+            <span class="line-amount">
+              <input
+                class="input input-sm mono"
+                v-model="cloudBind.adminUsername"
+                placeholder="你在云端注册学校时填的用户名"
+                autocapitalize="off" spellcheck="false"
+              />
+            </span>
+          </div>
+          <div class="roster-actions">
+            <button
+              class="btn btn-sm btn-ghost roster-btn"
+              type="button"
+              :disabled="cloudBind.busy || !cloudBind.adminUsername"
+              @click="requestCloudBind"
+            >{{ cloudBind.busy ? '生成中…' : '生成确认码' }}</button>
+          </div>
+          <div v-if="cloudBind.code" class="bind-code">
+            <span class="tiny muted">确认码（15 分钟内有效，只能用一次）</span>
+            <div class="bind-code-value mono">{{ cloudBind.code }}</div>
+            <p class="tiny muted" style="margin: 6px 0 0;">
+              打开 Cluss-Cloud 网页 → 用管理员账号登录 → 「账号绑定」页签 → 粘贴上面的码确认。
+              一个学校只能有一个班管占管理员席位，别的班管来时会看到席位已被占用。
+            </p>
+          </div>
+          <p v-if="cloudBind.error" class="tiny" style="color: var(--danger-text, #d64545); margin: 8px 0 0;">{{ cloudBind.error }}</p>
+        </section>
       </template>
 
 <!-- ================= 额度分配 ================= -->
@@ -780,6 +821,9 @@ export default {
       tab: 'overview',
       error: '',
 
+      // ---- Cluss-Cloud 账号绑定（班管本机发起，见「账号绑定」面板）----
+      cloudBind: { adminUsername: '', busy: false, code: '', error: '' },
+
       // 加载态：请求回来之前不要先摆出「没有匹配的学生 / 暂无流水」这种空态文案
       loading: true,
       usageLoading: true,
@@ -856,6 +900,20 @@ export default {
     };
   },
   computed: {
+    // 当前登录的学号：账号绑定面板要显示「这台电脑上的我是谁」。
+    // 直接读本地存储，和 store/auth 保持同一份来源，但不去动那个模块
+    meUserId: function() {
+      try {
+        var u = JSON.parse(localStorage.getItem('cluss_user') || 'null');
+        return u && (u.user_id || u.id) ? (u.user_id || u.id) : '';
+      } catch (e) {
+        return '';
+      }
+    },
+    // 只有 node 模式才谈得上向云端发起绑定（standalone/relay 没有中继可打）
+    isNodeMode: function() {
+      return !!(this.dashboard && this.dashboard.mode === 'node');
+    },
     tabOptions: function() {
       return [
         { id: 'overview', label: '总览' },
@@ -990,6 +1048,27 @@ export default {
     },
 
     // 拉名册并纳入本班：幂等、只增不删，随时可以按
+    // 生成 Cluss-Cloud 账号绑定确认码。
+    // 失败原因原样透出（403「只有班管可以发起」/ 404「中继不支持」都要看得懂），
+    // 这类错误都是「配置或身份对不上」，编一个友好提示只会把人带偏。
+    requestCloudBind: function() {
+      var self = this;
+      self.cloudBind.busy = true;
+      self.cloudBind.error = '';
+      self.cloudBind.code = '';
+      this.$http.post('/admin/cloud/bind-request', {
+        admin_username: self.cloudBind.adminUsername
+      }).then(function(r) {
+        self.cloudBind.code = (r.data && r.data.bind_code) || '';
+        if (!self.cloudBind.code) self.cloudBind.error = (r.data && r.data.message) || '中继没有返回确认码';
+      }).catch(function(err) {
+        var d = (err.response && err.response.data) || {};
+        self.cloudBind.error = d.message || err.message || '生成失败';
+      }).then(function() {
+        self.cloudBind.busy = false;
+      });
+    },
+
     syncRoster: function() {
       var self = this;
       self.roster.busy = true;
@@ -1766,10 +1845,7 @@ html.no-flex-gap .filters > * + * {
   text-align: right;
 }
 
-.empty-cell {
-  padding: 22px;
-  text-align: center;
-}
+/* .empty-cell 已提到 styles/global.css（表格空态，两处逐字相同） */
 
 .text-danger {
   color: var(--danger);
@@ -1850,6 +1926,31 @@ html.no-flex-gap .roster-actions > * + * {
 
 .roster-note {
   margin: var(--gap-sm) 0 0;
+}
+
+/* 账号绑定：确认码要一眼看清、方便照着敲，别缩在一行小字里 */
+.bind-panel {
+  margin-top: var(--gap);
+}
+
+.bind-panel .input-sm {
+  max-width: 220px;
+  padding: 6px 10px;
+  font-size: .86rem;
+}
+
+.bind-code {
+  margin-top: var(--gap-sm);
+  padding: 12px 14px;
+  border-radius: var(--radius-md, 12px);
+  background: var(--accent-soft, rgba(47, 107, 221, .12));
+}
+
+.bind-code-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: .18em;
+  margin-top: 2px;
 }
 
 .list-scroll {

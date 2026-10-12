@@ -17,6 +17,8 @@ var config = require('../config');
 var constants = require('../utils/constants');
 var initDb = require('../utils/init-db');
 var classRoster = require('../services/class-roster');
+// node 模式下的出站同步（申请账号绑定确认码要走它）
+var syncService = require('../services/sync');
 // 模型配置下发（v1）：管理台每改一次模型/源/视觉/峰谷就 bump 版本号，
 // 各班级节点靠 /sync/version 轮询到新版本后整表替换本地配置
 var modelConfig = require('../services/model-config');
@@ -538,6 +540,33 @@ router.post('/nodes/:instanceId/restore', auth.requireAuth, auth.requireAdmin, f
     .run(row.instance_id);
   console.log('[Admin] 节点已恢复: %s by %s', row.instance_id, req.user.user_id);
   res.json({ code: 200, message: '已恢复', data: { instance_id: row.instance_id, status: 'active' } });
+});
+
+// ============================================================
+// POST /admin/cloud/bind-request —— Cluss-Cloud 账号绑定（班管本机发起）
+// ============================================================
+// 「班管」和「云端学校管理员」原本是两个账号、两套密码，交接时最容易乱。
+// 绑定后管理员在云端的一切操作都落在「哪个班 + 哪个学号」上。
+//
+// 为什么必须从这台教室电脑发起：云端不存班级密码，网页上填学号等于
+// 谁都能声称自己是任何人；只有本机能证明「此刻登录的是本班学号 X 且
+// 他是班管」。所以这里把当前登录人的 user_id 一起送上去，云端回一个
+// 一次性确认码，再由那位管理员用自己的密码在网页上确认。
+router.post('/cloud/bind-request', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var adminUsername = String((req.body || {}).admin_username || '').trim().toLowerCase();
+  if (!/^[a-z0-9_-]{3,30}$/.test(adminUsername)) {
+    return res.status(400).json({ code: 400, message: '请填写 Cluss-Cloud 上的管理员用户名（3-30 位小写字母/数字/下划线）' });
+  }
+  if (!syncService.isEnabled()) {
+    return res.status(400).json({ code: 400, message: '本机未接入中继（当前不是 node 模式），无法发起绑定' });
+  }
+  syncService.requestBindCode(adminUsername, req.user.user_id).then(function(data) {
+    console.log('[Admin] 账号绑定确认码已生成（云端管理员 %s，本班学号 %s）by %s',
+      data.admin_username, req.user.user_id, req.user.user_id);
+    res.json({ code: 200, message: '确认码已生成', data: data });
+  }).catch(function(err) {
+    res.status(502).json({ code: 502, message: '生成失败：' + (err && err.message ? err.message : String(err)) });
+  });
 });
 
 // ============================================================
