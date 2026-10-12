@@ -97,8 +97,10 @@ function fetchAssignments() {
         origin_instance: 'relay',
         kind: 'topup',
         reason: '中继下发',
-        // 幂等键由「用户 + 分配值 + 版本」构成：同一次分配重复拉取不会重复记流水
-        idem_key: 'relay:' + a.user_id + ':' + a.allocated_micro + ':' + a.weekly_quota_micro
+        // 幂等键必须含版本号。原来的键是「用户+分配值+周配额」，
+        // 于是「10 元 → 5 元 → 改回 10 元」的第三步会撞上第一步的键被跳过，
+        // 节点额度再也上不去——而管理员改错了改回来是最常见的操作。
+        idem_key: 'relay:' + a.user_id + ':' + version + ':' + a.allocated_micro
       });
       applied++;
     }
