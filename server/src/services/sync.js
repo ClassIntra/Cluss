@@ -21,17 +21,26 @@ var initDb = require('../utils/init-db');
 var TIMEOUT_MS = 8000;
 
 // 同步状态（管理台/健康检查可读）
+// 字段分三类：本地身份、���端当前版本、本地已应用版本——
+// 管理层要看的就是「云端发的是几、我这台装的是几」，两者必须能对比。
 var status = {
   enabled: false,
   last_ok_at: null,
   last_error: '',
   last_error_at: null,
+  // 最后一次成功上报用量的时刻（pull 是拉取、push 是上报，混在一起看不出问题）
+  last_push_at: null,
+  last_push_count: 0,
   assign_version: 0,
   pulled_at: null,
   model_version: 0,
   model_pulled_at: null,
   reported_total: 0,
-  pending_usage: 0
+  pending_usage: 0,
+  // 云端服务器时间与本机时间的差值（毫秒）。教室机常年不校时，
+  // 用量账目跨月统计全靠时间戳，时间偏了账就偏了。
+  clock_skew_ms: null,
+  server_time: null
 };
 
 function isEnabled() {
@@ -156,6 +165,16 @@ function pollOnce(force) {
     status.assign_version = remoteAssign;
     status.model_version = remoteModel;
 
+    // 云端也回自己的时间。用它校正本机时钟偏移——教室电脑常年不校时，
+    // 而用量记账按时间戳跨月统计，时间偏了账就偏了。
+    if (remote.server_time) {
+      var skew = Date.parse(String(remote.server_time).replace(' ', 'T') + 'Z') - Date.now();
+      if (isFinite(skew)) {
+        status.clock_skew_ms = skew;
+        status.server_time = remote.server_time;
+      }
+    }
+
     var jobs = [];
     if (remoteAssign !== localAssignVersion()) jobs.push(fetchAssignments());
     if (remoteModel !== localModelVersion()) jobs.push(fetchModelConfig());
@@ -208,6 +227,8 @@ function reportUsage() {
     credit.markUsageSynced(rows.map(function(r) { return r.id; }));
     status.reported_total += records.length;
     status.pending_usage = 0;
+    status.last_push_at = time.nowUtc();
+    status.last_push_count = records.length;
     markOk();
     console.log('[Sync] 已上报用量 %d 条', records.length);
     return { reported: records.length };
@@ -287,19 +308,36 @@ function stop() {
 }
 
 function getStatus() {
+  var localAssign = localAssignVersion();
+  var localModel = localModelVersion();
   return {
     enabled: status.enabled,
     mode: config.mode,
     relay_url: config.relay.url,
+    // 学校编号：管理员在云端注册时拿到的那个码。本地管理台没有它就没法
+    // 确认「我接的是哪所学校」，客服排查时第一句就要问这个。
+    org_id: config.relay.orgId || '',
+    instance_id: config.instanceId,
+    node_version: config.version,
+    // 云端当前版本 vs 本机已应用版本：两者不等就说明还有配置在路上
+    // （或拉取失败了），管理台要能一眼看出来，而不是让人去翻日志。
     assign_version: status.assign_version,
-    pulled_at: status.pulled_at,
+    local_assign_version: localAssign,
+    assign_pending: status.assign_version !== localAssign,
     model_version: status.model_version,
+    local_model_version: localModel,
+    model_pending: status.model_version !== localModel,
+    pulled_at: status.pulled_at,
     model_pulled_at: status.model_pulled_at,
     last_ok_at: status.last_ok_at,
     last_error: status.last_error,
     last_error_at: status.last_error_at,
+    last_push_at: status.last_push_at,
+    last_push_count: status.last_push_count,
     reported_total: status.reported_total,
-    pending_usage: status.pending_usage
+    pending_usage: status.pending_usage,
+    clock_skew_ms: status.clock_skew_ms,
+    server_time: status.server_time
   };
 }
 

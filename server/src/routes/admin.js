@@ -645,6 +645,10 @@ router.get('/dashboard', auth.requireAuth, auth.requireAdmin, function(req, res)
       data: {
         instance_id: config.instanceId,
         mode: config.mode,
+        // 中继/云端全量状态：node 模式下管理员要看的就是这些——
+        // 我接的是哪所学校、连上了没、云端发的配置我装到第几版了。
+        // 以前这些只喂给 /api/health，管理台一个字都看不到。
+        relay: syncService.getStatus(),
         // 管理员充值填的是元，学生端看到的是积分。把换算率给到前端，
         // 好让充值框旁边实时显示"学生将看到 N 积分"—— 管理员不必自己心算。
         points_per_yuan: config.points.perYuan,
@@ -951,6 +955,12 @@ router.get('/models', auth.requireAuth, auth.requireAdmin, function(req, res) {
     code: 200,
     message: 'ok',
     data: {
+      // node 模式下模型由云端统一下发，本机改了也会被下一次同步覆盖。
+      // 告诉前端「不可改 + 为什么」，否则管理员会在这里改半天、刷新又变回去。
+      read_only: config.mode === config.MODES.NODE,
+      read_only_reason: config.mode === config.MODES.NODE
+        ? '本机已接入 Cluss-Cloud，模型配置由云端统一管理，改动会在下一次同步时被覆盖。请到云端修改。'
+        : '',
       models: rows.map(function(r) { return serializeModelForAdmin(r, sourcesMap); }),
       // 模型源清单（源可选；模型可挂源共享地址/密钥，也可自带连接信息）
       sources: ai.listSources().map(serializeSourceForAdmin),

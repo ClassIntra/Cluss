@@ -167,6 +167,75 @@
           </section>
         </div>
 
+        <!-- 云端接入状态：接上以后，管理员不用登云端网页也能确认「我在哪、连上没有、
+             云端的配置我装到哪一版了」。以前这些字段只喂给 /api/health，
+             管理台一个字都看不到，出问题只能翻服务器日志。 -->
+        <section class="panel glass relay-panel">
+          <h2 class="panel-title">
+            云端接入
+            <span class="relay-dot" :class="relayTone" :title="relayToneText"></span>
+          </h2>
+          <div v-if="!isNodeMode" class="tiny muted">
+            本机当前是 {{ dashboard ? dashboard.mode : '—' }} 模式，未接入 Cluss-Cloud。
+            接入方法：把云端注册时给的 <span class="mono">.env</span> 整块粘到
+            <span class="mono">server/.env</span>（含 <span class="mono">CLUSS_MODE=node</span>、
+            <span class="mono">CLUSS_RELAY_URL</span>、<span class="mono">CLUSS_RELAY_SECRET</span>、
+            <span class="mono">CLUSS_ORG_ID</span>），重启服务即可。
+          </div>
+          <template v-else>
+            <div class="row-line">
+              <span class="line-key">学校编号</span>
+              <span class="line-amount mono">{{ relay.org_id || '未配置' }}</span>
+            </div>
+            <div class="row-line">
+              <span class="line-key">本机实例</span>
+              <span class="line-amount mono">{{ relay.instance_id || '—' }}</span>
+            </div>
+            <div class="row-line">
+              <span class="line-key">云端地址</span>
+              <span class="line-amount mono tiny">{{ relay.relay_url || '—' }}</span>
+            </div>
+            <div class="row-line">
+              <span class="line-key">连接</span>
+              <span class="line-amount">{{ relayToneText }}</span>
+            </div>
+            <div class="row-line">
+              <span class="line-key">额度策略</span>
+              <span class="line-amount">
+                云端 v{{ relay.assign_version }} · 本机 v{{ relay.local_assign_version }}
+                <span v-if="relay.assign_pending" class="relay-lag">待同步</span>
+              </span>
+            </div>
+            <div class="row-line">
+              <span class="line-key">模型配置</span>
+              <span class="line-amount">
+                云端 v{{ relay.model_version }} · 本机 v{{ relay.local_model_version }}
+                <span v-if="relay.model_pending" class="relay-lag">待同步</span>
+              </span>
+            </div>
+            <div class="row-line">
+              <span class="line-key">用量回传</span>
+              <span class="line-amount">
+                已传 {{ relay.reported_total }} 条<template v-if="relay.pending_usage"> · 待传 {{ relay.pending_usage }}</template>
+              </span>
+            </div>
+            <div v-if="relay.last_push_at" class="row-line">
+              <span class="line-key">最后回传</span>
+              <span class="line-amount muted">{{ relay.last_push_at }}</span>
+            </div>
+            <div v-if="relay.clock_skew_ms !== null && relay.clock_skew_ms !== undefined" class="row-line">
+              <span class="line-key">时钟偏差</span>
+              <span class="line-amount" :class="Math.abs(relay.clock_skew_ms) > 60000 ? 'warn-text' : 'muted'">
+                {{ (relay.clock_skew_ms / 1000).toFixed(1) }} 秒<template
+                  v-if="Math.abs(relay.clock_skew_ms) > 60000">（过大会影响用量跨月统计）</template>
+              </span>
+            </div>
+            <p v-if="relay.last_error" class="tiny" style="color: var(--danger-text, #d64545); margin: 8px 0 0;">
+              最近错误：{{ relay.last_error }}
+            </p>
+          </template>
+        </section>
+
         <!-- Cluss-Cloud 账号绑定：把「本班班管」和「云端学校管理员」认成同一个人。
              两边原本是两个账号两套密码，交接/换届时最容易乱；绑定后管理员在云端
              的每一次操作都落在「哪个班 + 哪个学号」上。方向必须从这台电脑发起 ——
@@ -328,8 +397,12 @@
             </div>
             <div class="panel-actions">
               <button class="btn btn-sm btn-ghost" @click="loadModels">刷新</button>
-              <button class="btn btn-sm btn-primary" @click="openModelForm(null)">新增模型</button>
+              <button class="btn btn-sm btn-primary" @click="openModelForm(null)" :disabled="modelReadOnly">新增模型</button>
             </div>
+          </div>
+
+          <div v-if="modelReadOnly" class="alert alert-info model-ro-notice">
+            {{ modelReadOnlyReason }}
           </div>
 
           <div class="table-wrap">
@@ -387,13 +460,14 @@
                     <span v-else-if="!m.is_default" class="badge badge-success">可用</span>
                   </td>
                   <td class="col-op-wide">
-                    <button class="btn btn-sm btn-ghost" @click="openModelForm(m)">编辑</button>
+                    <button class="btn btn-sm btn-ghost" @click="openModelForm(m)" :disabled="modelReadOnly">编辑</button>
                     <button
                       v-if="!m.is_default && m.enabled"
                       class="btn btn-sm btn-ghost"
                       @click="setDefault(m)"
+                      :disabled="modelReadOnly"
                     >设默认</button>
-                    <button class="btn btn-sm btn-ghost danger-text" @click="deleteModel(m)">删除</button>
+                    <button class="btn btn-sm btn-ghost danger-text" @click="deleteModel(m)" :disabled="modelReadOnly">删除</button>
                   </td>
                 </tr>
               </tbody>
@@ -413,7 +487,7 @@
             </div>
             <div class="panel-actions">
               <button class="btn btn-sm btn-ghost" @click="loadModels">刷新</button>
-              <button class="btn btn-sm btn-primary" @click="openSourceForm(null)">新增模型源</button>
+              <button class="btn btn-sm btn-primary" @click="openSourceForm(null)" :disabled="modelReadOnly">新增模型源</button>
             </div>
           </div>
 
@@ -447,8 +521,8 @@
                     <span v-else class="badge badge-success">可用</span>
                   </td>
                   <td class="col-op-wide">
-                    <button class="btn btn-sm btn-ghost" @click="openSourceForm(s)">编辑</button>
-                    <button class="btn btn-sm btn-ghost danger-text" @click="deleteSource(s)">删除</button>
+                    <button class="btn btn-sm btn-ghost" @click="openSourceForm(s)" :disabled="modelReadOnly">编辑</button>
+                    <button class="btn btn-sm btn-ghost danger-text" @click="deleteSource(s)" :disabled="modelReadOnly">删除</button>
                   </td>
                 </tr>
               </tbody>
@@ -849,6 +923,10 @@ export default {
       offpeakDefaults: null,
       // 计费基准（默认模型的三档单价），来自 GET /admin/models 的 base_model
       baseModel: null,
+      // node 模式：模型由云端统一下发，本机改了会被下次同步覆盖。
+      // 后端在 GET /admin/models 里给 read_only + 原因，这里只负责呈现。
+      modelReadOnly: false,
+      modelReadOnlyReason: '',
       modelFormOpen: false,
       editingModel: null,
       sourceFormOpen: false,
@@ -913,6 +991,23 @@ export default {
     // 只有 node 模式才谈得上向云端发起绑定（standalone/relay 没有中继可打）
     isNodeMode: function() {
       return !!(this.dashboard && this.dashboard.mode === 'node');
+    },
+    relay: function() {
+      return (this.dashboard && this.dashboard.relay) || {};
+    },
+    // 三档状态：报错 → 报出来；从没成功过 → 提示重试；成功过 → 看距今多久。
+    // 「连上了」不能只看 enabled（那是配置齐不齐），得看有没有真的握手成功。
+    relayTone: function() {
+      if (!this.isNodeMode) return 'off';
+      if (this.relay.last_error) return 'err';
+      if (!this.relay.last_ok_at) return 'wait';
+      return 'ok';
+    },
+    relayToneText: function() {
+      if (!this.isNodeMode) return '未接入';
+      if (this.relay.last_error) return '连接异常';
+      if (!this.relay.last_ok_at) return '等待首次同步';
+      return '已连接 · 最后同步 ' + this.relay.last_ok_at;
     },
     tabOptions: function() {
       return [
@@ -1302,6 +1397,8 @@ export default {
           self.sources = r.data.data.sources || [];
           self.offpeakDefaults = r.data.data.offpeak_defaults || null;
           self.baseModel = r.data.data.base_model || null;
+          self.modelReadOnly = !!r.data.data.read_only;
+          self.modelReadOnlyReason = r.data.data.read_only_reason || '';
         }
       }).catch(function(err) {
         self.error = err.message || '模型列表加载失败';
@@ -1951,6 +2048,44 @@ html.no-flex-gap .roster-actions > * + * {
   font-weight: 600;
   letter-spacing: .18em;
   margin-top: 2px;
+}
+
+/* 云端接入面板 */
+.relay-panel .panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 状态点用「形状+颜色」双编码：只靠颜色的话，色觉障碍用户分不出绿黄红 */
+.relay-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted, #8b8b8b);
+}
+
+.relay-dot.ok { background: var(--ok-text, #2f9e44); }
+.relay-dot.err { background: var(--danger-text, #d64545); }
+.relay-dot.wait {
+  background: transparent;
+  border: 2px solid var(--warn-text, #c58a12);
+}
+
+.relay-lag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: .75rem;
+  line-height: 1.5;
+  color: var(--warn-text, #c58a12);
+  border: 1px solid currentColor;
+}
+
+.model-ro-notice {
+  margin: 0 0 var(--gap-sm, 8px);
 }
 
 .list-scroll {
