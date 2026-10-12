@@ -366,15 +366,23 @@ function queueAllocation(userId, allocatedMicro, weeklyMicro, reason, classUserI
   for (var i = 0; i < pendingAllocItems.length; i++) {
     if (pendingAllocItems[i].user_id === uid) { pendingAllocItems.splice(i, 1); break; }
   }
-  // 幂等键用「学号+额度值」而不是随机数：重推同一条会被云端认成同一笔而跳过，
-  // 但真要改成新值时又是新的一笔。
+  // 幂等键含「入队时看到的云端版本」。
+  //
+  // 为什么不是金额哈希：原来键是「实例+学号+额度值+周配额」，于是「10元 →
+  // 5元 → 改回 10元」的第三步与第一步键相同，被云端当成重放跳过 ——
+  // 而「改错了改回来」是最常见的操作，学生额度就再也回不去。
+  //
+  // 为什么版本要在**入队时**取而不是推送时：推送成功会把 status.assign_version
+  // 更新成云端的新值，若键在推送时才算，同一条待推项重试就会换一个键 ——
+  // 幂等保护等于没有。键在入队时固定，重试天然稳定；新的改动才会读到新版本。
+  var queuedAt = status.assign_version;
   pendingAllocItems.push({
     user_id: uid,
     allocated_micro: Math.max(0, Math.round(Number(allocatedMicro) || 0)),
     weekly_quota_micro: Math.max(0, Math.round(Number(weeklyMicro) || 0)),
     reason: String(reason || '班管在本机调整'),
     class_user_id: String(classUserId || '').trim(),
-    idem_key: constants.makeIdemKey(['up', config.instanceId, uid, allocatedMicro, weeklyMicro])
+    idem_key: constants.makeIdemKey(['up', config.instanceId, uid, allocatedMicro, weeklyMicro, queuedAt])
   });
   status.pending_allocations = pendingAllocItems.length;
 }

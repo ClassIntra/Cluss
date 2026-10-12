@@ -83,6 +83,7 @@ function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
   console.log('========================================');
 
   var pushCalls = [];
+  var allocVersion = 3;
   var relay = await startFakeRelay(function(url, payload, n) {
     if (url.indexOf('/api/sync/version') >= 0) {
       return { json: { code: 200, message: 'ok', data: {
@@ -97,7 +98,8 @@ function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
     }
     if (url.indexOf('/api/sync/allocations') >= 0) {
       pushCalls.push({ kind: 'alloc', body: payload });
-      return { json: { code: 200, message: 'ok', data: { assign_version: 4, applied: payload.items.length, skipped: 0 } } };
+      allocVersion += 1; // 云端每次成功接收都会推进版本（真实行为）
+      return { json: { code: 200, message: 'ok', data: { assign_version: allocVersion, applied: payload.items.length, skipped: 0 } } };
     }
     return {};
   });
@@ -135,21 +137,41 @@ function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
   ok('推成功后队列清空', sync.getStatus().pending_allocations === 0,
     String(sync.getStatus().pending_allocations));
 
-  section('④ 幂等键稳定：同一份变更重推是同一个键');
+  section('④ 幂等键：同一条重试稳定，新的改动必然换键');
+  // 键里含云端版本号（这是「10元→5元→改回10元」不被吞的前提）。
+  // 于是「同一版本内重推」才是同一笔；一旦云端版本动了，哪怕金额回到旧值，
+  // 也必须是一笔新的改动。
   sync.queueAllocation('1001', 2000000, 0, '重复提交', '999999');
   var firstKey = null;
   pushCalls = [];
   await sync.pushPending('999999');
   var p1 = pushCalls.filter(function(c) { return c.kind === 'alloc'; })[0];
   firstKey = p1 && p1.body.items[0].idem_key;
-  ok('第二次推的键与第一次相同', !!firstKey && firstKey === item.idem_key,
-    firstKey + ' vs ' + item.idem_key);
+  // 真正要保证的是「同一条待推项重试时键不变」——断网推失败后队列保留，
+  // 下一轮重试必须是云端眼里的同一笔，否则会重复记账。
+  // （拿「重新入队同一金额」来比是不对的：那是新的一笔操作，版本已推进，
+  //   键本就该不同 —— 正是这一点让「改回旧值」不会被当成重放吞掉。）
+  var kBefore = (sync.getStatus().pending_allocations > 0)
+    ? null : null;
+  ok('队列已清空（上一次推成功）', sync.getStatus().pending_allocations === 0,
+    String(sync.getStatus().pending_allocations));
   sync.queueAllocation('1001', 3000000, 0, '改成 3 元', '999999');
   pushCalls = [];
   await sync.pushPending('999999');
   var p2 = pushCalls.filter(function(c) { return c.kind === 'alloc'; })[0];
   ok('金额变了则键也变（真要改时才记新的一笔）',
     p2 && p2.body.items[0].idem_key !== firstKey, p2 && p2.body.items[0].idem_key);
+  // 关键场景：改回旧值。原实现（键=内容哈希）会把它当成第一次那笔的重放而跳过，
+  // 于是管理员「改错了改回来」时学生额度再也回不去。
+  sync.queueAllocation('1001', 2000000, 0, '改回 2 元', '999999');
+  pushCalls = [];
+  await sync.pushPending('999999');
+  var p3 = pushCalls.filter(function(c) { return c.kind === 'alloc'; })[0];
+  // 上一笔推成功后 status.assign_version 已推进（假中继每次 +1），
+  // 所以「改回 2 元」入队时读到的是新版本 → 键必然不同 → 云端不会当成重放。
+  ok('「改回旧值」也生成新的一笔（不被当成重放吞掉）',
+    p3 && p3.body.items[0].idem_key !== firstKey,
+    p3 && p3.body.items[0].idem_key + ' vs 第一次 ' + firstKey);
 
   section('⑤ 模型配置标脏 + 上行');
   sync.markPolicyDirty();
@@ -236,6 +258,16 @@ function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
   var st4 = sync4.getStatus();
   ok('推送失败时记录了错误', !!st4.last_push_alloc_error, String(st4.last_push_alloc_error));
   ok('队列保留（管理员的操作不丢）', st4.pending_allocations === 1, String(st4.pending_allocations));
+  // 重试键必须和首次一样：靠 §⑧ 推成功时用的同一个假中继拿不到键，
+  // 所以这里直接比「连续两次 pushPending 发出的键」——第二次是队列未清空的同一条。
+  var keys4 = [];
+  var origSeen = relay4.seen;
+  await sync4.pushPending('999999');
+  var last4 = origSeen.filter(function(x) { return x.url.indexOf('/api/sync/allocations') >= 0; }).pop();
+  var first4 = origSeen.filter(function(x) { return x.url.indexOf('/api/sync/allocations') >= 0; })[0];
+  ok('同一条待推项重试时幂等键不变（不会重复记账）',
+    !!(first4 && last4) && first4.body.items[0].idem_key === last4.body.items[0].idem_key,
+    (first4 && first4.body.items[0].idem_key) + ' vs ' + (last4 && last4.body.items[0].idem_key));
   await relay4.close();
 
   section('⑨ 云端空配置不清空本机模型（这是丢过数据的 bug）');
