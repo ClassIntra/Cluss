@@ -200,6 +200,27 @@
               <span class="line-amount">{{ relayToneText }}</span>
             </div>
             <div class="row-line">
+              <span class="line-key">写入权</span>
+              <span class="line-amount">
+                <template v-if="isSeatAdmin">管理员席位 · 本班改动会同步全校</template>
+                <template v-else-if="relay.seat_instance">
+                  <span class="muted">只读 · 管理员席位在 {{ relay.seat_instance }} 班</span>
+                </template>
+                <template v-else><span class="muted">只读 · 本校尚未认领管理员席位</span></template>
+              </span>
+            </div>
+            <div v-if="isSeatAdmin && (relay.pending_allocations > 0 || relay.pending_policy)" class="row-line">
+              <span class="line-key">待同步</span>
+              <span class="line-amount warn-text">
+                额度 {{ relay.pending_allocations }} 条<template v-if="relay.pending_policy"> · 模型配置</template>
+                （正推往云端，失败会在下次轮询重试）
+              </span>
+            </div>
+            <div v-if="relay.last_push_alloc_error || relay.last_push_policy_error" class="row-line">
+              <span class="line-key">同步提示</span>
+              <span class="line-amount danger-text">{{ relay.last_push_policy_error || relay.last_push_alloc_error }}</span>
+            </div>
+            <div class="row-line">
               <span class="line-key">额度策略</span>
               <span class="line-amount">
                 云端 v{{ relay.assign_version }} · 本机 v{{ relay.local_assign_version }}
@@ -401,7 +422,10 @@
             </div>
           </div>
 
-          <div v-if="modelReadOnly" class="alert alert-info model-ro-notice">
+          <div v-if="modelWritesToSchool" class="alert alert-info model-ro-notice">
+            本班是本校管理员席位：在这里的改动会自动同步到全校所有班。改价等于给全校调价，请慎重。
+          </div>
+          <div v-else-if="modelReadOnly" class="alert alert-info model-ro-notice">
             {{ modelReadOnlyReason }}
           </div>
 
@@ -923,10 +947,12 @@ export default {
       offpeakDefaults: null,
       // 计费基准（默认模型的三档单价），来自 GET /admin/models 的 base_model
       baseModel: null,
-      // node 模式：模型由云端统一下发，本机改了会被下次同步覆盖。
+      // node 模式：模型由云端统一下发。**持有管理员席位的班可以改**，改完上行
+      // 推给云端、同步全校；非席位班只读（改了既同步不了，也会被下次下发覆盖）。
       // 后端在 GET /admin/models 里给 read_only + 原因，这里只负责呈现。
       modelReadOnly: false,
       modelReadOnlyReason: '',
+      modelWritesToSchool: false,
       modelFormOpen: false,
       editingModel: null,
       sourceFormOpen: false,
@@ -994,6 +1020,10 @@ export default {
     },
     relay: function() {
       return (this.dashboard && this.dashboard.relay) || {};
+    },
+    // 是否持有云端管理员席位 —— 决定班管在本地能不能改全校配置。以云端告知为准。
+    isSeatAdmin: function() {
+      return !!this.relay.is_seat_admin;
     },
     // 三档状态：报错 → 报出来；从没成功过 → 提示重试；成功过 → 看距今多久。
     // 「连上了」不能只看 enabled（那是配置齐不齐），得看有没有真的握手成功。
@@ -1399,6 +1429,7 @@ export default {
           self.baseModel = r.data.data.base_model || null;
           self.modelReadOnly = !!r.data.data.read_only;
           self.modelReadOnlyReason = r.data.data.read_only_reason || '';
+          self.modelWritesToSchool = !!r.data.data.writes_to_school;
         }
       }).catch(function(err) {
         self.error = err.message || '模型列表加载失败';

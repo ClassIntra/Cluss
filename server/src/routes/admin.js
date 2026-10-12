@@ -42,17 +42,60 @@ function currentAssignVersion() {
   return parseInt(initDb.getMeta('assign_version', '0'), 10) || 0;
 }
 
-// node 模式下模型/源/视觉/峰谷配置**只读**（设计文档 §5.3）：
-// 统一下发的意义就在于没有分班差异，留口子会制造「某班的模型悄悄不一样了」
-// 这类难排查问题。本机改了也会在中枢下一次下发时被整表覆盖，不如直接拒绝。
+// node 模式下的模型/源/视觉/峰谷写入闸门（设计文档 §5.3 的演进）：
+//
+// 原设计是「node 模式一律只读」——那时配置只能在中枢改。2026-10-12 起
+// 改成：**持有云端管理员席位的那个班**可以在本机改，改完由本节点上行推给
+// 云端，云端再下发给同校所有班。这样「一校一个管理员」的设定才不会变成
+// 「只有坐云端网页的人能配」——管理员在教室电脑前就能配。
+//
+// 非席位班仍然只读：它们改了不会同步到全校，只会造成「某班的模型悄悄
+// 不一样」这类难排查问题（而且下一次下发就被覆盖，白改）。
+//
+// 写入权以云端告知的 is_seat_admin 为准，本机不自己认定。
 function requireCanEditModelConfig(req, res, next) {
-  if (config.mode === config.MODES.NODE) {
-    return res.status(403).json({
-      code: 403,
-      message: 'node 模式下模型配置由中继统一下发，本机只读。请到中继管理台修改'
-    });
+  if (config.mode !== config.MODES.NODE) return next();
+  if (!syncService.isEnabled()) {
+    return res.status(403).json({ code: 403, message: '本机未接入中继，无法修改全校配置' });
   }
+  var st = syncService.getStatus();
+  if (!st.is_seat_admin) {
+    var where = st.seat_instance ? ('本校管理员席位在 ' + st.seat_instance + ' 班，本班只能查看') : '本校还没有认领管理员席位';
+    return res.status(403).json({ code: 403, message: where + '。请到管理员班操作，或在云端完成账号绑定。' });
+  }
+  // 记下是谁改的：上行时云端要校验这个学号与席位一致
+  syncService.rememberSeatUser(req.user.user_id);
   next();
+}
+
+// 模型/源/视觉/峰谷改完之后统一走这里：升版本 + 标脏待上行。
+// 分散在 9 处重复写「bumpModelVersion + markPolicyDirty」迟早会漏一处，
+// 漏了的表现就是「那个设置改了但同步不到全校」，很难查。
+function bumpModelAndQueue(req) {
+  syncService.rememberSeatUser(req.user.user_id);
+  syncService.markPolicyDirty();
+  var v = modelConfig.bumpModelVersion();
+  // 立刻推一次，不等下个轮询周期 —— 班管改完希望马上看到「已同步全校」。
+  // 推失败不阻塞本次写操作（学生要用），队列留在内存下轮重试。
+  if (syncService.isEnabled()) {
+    syncService.pushPending(req.user.user_id).catch(function() {});
+  }
+  return v;
+}
+
+// 额度改完之后走这里：升本机版本 + 入待推队列（席位班会同步全校）。
+//
+// 这修的是一个静默丢数据的 bug：额度路由一直**不受** requireCanEditModelConfig
+// 拦截，所以 node 模式下老师改了额度确实写进了本机 —— 但没人推给云端，
+// 下一次轮询 `assign_version` 被云端版本覆盖回去，改动就凭空消失了，
+// 老师那边看着「加过了」，学生那边额度纹丝不动。
+function bumpAssignAndQueue(req, userId, allocatedMicro, weeklyMicro, reason) {
+  syncService.rememberSeatUser(req.user.user_id);
+  var v = bumpAssignVersion();
+  if (!syncService.isEnabled()) return v;
+  syncService.queueAllocation(userId, allocatedMicro, weeklyMicro, reason, req.user.user_id);
+  syncService.pushPending(req.user.user_id).catch(function() {});
+  return v;
 }
 
 // 校验金额输入（元 → 微元）
@@ -203,7 +246,8 @@ router.put('/users/:userId/quota', auth.requireAuth, auth.requireAdmin, function
     origin_instance: config.instanceId
   });
 
-  var version = bumpAssignVersion();
+  var version = bumpAssignAndQueue(req, userId, newAllocated, weeklyMicro,
+    String(req.body.reason || '') || ('本机追加充值 ' + config.microToYuan(parsed.micro).toFixed(2) + ' 元'));
   console.log('[Admin] 追加充值: %s (%s) +%s → %s 元 / 周限额 %s 元，操作人 %s',
     userId, user.real_name, config.microToYuan(parsed.micro), config.microToYuan(newAllocated),
     config.microToYuan(weeklyMicro), req.user.user_id);
@@ -279,7 +323,12 @@ router.post('/users/quota/batch', auth.requireAuth, auth.requireAdmin, function(
         origin_instance: config.instanceId
       });
 
-      results.push({ user_id: userId, allocated_yuan: config.microToYuan(newAllocated).toFixed(2) });
+      results.push({
+        user_id: userId,
+        allocated_yuan: config.microToYuan(newAllocated).toFixed(2),
+        allocated_micro: newAllocated,
+        weekly_quota_micro: weeklyMicro
+      });
     }
   });
 
@@ -290,7 +339,19 @@ router.post('/users/quota/batch', auth.requireAuth, auth.requireAdmin, function(
     return res.status(500).json({ code: 500, message: '批量操作失败，已回滚：' + err.message });
   }
 
-  var version = results.length ? bumpAssignVersion() : currentAssignVersion();
+  var version = currentAssignVersion();
+  if (results.length) {
+    // 批量：逐个入待推队列（每人一条，云端按 idem_key 逐条去重）
+    for (var qi = 0; qi < results.length; qi++) {
+      syncService.rememberSeatUser(req.user.user_id);
+      if (syncService.isEnabled()) {
+        syncService.queueAllocation(results[qi].user_id, results[qi].allocated_micro,
+          results[qi].weekly_quota_micro, '本机批量分配', req.user.user_id);
+      }
+    }
+    version = bumpAssignVersion();
+    if (syncService.isEnabled()) syncService.pushPending(req.user.user_id).catch(function() {});
+  }
   console.log('[Admin] 批量分配完成: 成功 %d 个，失败 %d 个，操作人 %s', results.length, failed.length, req.user.user_id);
 
   res.json({
@@ -320,7 +381,8 @@ router.delete('/users/:userId/quota', auth.requireAuth, auth.requireAdmin, funct
     origin_instance: config.instanceId
   });
 
-  var version = bumpAssignVersion();
+  var version = bumpAssignAndQueue(req, userId, 0, 0,
+    String(req.body && req.body.reason || '管理员收回额度'));
   console.log('[Admin] 额度已收回: %s，操作人 %s', userId, req.user.user_id);
   res.json({ code: 200, message: '已收回额度', data: { assign_version: version } });
 });
@@ -955,12 +1017,19 @@ router.get('/models', auth.requireAuth, auth.requireAdmin, function(req, res) {
     code: 200,
     message: 'ok',
     data: {
-      // node 模式下模型由云端统一下发，本机改了也会被下一次同步覆盖。
-      // 告诉前端「不可改 + 为什么」，否则管理员会在这里改半天、刷新又变回去。
-      read_only: config.mode === config.MODES.NODE,
-      read_only_reason: config.mode === config.MODES.NODE
-        ? '本机已接入 Cluss-Cloud，模型配置由云端统一管理，改动会在下一次同步时被覆盖。请到云端修改。'
-        : '',
+      // node 模式下模型由云端统一下发。持有管理员席位的班可以改（改动上行同步
+      // 全校），非席位班只读 —— 前端据此禁用按钮并说明原因。
+      read_only: config.mode === config.MODES.NODE && !(syncService.getStatus().is_seat_admin),
+      read_only_reason: (function() {
+        if (config.mode !== config.MODES.NODE) return '';
+        var st = syncService.getStatus();
+        if (st.is_seat_admin) return '';
+        if (!st.seat_instance) {
+          return '本机已接入 Cluss-Cloud，但本校还没有认领管理员席位。认领后本班班管就能在这里改配置，改动会同步到全校所有班。';
+        }
+        return '本校管理员席位在 ' + st.seat_instance + ' 班，本班只能查看。请到管理员班修改，或在云端解绑后由本班认领。';
+      })(),
+      writes_to_school: config.mode === config.MODES.NODE && !!syncService.getStatus().is_seat_admin,
       models: rows.map(function(r) { return serializeModelForAdmin(r, sourcesMap); }),
       // 模型源清单（源可选；模型可挂源共享地址/密钥，也可自带连接信息）
       sources: ai.listSources().map(serializeSourceForAdmin),
@@ -1146,7 +1215,7 @@ router.post('/models', auth.requireAuth, auth.requireAdmin, requireCanEditModelC
   );
 
   console.log('[Admin] 新增模型: %s by %s', d.id, req.user.user_id);
-  var mv = modelConfig.bumpModelVersion();
+  var mv = bumpModelAndQueue(req);
   var row = db.prepare('SELECT * FROM ai_models WHERE id = ?').get(d.id);
   res.json({ code: 200, message: '已添加，模型配置版本 ' + mv + '（各班节点将在 1 分钟内自动同步）', data: serializeModelForAdmin(row) });
 });
@@ -1184,7 +1253,7 @@ router.put('/models/:id', auth.requireAuth, auth.requireAdmin, requireCanEditMod
   stmt.run.apply(stmt, params);
 
   console.log('[Admin] 更新模型: %s by %s', id, req.user.user_id);
-  var mv = modelConfig.bumpModelVersion();
+  var mv = bumpModelAndQueue(req);
   res.json({
     code: 200,
     message: '已更新，模型配置版本 ' + mv + '（各班节点将在 1 分钟内自动同步）',
@@ -1210,7 +1279,7 @@ router.delete('/models/:id', auth.requireAuth, auth.requireAdmin, requireCanEdit
 
   if (used > 0) {
     db.prepare('UPDATE ai_models SET enabled = 0, is_default = 0 WHERE id = ?').run(id);
-    modelConfig.bumpModelVersion();
+    bumpModelAndQueue(req);
     console.log('[Admin] 模型已被 %d 个会话引用，改为禁用: %s', used, id);
     return res.json({
       code: 200,
@@ -1220,7 +1289,7 @@ router.delete('/models/:id', auth.requireAuth, auth.requireAdmin, requireCanEdit
   }
 
   db.prepare('DELETE FROM ai_models WHERE id = ?').run(id);
-  modelConfig.bumpModelVersion();
+  bumpModelAndQueue(req);
   console.log('[Admin] 删除模型: %s by %s', id, req.user.user_id);
   res.json({ code: 200, message: '已删除', data: { soft_disabled: false } });
 });
@@ -1240,7 +1309,7 @@ router.post('/models/:id/set-default', auth.requireAuth, auth.requireAdmin, requ
   tx();
 
   console.log('[Admin] 默认模型改为: %s（倍率已重置为 ×1.00）by %s', id, req.user.user_id);
-  modelConfig.bumpModelVersion();
+  bumpModelAndQueue(req);
   res.json({ code: 200, message: '已设为默认模型（计费基准，倍率已重置为 ×1.00）', data: { default_model: id } });
 });
 
@@ -1342,7 +1411,7 @@ router.post('/sources', auth.requireAuth, auth.requireAdmin, requireCanEditModel
   );
 
   console.log('[Admin] 新增模型源: %s by %s', d.id, req.user.user_id);
-  modelConfig.bumpModelVersion();
+  bumpModelAndQueue(req);
   res.json({
     code: 200,
     message: '已添加',
@@ -1376,7 +1445,7 @@ router.put('/sources/:id', auth.requireAuth, auth.requireAdmin, requireCanEditMo
   stmt.run.apply(stmt, params);
 
   console.log('[Admin] 更新模型源: %s by %s', id, req.user.user_id);
-  modelConfig.bumpModelVersion();
+  bumpModelAndQueue(req);
   res.json({
     code: 200,
     message: '已更新',
@@ -1409,7 +1478,7 @@ router.delete('/sources/:id', auth.requireAuth, auth.requireAdmin, requireCanEdi
   tx();
 
   console.log('[Admin] 删除模型源: %s（%d 个模型回退自带配置）by %s', id, used, req.user.user_id);
-  modelConfig.bumpModelVersion();
+  bumpModelAndQueue(req);
   res.json({
     code: 200,
     message: used > 0 ? ('已删除，' + used + ' 个模型已回退到自带配置') : '已删除',
@@ -1518,7 +1587,7 @@ router.put('/offpeak', auth.requireAuth, auth.requireAdmin, requireCanEditModelC
     discount: zhe
   });
   // 峰谷是节点本地计费口径的一部分（模型级峰窗留空时回退全局），必须随配置下发
-  modelConfig.bumpModelVersion();
+  bumpModelAndQueue(req);
 
   var activeNow = pricing.isInOffpeakWindow(cfg);
   res.json({
@@ -1633,7 +1702,7 @@ router.put('/vision', auth.requireAuth, auth.requireAdmin, requireCanEditModelCo
 
   console.log('[Admin] 视觉配置更新 by %s: %j', req.user.user_id, patch);
   // 视觉转述配置随模型配置一起下发（§5.2：relayModelId 不随行节点会引用到不存在的模型）
-  modelConfig.bumpModelVersion();
+  bumpModelAndQueue(req);
   var cfg = vision.getVisionConfig();
   res.json({
     code: 200,
