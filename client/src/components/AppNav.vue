@@ -4,7 +4,7 @@
       <button v-if="showMenuButton" class="menu-btn" type="button" title="菜单" @click="$emit('toggle-sidebar')">
         ☰
       </button>
-      <ClussLogo :size="32" />
+      <ClussLogo :size="40" />
       <div class="brand-text">
         <div class="brand-name">Cluss</div>
         <div class="brand-sub">引导式 AI 解题</div>
@@ -82,6 +82,11 @@
 
           <router-link class="menu-item" to="/usage" role="menuitem" @click.native="closeMenu">我的消耗</router-link>
 
+          <!-- 设置：偏好的统一入口。放这里而不是进主导航——
+               它是低频的「配置」动作，混进六项导航会把导航挤宽
+               （与「我的消耗」不进导航同理，见 navItems 计算属性里的说明）。 -->
+          <button class="menu-item" type="button" role="menuitem" @click="openPrefs">设置</button>
+
           <button class="menu-item" type="button" role="menuitem" @click="toggleTheme">
             <span class="menu-item-row">
               <span>{{ isDark ? '浅色模式' : '深色模式' }}</span>
@@ -102,11 +107,32 @@
         </div>
       </transition>
     </div>
+
+    <!--
+      偏好设置弹窗挂在这里 —— 顶栏每页都有，所以全站都能从右上角「设置」打开它，
+      不必像以前那样只能进对话页去开。
+      为什么它和用户菜单一样、打开时要被搬到别处：
+        弹窗遮罩是 position: fixed，而顶栏是 .glass（带 backdrop-filter）。
+        按 CSS 规范，backdrop-filter 非 none 的祖先会成为 fixed 后代的「包含块」——
+        遮罩就会被按顶栏那一小条（约 56px）来定位和量尺寸，整个弹窗错位。
+        搬到 .glass 之外就与它彻底解耦（与菜单搬 body 同一类原因，见上面 attachMenu）。
+      为什么落到 #app-root 而不是 body：
+        #app-root 自带 position/z-index，本身就是一个层叠上下文，全局 toast(999) 与
+        ConfirmDialog(520) 都在里面；挂 body 上反而会盖住这些提示
+        （比如保存人格后立刻弹的「已保存」就看不到了）。
+    -->
+    <AiPrefs
+      v-if="prefsOpen"
+      ref="prefs"
+      initial-tab="general"
+      @close="closePrefs"
+    />
   </header>
 </template>
 
 <script>
 import ClussLogo from './ClussLogo.vue';
+import AiPrefs from './AiPrefs.vue';
 import navItems from '@/utils/nav-items';
 import { isEmbedded, backToClassIntra } from '@/utils/embedded';
 import { version } from '../../package.json';
@@ -115,7 +141,7 @@ import { version } from '../../package.json';
 // 抽成组件是因为各页都要用；各页自己写一份会导致导航项逐渐不一致
 export default {
   name: 'AppNav',
-  components: { ClussLogo },
+  components: { ClussLogo, AiPrefs },
   props: {
     active: { type: String, default: '' },
     showMenuButton: { type: Boolean, default: false }
@@ -123,6 +149,8 @@ export default {
   data: function() {
     return {
       menuOpen: false,
+      // 「偏好设置」弹窗开关：打开即挂载 AiPrefs（组件存在 = 弹窗打开）
+      prefsOpen: false,
       version: version
     };
   },
@@ -174,6 +202,7 @@ export default {
   beforeDestroy: function() {
     this.detachMenu();
     this.destroyMenuNode();
+    this.destroyPrefsNode();
   },
   methods: {
     // 给宿主（ClassIntra 应用壳）发消息让它退出 Cluss 应用；宿主未监听时静默
@@ -279,6 +308,40 @@ export default {
       if (menu && menu.parentNode === document.body) {
         menu.parentNode.removeChild(menu);
       }
+    },
+
+    // 打开「偏好设置」：必须先收起用户菜单。
+    // 菜单是搬到 body 上的 fixed 面板（z-index 1000），层级高于弹窗（350）——
+    // 不收起来它会盖在遮罩之上，弹窗里的东西一个都点不到。
+    openPrefs: function() {
+      var self = this;
+      this.closeMenu();
+      this.prefsOpen = true;
+      // 挂载后再搬：此刻 $refs.prefs 才存在，且早于一次绘制，不会看到错位
+      this.$nextTick(function() { self.attachPrefs(); });
+    },
+
+    // 把弹窗节点搬到 #app-root 下（原因见模板注释）。
+    // ⚠️ 目标必须是 #app-root 而不是 body：body 是这些浮层最外层的层叠上下文，
+    //    挂上去会压住同在 #app-root 里的全局 toast / 确认框（见模板注释）。
+    attachPrefs: function() {
+      var el = this.$refs.prefs && this.$refs.prefs.$el;
+      if (!el) return;
+      var host = document.getElementById('app-root') || document.body;
+      if (el.parentNode !== host) host.appendChild(el);
+    },
+
+    closePrefs: function() {
+      // 置 false 即可：Vue 移除 vnode 时按节点「当前的」DOM 父级来摘，
+      // 所以即使节点已搬到 #app-root，也能被正确移除，无需手动 removeChild
+      this.prefsOpen = false;
+    },
+
+    // 组件销毁（切页）时兜底摘节点：弹窗被搬到了 #app-root 下，
+    // 已不是顶栏的后代 —— 移除顶栏不会连带移除它，必须显式摘掉
+    destroyPrefsNode: function() {
+      var el = this.$refs.prefs && this.$refs.prefs.$el;
+      if (el && el.parentNode) el.parentNode.removeChild(el);
     },
 
     closeMenu: function() {

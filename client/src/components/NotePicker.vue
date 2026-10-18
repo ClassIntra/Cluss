@@ -68,8 +68,12 @@
 //   云盘选的是"文件"（按 hash），笔记选的是"笔记"（按 id，带标题与标签）。
 //   语义不同、数据源不同、展示也不同（笔记没有缩略图，标题才是关键信息）。
 
+import modalEsc from '@/mixins/modal-esc';
+
 export default {
   name: 'NotePicker',
+  // Esc 关闭（组件由 v-if 控制，存在即打开，见 mixin 说明）
+  mixins: [modalEsc],
   props: {
     max: { type: Number, default: 5 },
     title: { type: String, default: '引用笔记' },

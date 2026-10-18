@@ -8,7 +8,7 @@
           <Segmented v-model="kind" :options="kindOptions" />
           <label class="btn btn-sm btn-primary upload-btn" :class="{ disabled: uploading }">
             <input type="file" multiple class="file-input" :disabled="uploading" @change="onPick" />
-            {{ uploading ? '上传中…' : '上传文件' }}
+            {{ uploading ? '上传中…' + (uploadPercent > 0 ? uploadPercent + '%' : '') : '上传文件' }}
           </label>
         </div>
         <div class="toolbar-right">
@@ -28,7 +28,8 @@
         </div>
       </div>
 
-      <div v-if="error" class="alert alert-danger">{{ error }}</div>
+      <!-- 整页列表加载失败：统一用带「重试」的错误条（单次动作失败仍走 toast） -->
+      <ErrorBanner :message="error" retry @retry="load" />
 
       <div class="list-wrap glass">
         <div v-if="loading" class="empty-hint">读取中…</div>
@@ -92,11 +93,16 @@
 
 <script>
 import AppNav from '@/components/AppNav.vue';
+import ErrorBanner from '@/components/ErrorBanner.vue';
 import Segmented from '@/components/Segmented.vue';
+
+// 云盘视图记忆的 localStorage 键：记住上次选的分类（全部/图片/文本），
+// 切页或刷新后不再落回默认「全部」（写法参考 Notes.vue 的持久化）。
+var CLOUD_VIEW_KEY = 'cluss_cloud_view';
 
 export default {
   name: 'CloudView',
-  components: { AppNav, Segmented },
+  components: { AppNav, ErrorBanner, Segmented },
   data: function() {
     return {
       files: [],
@@ -104,6 +110,8 @@ export default {
       kind: '',
       loading: false,
       uploading: false,
+      // 上传进度百分比（0-100）。axios 的 onUploadProgress 回填，见 onPick。
+      uploadPercent: 0,
       error: '',
       previewing: null,
       // 加载失败的文件（hash → true）。401/404 时 <img> 只会给一个
@@ -126,11 +134,34 @@ export default {
       return this.files.filter(function(f) { return f.kind === self.kind; });
     }
   },
+  watch: {
+    // 分类切了就记下来，下次进入沿用（见 restoreView / saveView）
+    kind: function() { this.saveView(); }
+  },
   mounted: function() {
+    // 先恢复上次的分类再取数据：恢复发生时列表还是空的，不会闪一下再变
+    this.restoreView();
     this.load();
     this.loadQuota();
   },
   methods: {
+    // 视图记忆：恢复上次的分类筛选。只认白名单内的值 ——
+    // localStorage 可能被清空或写入脏数据，非法值一律落回默认「全部」。
+    restoreView: function() {
+      try {
+        var v = localStorage.getItem(CLOUD_VIEW_KEY);
+        if (v === 'image' || v === 'text') this.kind = v;
+      } catch (e) {}
+    },
+
+    saveView: function() {
+      try {
+        localStorage.setItem(CLOUD_VIEW_KEY, this.kind || '');
+      } catch (e) {
+        // 隐私模式等场景 localStorage 可能抛异常，记忆失效不该影响筛选本身
+      }
+    },
+
     load: function() {
       var self = this;
       this.loading = true;
@@ -158,6 +189,7 @@ export default {
 
       this.uploading = true;
       this.error = '';
+      this.uploadPercent = 0;
 
       var chain = Promise.resolve();
       var done = 0;
@@ -169,7 +201,15 @@ export default {
           form.append('file', file);
           return self.$http.post('/cloud/upload', form, {
             headers: { 'Content-Type': 'multipart/form-data' },
-            timeout: 120000
+            timeout: 120000,
+            // 浏览器上传进度：axios 1.x 支持该配置项。
+            // total 不可知时（lengthComputable 为假）是 0，跳过以免算出 NaN。
+            // 多文件是串行上传，所以用「已完成个数 + 当前文件进度」估整批百分比。
+            onUploadProgress: function(pe) {
+              if (!pe || !pe.total) return;
+              var frac = pe.loaded / pe.total;
+              self.uploadPercent = Math.min(99, Math.round((done + frac) / picked.length * 100));
+            }
           }).then(function(r) {
             if (r.data.code !== 200) throw new Error(r.data.message || '上传失败');
             done++;
@@ -183,12 +223,17 @@ export default {
         if (done) {
           self.$store.dispatch('toast', { message: '成功上传 ' + done + ' 个文件', type: 'success' });
         }
-        if (failed.length) self.error = failed.join('；');
+        // 上传失败属于「单次动作失败」，走 toast。
+        // 之前写进 this.error 会被紧接着调用的 load() 里的 error='' 抹掉，等于没提示。
+        if (failed.length) {
+          self.$store.dispatch('toast', { message: failed.join('；'), type: 'error' });
+        }
         return self.load();
       }).then(function() {
         self.loadQuota();
       }).then(function() {
         self.uploading = false;
+        self.uploadPercent = 0;
         if (self.$refs && e.target) e.target.value = '';
       });
     },
@@ -345,6 +390,7 @@ html.no-flex-gap .toolbar-left > * + * {
 .toolbar-right {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 html.no-flex-gap .toolbar-right > * + * {

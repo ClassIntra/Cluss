@@ -3,7 +3,7 @@
     <div class="auth-shell">
       <aside class="brand-pane">
         <div class="brand-head">
-          <ClussLogo :size="48" />
+          <ClussLogo :size="56" />
           <div>
             <div class="brand-name">Cluss</div>
             <div class="brand-tag">引导式 AI 解题</div>
@@ -249,7 +249,9 @@ export default {
   align-items: center;
   justify-content: center;
   min-height: var(--app-height);
-  padding: var(--gap-lg);
+  /* 保留 gap-lg 的呼吸感，同时用安全区兜底（与登录页同一口径）：
+     注册页没有顶栏，刘海/挖孔会直接压住品牌区。无刘海设备观感不变。 */
+  padding: max(var(--gap-lg), env(safe-area-inset-top, 0px)) max(var(--gap-lg), env(safe-area-inset-right, 0px)) max(var(--gap-lg), env(safe-area-inset-bottom, 0px)) max(var(--gap-lg), env(safe-area-inset-left, 0px));
   overflow-y: auto;
 }
 

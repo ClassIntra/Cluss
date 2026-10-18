@@ -504,38 +504,6 @@ function pushPending(classUserId) {
 // ---- 启动定时任务 ----
 var timers = [];
 
-// ---- 向 Cluss-Cloud 申请账号绑定确认码（只有班管手动触发）----
-//
-// 绑定是把「本班班管」和「云端学校管理员」认成同一个人，解决两套账号、
-// 两个密码的困扰（换届/交接时最容易出岔）。方向**必须**是设备发起：
-// 云端不存班级密码，网页上填学号等于谁都能声称自己是任何人；只有本机
-// 能作证「此刻登录的这个人就是本班学号 X，而且他是班管」。
-// 所以这里把当前登录人的 user_id 随请求带上去，云端再回一个一次性确认码，
-// 由那位管理员用自己的密码在网页上确认，两头对上才认作同一人。
-//
-// 中继不支持这个端点（自托管 relay，或云端尚未部署新版本）时只会 404，
-// 页面把服务端的话原样显示给班管，不做任何猜测。
-function requestBindCode(adminUsername, classUserId) {
-  if (!isEnabled()) return Promise.reject(new Error('本机未接入中继（当前不是 node 模式）'));
-  return axios.post(config.relay.url + '/api/sync/bind-request', {
-    admin_username: String(adminUsername || '').trim().toLowerCase(),
-    class_user_id: String(classUserId || '').trim(),
-    class_admin: true
-  }, { timeout: TIMEOUT_MS, headers: headers() }).then(function(resp) {
-    var data = (resp.data && resp.data.data) || {};
-    if (!data.bind_code) throw new Error('中继没有返回确认码（可能不是 Cluss-Cloud）');
-    console.log('[Sync] 已申请账号绑定确认码（云端管理员 %s）', data.admin_username);
-    return data;
-  }).catch(function(err) {
-    // axios 的默认报错是 "Request failed with status code 403"，把云端写好的
-    // 人话丢干净了。绑定失败的每一种都是「身份对不上」，班管必须看到具体是哪一处，
-    // 所以这里把响应体里的 message 捞出来重新抛。
-    var payload = (err && err.response && err.response.data) || null;
-    var msg = payload && payload.message;
-    throw new Error(msg || (err && err.message ? err.message : String(err)));
-  });
-}
-
 function start() {
   if (!isEnabled()) {
     if (config.mode === config.MODES.NODE) {
@@ -623,7 +591,6 @@ module.exports = {
   pollOnce: pollOnce,
   reportUsage: reportUsage,
   getStatus: getStatus,
-  requestBindCode: requestBindCode,
   // 上行写（席位班管在本地改 → 同步全校）
   markPolicyDirty: markPolicyDirty,
   queueAllocation: queueAllocation,

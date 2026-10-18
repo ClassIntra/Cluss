@@ -22,6 +22,15 @@ export default {
       } catch (e) {
         return false;
       }
+    },
+
+    // 当前是否正在流式输出。各页面用自己的 data 声明（对话页是 sending），
+    // 没声明的页面恒为 false —— 行为与加这个判断之前完全一致，不会漏画。
+    //
+    // 需要它的原因见 updated 里的说明：流式期间这次扫描 100% 是空转，
+    // 而对话页的整棵子树包含侧栏会话列表和全部历史气泡，每帧扫一遍不便宜。
+    $_mdStreaming: function() {
+      return !!(this.sending || this.streaming);
     }
   },
 
@@ -32,6 +41,14 @@ export default {
         invalidateMermaidCharts(this.$el);
         this.$_mdMountCharts();
       }
+    },
+
+    // 流式**结束**的那一帧补扫一次。
+    // updated 在流式期间被跳过了，而真正的图表只可能出现在收尾那次全量渲染之后
+    // （流式中恒为 data-pending 占位），所以这里是唯一会画出图表的时机。
+    // 不补这一下，"回答里带流程图"就会变成永远停在骨架上。
+    '$_mdStreaming': function(now) {
+      if (!now) this.$nextTick(this.$_mdMountCharts);
     }
   },
 
@@ -46,6 +63,16 @@ export default {
   },
 
   updated: function() {
+    // 流式输出期间**不扫图表**。
+    //
+    // 为什么必须拦：updated 在每一次组件重渲染之后都会触发，而流式期间每一帧
+    // 都在改 m.html —— 于是每帧都要对整棵子树跑一次 querySelectorAll('.mermaid-chart')。
+    // 可流式期间渲染出来的图表恒为 data-pending="1" 的占位（markdown 的 lightMode
+    // 决定的），真正的绘制必然发生在收尾那一次全量渲染之后 —— 这次扫描 100% 空转。
+    // 而对话页的整棵子树包含侧栏会话列表和全部历史气泡，每帧扫一遍不便宜。
+    //
+    // 收尾的补扫由 $_mdStreaming 的 watcher 负责（见上），不会漏画。
+    if (this.$_mdStreaming) return;
     this.$_mdMountCharts();
   },
 

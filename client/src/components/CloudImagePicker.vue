@@ -4,10 +4,14 @@
       <div class="picker-header">
         <span>选择云盘文件</span>
         <div class="picker-header-actions">
-          <button class="picker-fullscreen-btn" @click="openFullscreen" title="全屏浏览">
-            <i class="fa-solid fa-expand"></i>
+          <button class="picker-fullscreen-btn" @click="openFullscreen" title="全屏浏览" aria-label="全屏浏览">
+            <i class="fa-solid fa-expand" aria-hidden="true"></i>
           </button>
-          <button class="picker-close" @click="$emit('close')"><i class="fa-solid fa-xmark"></i></button>
+          <!-- aria-label 必须给：按钮内容是一个空的 <i> 图标，
+               不给的话可访问名称是空的，读屏只会念出一个"按钮" -->
+          <button class="picker-close" @click="$emit('close')" title="关闭" aria-label="关闭">
+            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+          </button>
         </div>
       </div>
       <div class="picker-search">
@@ -33,19 +37,36 @@
       </div>
       <div class="picker-content">
         <div v-if="loading" class="picker-loading">
-          <i class="fa-solid fa-spinner fa-spin"></i>
+          <i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>
           <span>加载中...</span>
         </div>
+        <!-- ⚠️ 失败态必须排在空态**之前**。
+             原来这里是 loading → 空 → 列表，而请求失败时 files 停在初始的 []，
+             于是屏幕上显示的是「云盘无文件」—— 学生以为自己的文件丢了。
+             把"加载失败"伪装成"没有数据"是最容易误导人的一种错误处理：
+             它让学生去怀疑数据本身，而不是去检查网络。
+             排序即优先级：先告诉他真实发生了什么，再给一条重试的路。 -->
+        <div v-else-if="loadError" class="picker-empty">
+          <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+          <span>加载失败，请检查网络后重试</span>
+          <button type="button" class="picker-retry-btn" @click="loadFiles">重试</button>
+        </div>
         <div v-else-if="filteredFiles.length === 0" class="picker-empty">
-          <i class="fa-solid fa-cloud"></i>
+          <i class="fa-solid fa-cloud" aria-hidden="true"></i>
           <span>{{ searchQuery ? '无匹配文件' : '云盘无文件' }}</span>
         </div>
         <div v-else class="picker-grid">
+          <!-- 格子是选中文件的唯一入口：补 keyboard 可达（同其他列表项） -->
           <div
             v-for="file in filteredFiles"
             :key="file.hash || file.name"
             class="picker-item"
+            role="button"
+            tabindex="0"
+            :aria-label="'选择文件：' + (file.display_name || file.name)"
             @click="selectFile(file)"
+            @keydown.enter.self="selectFile(file)"
+            @keydown.space.self.prevent="selectFile(file)"
           >
             <img v-if="getFileType(file) === 'image'" :src="file.url + '?w=300'" :alt="file.name" loading="lazy" class="picker-img" />
             <div v-else-if="getFileType(file) === 'video'" class="picker-icon-card">
@@ -64,14 +85,20 @@
 
 <script>
 import api from '@/utils/api';
+import modalEsc from '@/mixins/modal-esc';
 
 export default {
   name: 'CloudImagePicker',
+  // Esc 关闭（组件由 v-if 控制，存在即打开，见 mixin 说明）
+  mixins: [modalEsc],
   data: function() {
     return {
       files: [],
       folders: [],
       loading: true,
+      // 加载失败标记。与 loading 分开存：loading 结束不代表成功，
+      // 而"失败"与"真的没有文件"在界面上必须是两种不同的呈现（见模板）。
+      loadError: false,
       searchQuery: '',
       mediaFilter: 'all',
       folderFilter: 'all'
@@ -124,6 +151,8 @@ export default {
     loadFiles: function() {
       var self = this;
       self.loading = true;
+      // 每次重试先清掉上一次的失败标记，否则重试成功后错误态会残留
+      self.loadError = false;
       var params = {};
       // 选择具体分组时，传 folder 参数让服务端绕过 hide_from_all 限制
       if (self.folderFilter !== 'all') {
@@ -135,7 +164,10 @@ export default {
       }).catch(function(err) {
         console.error('加载云盘文件失败:', err);
         self.loading = false;
-        self.$store.commit('SHOW_TOAST', { message: '加载云盘文件失败', type: 'error' });
+        // 必须把"失败"标出来。只 toast 是不够的：toast 几秒后消失，
+        // 而列表留在空态上，学生回头看到的就是"我的云盘是空的"。
+        self.loadError = true;
+        self.$store.dispatch('toast', { message: '加载云盘文件失败', type: 'error' });
       });
     },
     getFileType: function(file) {
@@ -414,6 +446,32 @@ html.no-flex-gap .picker-loading, .picker-empty > * + * {
 .picker-loading i,
 .picker-empty i {
   font-size: 32px;
+}
+
+/* 失败态里的重试按钮：触屏命中区撑到 40px（矮了容易点空） */
+.picker-retry-btn {
+  min-height: 40px;
+  padding: 8px 22px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+@media (hover: hover) {
+.picker-retry-btn:hover {
+  background: var(--accent);
+  color: var(--text-invert);
+}
+}
+
+.picker-retry-btn:active {
+  background: var(--accent);
+  color: var(--text-invert);
 }
 
 .picker-grid {

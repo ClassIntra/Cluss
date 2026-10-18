@@ -32,5 +32,6 @@ module.exports = [
   require('./021_daily_style_and_personas'),
   require('./022_model_sources_offpeak'),
   require('./023_cluss_nodes'),
-  require('./024_cloud_orgs')
+  require('./024_cloud_orgs'),
+  require('./025_campus_context')
 ];

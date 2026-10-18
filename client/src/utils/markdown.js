@@ -77,9 +77,24 @@ export function ensureKatexIdle() {
 //   就等于立刻加载 255KB，把「空闲再加载」的门控整个架空
 //   （实测 katex 在首屏绘制前就开拉）。加载时机是调用方的决策：
 //   首屏页挂在空闲回调里，次级页面挂在自己的 mounted 里。
+// 返回一个**退订函数**，调用方必须在组件销毁时调用它。
+//
+// 为什么非要有退订：katex 是等首屏绘制之后才在空闲期开始加载的，
+//   从"开始下载"到"真的就绪"通常隔着好几秒。这几秒里学生每切一次页，
+//   就会往 katexCbs 里多塞一个**持有组件实例**的闭包（注册方基本都是
+//   `function () { self.xxx() }`），它拽着整个 vm（items / messages /
+//   $el 及其 DOM 引用）无法回收 —— 而这偏偏发生在低端设备最吃紧的启动阶段。
+//   原来这个数组是只进不出的：调用方想清理也没有接口可用。
 export function onKatexReady(cb) {
-  if (katexRef) { cb(); return; }
+  if (katexRef) {
+    cb();
+    return function noop() {};   // 已就绪，没什么可退订的
+  }
   katexCbs.push(cb);
+  return function offKatexReady() {
+    var i = katexCbs.indexOf(cb);
+    if (i >= 0) katexCbs.splice(i, 1);
+  };
 }
 
 // ---------- 公式 ----------

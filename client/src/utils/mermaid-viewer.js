@@ -249,6 +249,12 @@ export function openChartViewer(source) {
     overlay: overlay,
     onKey: onKey,
     onPointerUp: onPointerUp,
+    // ⚠️ onPointerMove 也必须一起存下来。
+    //   正常收尾（拖完松开）由 onPointerUp 自己摘掉它，所以平时看不出问题；
+    //   但"拖动中途被关闭"（拖动时切页、或拖动中触发关闭）走的是
+    //   closeChartViewer，那条路径不经过 onPointerUp —— 不在这里存一份，
+    //   外面就没有任何办法把它从 document 上摘下来。
+    onPointerMove: onPointerMove,
     prevOverflow: prevOverflow
   };
 
@@ -263,7 +269,13 @@ export function closeChartViewer() {
   var c = current;
   current = null;
   document.removeEventListener('keydown', c.onKey);
-  document.removeEventListener('pointermove', c.onPointerUp);
+  // 卸 pointermove 时必须传 onPointerMove —— 原先传的是 c.onPointerUp，
+  // 而 pointermove 上挂的根本不是它，等于一次什么都没删的"假清理"。
+  // 后果：只要在拖动中途关闭浮层（切页最常见），onPointerMove 就永久留在
+  // document 上，且它闭包里的 dragging 仍为 true —— 此后页面上每一次
+  // pointermove 都会对着一块已被移除的浮层执行 apply()（写 transform）
+  // 并 preventDefault()，白白吃掉每一次手势。
+  document.removeEventListener('pointermove', c.onPointerMove);
   document.removeEventListener('pointerup', c.onPointerUp);
   document.removeEventListener('pointercancel', c.onPointerUp);
   document.documentElement.style.overflow = c.prevOverflow;

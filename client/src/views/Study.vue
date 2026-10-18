@@ -56,6 +56,11 @@
       </transition>
 
       <main class="main">
+        <!-- 整块加载失败（进页带 ?conversation / 点历史记录）→ 复用全站的
+             ErrorBanner，页内给出可重试入口（用法与记录页一致）；
+             上传 / 删除 / 生成等单次动作的失败仍走各自既有反馈，不在此列 -->
+        <ErrorBanner :message="error" retry @retry="retryOpen" />
+
         <!-- 双栏：横屏左图右解，竖屏上下 -->
         <div class="split-pane pane-wrap">
           <!-- 图片区 -->
@@ -259,10 +264,13 @@ import streamFrame from '@/mixins/streamFrame';
 import orientation from '@/mixins/orientation';
 import mermaidCharts from '@/mixins/mermaid';
 import ModelSelect from '@/components/ModelSelect.vue';
+import ErrorBanner from '@/components/ErrorBanner.vue';
+// 学习偏好：随每次提问一起上报，让 AI 按学生设定的风格与科目作答
+import { readStudentPrefs } from '@/utils/student-prefs';
 
 export default {
   name: 'StudyView',
-  components: { AppNav, Segmented, CloudPicker, NotePicker, ModelSelect },
+  components: { AppNav, Segmented, CloudPicker, NotePicker, ModelSelect, ErrorBanner },
   mixins: [waiting, streamFrame, orientation, noteRefs, mermaidCharts],
   data: function() {
     return {
@@ -284,6 +292,10 @@ export default {
       note: '',
       sending: false,
       streamError: '',
+      // 整块加载失败（进页带 ?conversation / 打开历史记录）的文案，
+      // 交给页内 ErrorBanner 呈现并可重试。只放这一类的失败；
+      // 上传 / 删除 / 生成的失败各有自己的既有反馈，不要混进来。
+      error: '',
       visionStatus: '',
       conversationId: '',
       conversations: [],
@@ -360,6 +372,12 @@ export default {
       return true;
     }
   },
+  watch: {
+    // 学习模式 / 题量一变就记住，下次进页面直接沿用（见 mounted 的恢复）。
+    // 与对话页记住人格 / 深度思考同一套做法（Chat.vue 的 cluss_persona）。
+    taskKind: function() { this.saveStudyPrefs(); },
+    paperMode: function() { this.saveStudyPrefs(); }
+  },
   mounted: function() {
     // katex 按需加载 + 就绪重绘（与 Chat 同一套，见 markdown.js 的说明）：
     // 答案可能在引擎就绪前就渲染了（历史恢复），到货时把占位换成真公式
@@ -371,6 +389,16 @@ export default {
     // this.isPortrait（mixin 的同名属性、且不写 html class），于是本页的
     // `.body.is-portrait` 与 global.css 认的 `html.is-portrait` 会互相打架
     // —— 屏幕上就是"一半横一半竖"。已移除。
+    // 恢复上次选的学习模式与题量：不等接口回来就先切好，免得分隔控件
+    // 先闪一下默认值再跳回去（与 Chat 进入页面恢复人格 / 深度思考一致）。
+    // 读不到（隐私模式 / 没存过）就保持下面的默认值，行为与改动前一致。
+    var prefs = this.readStudyPrefs();
+    if (prefs.taskKind === 'solve' || prefs.taskKind === 'grade') this.taskKind = prefs.taskKind;
+    if (prefs.paperMode) {
+      this.paperMode = prefs.paperMode;
+      // 记下这是"从本地恢复的"值：capability 回来后要校验它是否仍被提供
+      this._storedPaperMode = prefs.paperMode;
+    }
     this.$store.dispatch('auth/fetchWallet').catch(function() {});
     this.loadCapability();
     this.loadModels();
@@ -391,6 +419,30 @@ export default {
     this.clearServerPoll();
   },
   methods: {
+    // 读取上次的学习偏好（学习模式 + 题量）。
+    // 隐私模式 / 受限 WebView 里 localStorage 可能直接抛异常：静默返回空对象、
+    // 回落到默认值继续用 —— 绝不能因为读不到偏好而报错或白屏（本项目踩过这类坑）。
+    readStudyPrefs: function() {
+      try {
+        var raw = localStorage.getItem('cluss_study_prefs');
+        var obj = raw ? JSON.parse(raw) : null;
+        return (obj && typeof obj === 'object') ? obj : {};
+      } catch (e) {
+        return {};
+      }
+    },
+
+    // 写入当前学习偏好。写不进去（隐私模式 / 配额满）就当没记，下次回到默认，
+    // 顶多这次选择没被记住，不该影响正常解题（同样静默失败）。
+    saveStudyPrefs: function() {
+      try {
+        localStorage.setItem('cluss_study_prefs', JSON.stringify({
+          taskKind: this.taskKind,
+          paperMode: this.paperMode
+        }));
+      } catch (e) { /* 存储不可用时忽略 */ }
+    },
+
     loadCapability: function() {
       var self = this;
       return this.$http.get('/study/capabilities').then(function(r) {
@@ -399,6 +451,14 @@ export default {
         // 有指定模型就用它，否则挑第一个能看图的
         if (!self.modelId && self.capability.vision_models && self.capability.vision_models.length) {
           self.modelId = self.capability.vision_models[0].id;
+        }
+        // 恢复的题量模式若已不在后端提供的列表里（管理员改过配置），回落到第一项，
+        // 否则会把一个无效值发给后端。只纠正"从本地恢复的"值，
+        // 没存过（首次使用）保持原默认，行为不变。
+        var modes = self.capability.paper_modes || [];
+        if (self._storedPaperMode && modes.length) {
+          var stillOffered = modes.some(function(m) { return m.id === self.paperMode; });
+          if (!stillOffered) self.paperMode = modes[0].id;
         }
       }).catch(function() {});
     },
@@ -453,6 +513,7 @@ export default {
 
     openConversation: function(id) {
       var self = this;
+      this.error = '';
       return this.$http.get('/conversations/' + id).then(function(r) {
         if (r.data.code !== 200) return;
         var msgs = r.data.data.messages || [];
@@ -493,8 +554,16 @@ export default {
         // 服务端还在写这一轮 → 轮询到它写完（stream-session 之外的第二条恢复路径）
         self.pollServerStream(serverStreaming);
       }).catch(function(err) {
-        self.$store.dispatch('toast', { message: err.message || '打开失败', type: 'error' });
+        // 整块内容（题图 + 解答）没拉到 → 走页内 ErrorBanner，留一个重试入口。
+        // 原来是弹一条 toast：学生还没看清就消失，也没有重试可点。
+        self.error = err.message || '打开失败';
+        self._failedConvId = id;
       });
+    },
+
+    // ErrorBanner 的重试入口：重新打开上次失败的那条记录
+    retryOpen: function() {
+      if (this._failedConvId) this.openConversation(this._failedConvId);
     },
 
     removeConversation: function(id) {
@@ -756,13 +825,16 @@ export default {
 
       var isGrade = this.taskKind === 'grade';
       var url = isGrade ? '/api/study/grade/stream' : '/api/study/solve/stream';
+      // 学习偏好：每次发送时现读（学生在设置里改完立刻生效）
+      var prefs = readStudentPrefs();
       var body = isGrade
         ? {
           conversation_id: this.conversationId || '',
           model_id: this.modelId || '',
           answer_hashes: this.attachmentHashes,
           note_ids: this.noteIds,
-          content: this.note.trim()
+          content: this.note.trim(),
+          student_prefs: prefs
         }
         : {
           conversation_id: this.conversationId || '',
@@ -770,7 +842,8 @@ export default {
           paper_mode: this.paperMode,
           image_hashes: this.attachmentHashes,
           note_ids: this.noteIds,
-          content: this.note.trim()
+          content: this.note.trim(),
+          student_prefs: prefs
         };
 
       postStream(url, this.$store.state.auth.token, body, controller.signal).then(function(resp) {
@@ -1033,6 +1106,14 @@ html.no-flex-gap .hist-item > * + * {
 .main {
   min-height: 0;
   display: flex;
+  /* 竖排：整块失败的 ErrorBanner 占在双栏之上。只有 .split-pane 一个子节点时
+     与原来视觉一致 —— 隐藏的 ErrorBanner 渲染成注释节点，不占位、不产生间距 */
+  flex-direction: column;
+  gap: var(--gap-md);
+}
+/* Chrome 80 不支持 flex gap，用相邻兄弟外边距兜底（全站同一套写法） */
+html.no-flex-gap .main > * + * {
+  margin-top: var(--gap-md);
 }
 
 .pane-wrap {

@@ -1,12 +1,25 @@
 <template>
   <div class="modal-mask" @click.self="$emit('close')">
     <div class="modal glass">
-      <h3 class="modal-title">AI 人格与记忆</h3>
+      <h3 class="modal-title">偏好设置</h3>
       <p class="modal-sub tiny muted">
-        人格决定日常对话用什么语气说话；记忆是 AI 在聊天里记住的关于你的事，用来让它更懂你。
+        外观与默认打开页决定 Cluss 用起来的样子；人格决定日常对话用什么语气说话；
+        记忆是 AI 在聊天里记住的关于你的事，用来让它更懂你。
       </p>
 
       <div class="tabs">
+        <button
+          type="button"
+          class="tab"
+          :class="{ active: tab === 'appearance' }"
+          @click="tab = 'appearance'"
+        >外观</button>
+        <button
+          type="button"
+          class="tab"
+          :class="{ active: tab === 'general' }"
+          @click="tab = 'general'"
+        >通用</button>
         <button
           type="button"
           class="tab"
@@ -19,11 +32,121 @@
           :class="{ active: tab === 'memory' }"
           @click="switchToMemory"
         >记忆<span v-if="memories.length" class="tab-count">{{ memories.length }}</span></button>
+        <!-- 校园 tab **只在接入 ClassIntra 时出现**。
+             独立部署不该留一个永远空着的入口 —— 那是"我明明买了这个功能却用不了"
+             的同一种失落，不如干脆不存在（与独立性原则一致）。 -->
+        <button
+          v-if="campusLinked"
+          type="button"
+          class="tab"
+          :class="{ active: tab === 'campus' }"
+          @click="tab = 'campus'"
+        >校园</button>
       </div>
 
       <div class="form-scroll">
+        <!-- ============ 外观 ============ -->
+        <template v-if="tab === 'appearance'">
+          <div class="note tiny muted">
+            这里改的是 Cluss 的整体配色。切换立刻全站生效，不需要重开页面。
+          </div>
+
+          <div class="sec-head">主题</div>
+          <div class="list">
+            <button
+              v-for="t in appearance"
+              :key="t.value"
+              type="button"
+              class="opt-row"
+              :class="{ active: theme === t.value }"
+              @click="setTheme(t.value)"
+            >
+              <span class="opt-name">{{ t.label }}</span>
+              <span v-if="theme === t.value" class="tag">当前</span>
+            </button>
+          </div>
+        </template>
+
+        <!-- ============ 通用 ============ -->
+        <template v-else-if="tab === 'general'">
+          <div class="note tiny muted">
+            只影响下次登录后的落地页 —— 改完不会把你从当前正在看的页面弹走。
+          </div>
+
+          <div class="sec-head">默认打开页</div>
+          <div class="list">
+            <button
+              v-for="p in homePages"
+              :key="p.value"
+              type="button"
+              class="opt-row"
+              :class="{ active: homePage === p.value }"
+              @click="setHomePage(p.value)"
+            >
+              <span class="opt-name">{{ p.label }}</span>
+              <span v-if="homePage === p.value" class="tag">当前</span>
+            </button>
+          </div>
+
+          <!-- 学习偏好：跟着每一次提问一起交给 AI，用来调整讲解的详略与举例。
+               放在「通用」而不是「人格」：人格管的是**日常闲聊的语气**，
+               这里是**学习时的讲解方式**，两件事。 -->
+          <div class="sec-head">学习偏好</div>
+          <div class="note tiny muted">
+            这些会随每次提问一起交给 AI：它据此调整讲解的详略与举例。
+            只影响表达方式，不改变它对准确性的要求。
+          </div>
+
+          <div class="list">
+            <button
+              v-for="s in replyStyles"
+              :key="s.value"
+              type="button"
+              class="opt-row"
+              :class="{ active: prefs.replyStyle === s.value }"
+              @click="setReplyStyle(s.value)"
+            >
+              <span class="opt-name">
+                <span class="opt-name-main">{{ s.label }}</span>
+                <span class="opt-name-sub tiny muted">{{ s.desc }}</span>
+              </span>
+              <span v-if="prefs.replyStyle === s.value" class="tag">当前</span>
+            </button>
+          </div>
+
+          <div class="field-label pref-label">常学的科目（可多选，可不选）</div>
+          <div class="chip-group">
+            <button
+              v-for="s in subjectOptions"
+              :key="s"
+              type="button"
+              class="chip"
+              :class="{ on: prefs.subjects.indexOf(s) !== -1 }"
+              @click="toggleSubject(s)"
+            >{{ s }}</button>
+          </div>
+
+          <button
+            type="button"
+            class="pref-toggle"
+            :class="{ on: prefs.useRecords }"
+            role="switch"
+            :aria-checked="prefs.useRecords ? 'true' : 'false'"
+            @click="toggleRecords"
+          >
+            <span class="pref-toggle-main">
+              <span class="pref-toggle-title">参考我的历史数据</span>
+              <span class="pref-toggle-desc tiny muted">
+                开启后，AI 会结合系统为你积累的学习画像、关联信息与历史记忆来调整讲法。
+                关闭后，每次只依据当前这段对话，系统也不再读取这些数据。
+              </span>
+            </span>
+            <span class="switch" :class="{ on: prefs.useRecords }" aria-hidden="true"></span>
+          </button>
+        </template>
+
         <!-- ============ 人格 ============ -->
-        <template v-if="tab === 'persona'">
+        <template v-else-if="tab === 'persona'">
           <div class="note tiny muted">
             人格只在「日常」模式生效 —— 学习 / 拍题要的是稳定准确，语气设定不参与解题。
             自定义人格只描述希望的语气，不能改变 AI 的身份与安全底线。
@@ -99,6 +222,11 @@
           </div>
         </template>
 
+        <!-- ============ 校园（仅联动部署）============
+             ⚠️ 必须排在 v-else 之前：v-else-if 出现在 v-else 之后时条件链断掉，
+             组件根本不渲染（面板一片空白，且没有任何报错，实测踩到）。 -->
+        <CampusContext v-else-if="tab === 'campus'" />
+
         <!-- ============ 记忆 ============ -->
         <template v-else>
           <div class="note tiny muted">
@@ -132,25 +260,69 @@
 </template>
 
 <script>
-// 「AI 人格与记忆」弹窗
+// 偏好设置弹窗（原「AI 人格与记忆」）
 //
-// 为什么把两件事放一个弹窗：
-//   它们回答的是同一个问题 ——「AI 眼里的我是什么样、跟我说话什么调」。
-//   人格是我主动设的，记忆是它自己记的，学生排查"它为什么这么跟我说话"时
-//   需要两样一起看，分成两个入口反而要来回找。
+// 为什么这几件事放一个弹窗：
+//   它们回答的都是同一个问题 ——「Cluss 该以什么样子、什么语气对我」。
+//   外观 / 默认打开页是我对界面的设置，人格是我主动设的语气，记忆是它自己记的；
+//   学生排查"它为什么这么跟我说话"时要一起看，分成多个入口反而要来回找。
 //
-// 为什么不做成独立页面：
-//   它天然是**对话页**的设置（人格只在日常模式生效），挂在别处就成了
-//   "设置在 A 页、生效在 B 页"。做成弹窗后改完就能立刻在对话里验证。
+// 为什么不做成独立页面 / 现在怎么打开：
+//   做成弹窗改完就能立刻验证（切主题当场可见、切人格回对话页即生效）。
+//   它已挂进 AppNav（顶栏），所以全站右上角都能打开；原来只有对话页能开。
+
+import modalEsc from '@/mixins/modal-esc';
+import CampusContext from '@/components/CampusContext.vue';
+// 外观两档的取值直接来自 theme store —— 不在这里再列一份，避免与 store 漂移
+import { THEMES as THEME_VALUES } from '@/store/theme';
+// 学习偏好的选项与读写：与对话页 / 学习页共用同一份口径（见该模块顶部说明）
+import {
+  PREF_SUBJECTS as SUBJECT_OPTIONS,
+  PREF_REPLY_STYLES as REPLY_STYLES,
+  readStudentPrefs,
+  writeStudentPrefs
+} from '@/utils/student-prefs';
+
+// 「默认打开页」四选一：值就是路由路径（与 Login.vue 登录后的跳转目标对应）。
+// 读取/校验在需要处就近 try/catch（本项目约定：不为这点小事新建 utils 文件）。
+var HOME_PAGES = [
+  { value: '/', label: '对话' },
+  { value: '/study', label: '学习' },
+  { value: '/wrong-book', label: '错题本' },
+  { value: '/notes', label: '笔记' }
+];
+var HOME_PAGE_KEY = 'cluss_home_page';
+
+function readHomePage() {
+  try {
+    var v = localStorage.getItem(HOME_PAGE_KEY);
+    for (var i = 0; i < HOME_PAGES.length; i++) {
+      if (HOME_PAGES[i].value === v) return v;
+    }
+  } catch (e) { /* 隐私模式拿不到 localStorage，忽略 */ }
+  return '/'; // 未设置 → 保持现状：落对话页
+}
+
+var THEME_LABELS = { light: '浅色', dark: '深色' };
+var APPEARANCE = THEME_VALUES.map(function(v) {
+  return { value: v, label: THEME_LABELS[v] || v };
+});
+
+// 可定位的初始 tab 白名单；非法值兜底到 persona（沿用原行为）
+var INITIAL_TABS = ['appearance', 'general', 'persona', 'memory', 'campus'];
+
 export default {
   name: 'AiPrefs',
+  // Esc 关闭（组件由 v-if 控制，存在即打开，见 mixin 说明）
+  mixins: [modalEsc],
+  components: { CampusContext },
   props: {
-    // 打开时定在哪个 tab：'persona' | 'memory'
+    // 打开时定在哪个 tab：'appearance' | 'general' | 'persona' | 'memory' | 'campus'
     initialTab: { type: String, default: 'persona' }
   },
   data: function() {
     return {
-      tab: this.initialTab === 'memory' ? 'memory' : 'persona',
+      tab: INITIAL_TABS.indexOf(this.initialTab) !== -1 ? this.initialTab : 'persona',
       personas: [],
       limits: { max_count: 20, max_name: 20, max_prompt: 600 },
       memories: [],
@@ -159,10 +331,26 @@ export default {
       editingId: '',
       form: { name: '', prompt: '' },
       busy: false,
-      error: ''
+      error: '',
+      // 外观两档 / 默认打开页四选一：就地持有当前值，改动即写回
+      appearance: APPEARANCE,
+      homePages: HOME_PAGES,
+      homePage: readHomePage(),
+      // 学习偏好：选项列表 + 当前值（读取/写入都走 utils/student-prefs，
+      // 与对话页、学习页共用同一份存储口径）
+      replyStyles: REPLY_STYLES,
+      subjectOptions: SUBJECT_OPTIONS,
+      prefs: readStudentPrefs(),
+      // 是否接入 ClassIntra：决定"校园" tab 出不出来。
+      // 独立部署下它是 false，整块功能等于不存在（独立性要求）。
+      campusLinked: false
     };
   },
   computed: {
+    // 当前主题：读法与 AppNav 一致，都走 theme store 的 getter
+    theme: function() {
+      return this.$store.getters['theme/theme'];
+    },
     builtins: function() {
       return this.personas.filter(function(p) { return p.builtin === 1; });
     },
@@ -189,12 +377,60 @@ export default {
   },
   mounted: function() {
     this.loadPersonas();
+    this.probeCampus();
   },
   methods: {
+    // 探测是否接入 ClassIntra。**只读缓存、绝不触发 CI 请求** ——
+    // 这个弹窗一打开就打一次 CI 的话，CI 慢的时候"打开设置"会跟着卡住。
+    // 失败即当作未联动（校园 tab 不出现），不影响弹窗其它部分。
+    probeCampus: function() {
+      var self = this;
+      return this.$http.get('/campus-context').then(function(r) {
+        self.campusLinked = !!(r.data.code === 200 && r.data.data && r.data.data.linked);
+      }).catch(function() {
+        self.campusLinked = false;
+      });
+    },
+
+    // 切主题：复用 theme store 的 setTheme（内部 commit SET_THEME，
+    // 会落 cluss_theme 存储键并 applyToDom）。**不自己写 localStorage** ——
+    // 存储键与启动时的读取都归 store 管，两处各写一份必然漂移。
+    setTheme: function(value) {
+      this.$store.dispatch('theme/setTheme', value);
+    },
+
+    // 选默认打开页：就地记住 + 落 localStorage，仅在下次登录成功后生效
+    setHomePage: function(value) {
+      this.homePage = value;
+      // 读取/生效点分散（本弹窗 + Login.vue），按约定不新建 utils 文件，就近 try/catch
+      try { localStorage.setItem(HOME_PAGE_KEY, value); } catch (e) { /* 隐私模式忽略 */ }
+    },
+
     // 打开记忆 tab 时才拉 —— 没点进去就不必多打一次接口
     switchToMemory: function() {
       this.tab = 'memory';
       if (!this.memoriesLoaded && !this.loadingMemories) this.loadMemories();
+    },
+
+    // ---- 学习偏好：改动即写回（无需"保存"按钮，与主题/默认打开页一致）----
+    // 写回失败（隐私模式）不影响本次会话：值仍在内存里，本轮之后的提问照样带着它，
+    // 只是下次打开会回到默认 —— 顶多这次没记住，不该报错。
+    setReplyStyle: function(value) {
+      this.prefs.replyStyle = value;
+      writeStudentPrefs(this.prefs);
+    },
+
+    // 科目是多选：点一下切换选中态（再点取消）
+    toggleSubject: function(subject) {
+      var i = this.prefs.subjects.indexOf(subject);
+      if (i === -1) this.prefs.subjects.push(subject);
+      else this.prefs.subjects.splice(i, 1);
+      writeStudentPrefs(this.prefs);
+    },
+
+    toggleRecords: function() {
+      this.prefs.useRecords = !this.prefs.useRecords;
+      writeStudentPrefs(this.prefs);
     },
 
     loadPersonas: function() {
@@ -476,6 +712,181 @@ html.no-flex-gap .row > * + * {
   background: var(--ink-2);
   color: var(--text-tertiary);
   font-size: 11px;
+}
+
+/* 可选项行（外观 / 默认打开页）：整行是一个按钮，选中态用强调色描边。
+   不复用 .row 是因为 .row 是 div 展示行，这里是可点的 button，需要清掉
+   浏览器给 button 的默认外观（边框/背景/居中）。 */
+.opt-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  /* 窄屏（平板竖屏）下标签与「当前」标可能放不下，允许换行，
+     不让它们互相挤（Chrome 80 惯例：flex 行都给 flex-wrap） */
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid var(--ink-3);
+  border-radius: var(--radius-md);
+  background: var(--ink-1);
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+html.no-flex-gap .opt-row > * + * {
+  margin-left: 10px;
+}
+
+@media (hover: hover) {
+.opt-row:hover {
+  border-color: var(--accent);
+}
+}
+
+.opt-row.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.opt-name {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 带说明的选项行（回复风格）：主标题 + 一行解释 */
+.opt-name-main {
+  display: block;
+}
+
+.opt-name-sub {
+  display: block;
+  margin-top: 2px;
+  line-height: 1.45;
+}
+
+/* ---------- 学习偏好 ---------- */
+/* 常学科目：多选胶囊 */
+.chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-sm);
+}
+html.no-flex-gap .chip-group > * + * {
+  margin-left: var(--gap-sm);
+}
+
+.chip {
+  padding: 7px 14px;
+  border: 1px solid var(--ink-3);
+  border-radius: var(--radius-pill);
+  background: var(--ink-1);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition), color var(--transition);
+}
+
+@media (hover: hover) {
+.chip:hover {
+  border-color: var(--accent);
+}
+}
+
+.chip.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.pref-label {
+  margin-top: var(--gap-md);
+}
+
+/* 开关行（参考我的历史数据）：整行可点，右侧是一个开关滑块 */
+.pref-toggle {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: var(--gap-sm);
+  /* 窄屏下长说明会把开关挤变形，允许换行（Chrome 80 惯例） */
+  flex-wrap: wrap;
+  margin-top: var(--gap-md);
+  padding: 11px 12px;
+  border: 1px solid var(--ink-3);
+  border-radius: var(--radius-md);
+  background: var(--ink-1);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+html.no-flex-gap .pref-toggle > * + * {
+  margin-left: var(--gap-sm);
+}
+
+@media (hover: hover) {
+.pref-toggle:hover {
+  border-color: var(--accent);
+}
+}
+
+.pref-toggle.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.pref-toggle-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.pref-toggle-title {
+  display: block;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.pref-toggle-desc {
+  display: block;
+  margin-top: 3px;
+  line-height: 1.5;
+}
+
+.switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 38px;
+  height: 22px;
+  border-radius: var(--radius-pill);
+  background: var(--ink-4);
+  transition: background var(--transition);
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .25);
+  transition: transform var(--transition);
+}
+
+.switch.on {
+  background: var(--accent);
+}
+
+.switch.on::after {
+  transform: translateX(16px);
 }
 
 .mini-btn {

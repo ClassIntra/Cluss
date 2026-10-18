@@ -807,11 +807,12 @@
             <button class="modal-close" @click="showResourcePicker = false"><i class="fa-solid fa-xmark"></i></button>
           </div>
           <div class="modal-body" style="overflow-y: auto; max-height: 60vh;">
+            <ErrorBanner :message="resourcePickerError" retry @retry="loadResourcePickerItems()" />
             <div v-if="resourcePickerLoading" class="loading-area" style="padding: 40px; text-align: center;">
               <div class="loading-spinner"></div>
               <span>加载中...</span>
             </div>
-            <div v-else-if="resourcePickerItems.length === 0" style="padding: 40px; text-align: center; color: var(--text-tertiary);">
+            <div v-else-if="!resourcePickerError && resourcePickerItems.length === 0" style="padding: 40px; text-align: center; color: var(--text-tertiary);">
               云盘里没有可导入的 .md / .txt 文件
             </div>
             <div v-else>
@@ -1042,11 +1043,12 @@
                     <i class="fa-solid fa-rotate"></i> 刷新
                   </button>
                 </div>
+                <ErrorBanner :message="publicNotesError" retry @retry="loadPublicNotes()" />
                 <div v-if="publicNotesLoading" class="sidebar-empty">
                   <i class="fa-solid fa-spinner fa-spin"></i>
                   <span>加载中...</span>
                 </div>
-                <div v-else-if="filteredPublicNotes.length === 0" class="sidebar-empty">
+                <div v-else-if="!publicNotesError && filteredPublicNotes.length === 0" class="sidebar-empty">
                   <i class="fa-solid fa-globe"></i>
                   <span>暂无公开笔记</span>
                 </div>
@@ -1178,6 +1180,7 @@ import DrawCanvas from '@/components/DrawCanvas.vue';
 import CloudImagePicker from '@/components/CloudImagePicker.vue';
 import Segmented from '@/components/Segmented.vue';
 import VirtualList from '@/components/VirtualList.vue';
+import ErrorBanner from '@/components/ErrorBanner.vue';
 import api from '@/utils/api';
 import cloudPickerReceiver from '@/mixins/cloud-picker-receiver';
 import orientation from '@/mixins/orientation';
@@ -1345,7 +1348,7 @@ var NOTE_TEMPLATES = [
 export default {
   name: 'Notes',
   mixins: [cloudPickerReceiver, orientation],
-  components: { AppNav: AppNav, DrawCanvas: DrawCanvas, CloudImagePicker: CloudImagePicker, Segmented: Segmented, VirtualList: VirtualList },
+  components: { AppNav: AppNav, DrawCanvas: DrawCanvas, CloudImagePicker: CloudImagePicker, Segmented: Segmented, VirtualList: VirtualList, ErrorBanner: ErrorBanner },
   data: function() {
     return {
       files: [],
@@ -1402,6 +1405,9 @@ showFileMenuModal: false,
       resourcePickerItems: [],
       resourcePickerPath: '/',
       resourcePickerLoading: false,
+      // 「从云盘导入」列表的加载失败态：用 ErrorBanner 展示（可重试），
+      // 不再用 toast —— 列表是自己一整块内容，失败了该在它所在处说清并给重试入口
+      resourcePickerError: '',
       showMermaidZoom: false,
       mermaidZoomContent: '',
       mermaidZoomScale: 1,
@@ -1434,6 +1440,9 @@ showFileMenuModal: false,
       cloudTab: 'my',
       publicNotes: [],
       publicNotesLoading: false,
+      // 公开笔记列表的加载失败态：同上，改用 ErrorBanner（可重试），
+      // 免得失败时面板显示「暂无公开笔记」把人误导成"真的没有"
+      publicNotesError: '',
       publicSearchQuery: '',
       viewingCloudNote: null,
       // ---- 轻量输入弹窗（替代 ClassIntra 全局 $modal.prompt）----
@@ -2748,6 +2757,7 @@ showFileMenuModal: false,
     loadResourcePickerItems: function() {
       var self = this;
       self.resourcePickerLoading = true;
+      self.resourcePickerError = '';
       api.get('/cloud/files', { params: { kind: 'text' } })
         .then(function(response) {
           var files = (response.data.data && response.data.data.files) || [];
@@ -2767,7 +2777,9 @@ showFileMenuModal: false,
           self.resourcePickerLoading = false;
         })
         .catch(function() {
-          self.$store.commit('SHOW_TOAST', { message: '加载云盘文件失败', type: 'error' });
+          // 整块列表加载失败：改用弹窗内 ErrorBanner（可重试），不再只弹一条 toast；
+          // 它也让「云盘里没有可导入的文件」这条误导性空态不再出现
+          self.resourcePickerError = '加载云盘文件失败';
           self.resourcePickerLoading = false;
         });
     },
@@ -3758,12 +3770,15 @@ showFileMenuModal: false,
     loadPublicNotes: function() {
       var self = this;
       self.publicNotesLoading = true;
+      self.publicNotesError = '';
       api.get('/notes/notes/public').then(function(response) {
         if (response.data.code === 200) {
           self.publicNotes = response.data.data || [];
         }
       }).catch(function() {
-        self.$store.commit('SHOW_TOAST', { message: '获取公开笔记失败', type: 'error' });
+        // 整块列表加载失败：改用页内 ErrorBanner（可重试），不再只弹一条 toast；
+        // 它也让「暂无公开笔记」这条误导性空态不再出现
+        self.publicNotesError = '获取公开笔记失败';
       }).finally(function() {
         self.publicNotesLoading = false;
       });
@@ -4008,6 +4023,10 @@ showFileMenuModal: false,
   /* 不写死底色：与其余页面一致，透出全局渐变背景，消除「笔记页比别页更平/更白」的割裂感 */
   background: transparent;
   gap: var(--gap-md);
+  /* 安全区兜底：与 Chat/Study/Writing/Records 等页根容器同一写法。
+     无刘海/挖孔的桌面与平板上四个 inset 都是 0，留白与改动前完全一致；
+     刘海/挖孔机上顶栏不被摄像头区压住、底部内容不被手势条盖住。 */
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
 }
 
 .notes-body {

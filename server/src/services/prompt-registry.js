@@ -697,6 +697,93 @@ function buildProfileSection(p, notesReferenced) {
   ].join('\n');
 }
 
+// ---- 学生偏好段（学生自己在设置里选的）----
+// 与画像 / 记忆的根本区别：那两段是**系统从他的使用记录里推断**出来的，
+// 这一段是**他亲口设定**的。所以措辞不同 —— 推断出来的当背景参考、
+// 不许复述给他听；他明确设过的就是要照做，不必替他再判断。
+//
+// 只在"他确实设置过什么"时才输出：默认档不输出。
+// 空话不仅是白付 token —— 让模型看到一段「他声明了偏好」却没有任何内容，
+// 反而会改变它的行为（它可能主动猜学生想要什么）。
+// 档位与科目白名单的单一真源：项目根 shared/student-prefs.json。
+// 前端 client/src/utils/student-prefs.js 读的是同一份文件（经 vite 的 @shared alias），
+// 两端不再各存一份、靠注释约定同步 —— 那是漂移的温床。
+var PREFS_META = require('../../../shared/student-prefs.json');
+
+var PREF_SUBJECT_WHITELIST = PREFS_META.subjects;
+
+// 默认档也从 shared JSON 取（JSON 的 defaultStyle 字段）：默认档 = 不输出任何指令，
+// 与"未设置偏好"完全等价。前端 defaultStudentPrefs 读的是同一个字段。
+var PREF_DEFAULT_STYLE = PREFS_META.defaultStyle;
+// 回复风格档 → 给模型的指令，从 shared JSON 派生。
+// prompt 为空的档（默认档 balanced）**不入表** = 不输出任何指令，
+// 也就与"未设置偏好"的行为完全一致。
+var PREF_STYLE_TEXT = {};
+PREFS_META.replyStyles.forEach(function(s) {
+  if (s && s.value && s.prompt) PREF_STYLE_TEXT[s.value] = s.prompt;
+});
+
+function buildPrefsSection(p) {
+  if (!p) return '';
+
+  var lines = [];
+
+  var style = String(p.replyStyle || '').trim();
+  if (PREF_STYLE_TEXT[style]) lines.push('- 回复风格：' + PREF_STYLE_TEXT[style]);
+
+  var subs = [];
+  if (Array.isArray(p.subjects)) {
+    for (var i = 0; i < p.subjects.length; i++) {
+      var s = String(p.subjects[i] || '').trim();
+      if (PREF_SUBJECT_WHITELIST.indexOf(s) !== -1) subs.push(s);
+    }
+  }
+  if (subs.length) {
+    lines.push('- 常学的科目：' + subs.join('、') +
+      '。举例、类比与练习材料尽量从这些科目里选，贴合他日常接触的内容。');
+  }
+
+  if (!lines.length) return '';
+
+  return [
+    '',
+    '【他的学习偏好】（他自己在设置里选的，按此执行）',
+    lines.join('\n'),
+    '他若在对话里另有要求，以他当下说的为准。'
+  ].join('\n');
+}
+
+// 归一化学生偏好（服务端唯一入口）。
+// 白名单外一律丢弃而不是"猜语义"：客户端传了非法值说明版本不一致或有人改过请求，
+// 静默降级成默认档比按垃圾值改变回答行为更安全。
+function normalizeStudentPrefs(raw) {
+  var out = { replyStyle: PREF_DEFAULT_STYLE, subjects: [], useRecords: true };
+  if (!raw || typeof raw !== 'object') return out;
+
+  var style = String(raw.replyStyle || '').trim();
+  // 合法档位以 shared JSON 为准（含默认档），不再硬编码三档
+  var styleOk = false;
+  for (var k = 0; k < PREFS_META.replyStyles.length; k++) {
+    if (PREFS_META.replyStyles[k].value === style) { styleOk = true; break; }
+  }
+  if (styleOk) out.replyStyle = style;
+
+  if (Array.isArray(raw.subjects)) {
+    var seen = {};
+    for (var i = 0; i < raw.subjects.length; i++) {
+      var s = String(raw.subjects[i] || '').trim();
+      if (PREF_SUBJECT_WHITELIST.indexOf(s) !== -1 && !seen[s]) {
+        seen[s] = 1;
+        out.subjects.push(s);
+      }
+    }
+  }
+
+  // 默认开启：只有客户端**明确**传 false 才算关掉（与"不传 = 别动"的惯例一致）
+  out.useRecords = raw.useRecords !== false;
+  return out;
+}
+
 // ---- ClassIntra 活动素材段 ----
 // 数据来自 ClassIntra 侧**脱敏后的只读接口**（个性签名 / 音乐口味 / 社区发帖与标签 /
 // 棋类对局 / 等级与连续登录 / 学业倒计时）。Cluss 绝不直接读 CI 的库。
@@ -991,6 +1078,12 @@ function getSystemPromptParts(opts) {
   var profile = buildProfileSection(o.studentProfile, !!o.noteText);
   if (profile) dyn.push(profile);
 
+  // 学生偏好段：紧跟画像之后。
+  // 放在这里而不是 system 里，理由同画像 —— 它随"学生临时改了设置"变化，
+  // 进 system 会让上游前缀缓存每次都失效。
+  var prefSection = buildPrefsSection(o.studentPrefs);
+  if (prefSection) dyn.push(prefSection);
+
   // ClassIntra 活动素材段：紧跟在画像之后。
   // 两者都是"关于这个学生的背景"，放一起便于模型整体理解。
   // 取不到时为 null → 直接跳过，不影响其它段落。
@@ -1102,6 +1195,9 @@ module.exports = {
   getTaskHint: getTaskHint,
   buildCrossPageHint: buildCrossPageHint,
   buildProfileSection: buildProfileSection,
+  // 学生偏好（设置里选的回复风格 / 常学科目 / 是否参考学习记录）
+  buildPrefsSection: buildPrefsSection,
+  normalizeStudentPrefs: normalizeStudentPrefs,
   buildContextNote: buildContextNote,
   // 输出长度硬上限（防跑飞，见 OUTPUT_CAP 处说明）
   outputCapFor: outputCapFor,

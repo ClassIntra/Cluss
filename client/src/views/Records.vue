@@ -3,6 +3,12 @@
     <AppNav active="records" />
 
     <main class="body">
+      <!-- 学习画像：一行紧凑摘要，只用已有数据源，不新增接口。
+           错题/待复习来自 wrong-book store 的全局概览（AppNav 进场时已刷新），
+           对话数来自本页列表接口的 total。取不到的字段直接省略，
+           不为凑格式显示「0 道」，也不遮挡/阻塞下面的主列表。 -->
+      <div v-if="profileSummary" class="profile-line">{{ profileSummary }}</div>
+
       <div class="toolbar glass">
         <Segmented v-model="type" :options="typeOptions" />
         <div class="search-box">
@@ -19,7 +25,7 @@
         <button class="icon-btn" title="刷新" @click="load(1)">↻</button>
       </div>
 
-      <div v-if="error" class="alert alert-danger">{{ error }}</div>
+      <ErrorBanner :message="error" retry @retry="load(page)" />
 
       <div class="list-wrap glass">
         <div v-if="loading" class="empty-hint">读取中…</div>
@@ -83,11 +89,12 @@
 
 <script>
 import AppNav from '@/components/AppNav.vue';
+import ErrorBanner from '@/components/ErrorBanner.vue';
 import Segmented from '@/components/Segmented.vue';
 
 export default {
   name: 'RecordsView',
-  components: { AppNav, Segmented },
+  components: { AppNav, Segmented, ErrorBanner },
   data: function() {
     return {
       type: 'all',
@@ -107,18 +114,59 @@ export default {
         { id: 'solve', label: '解题' },
         { id: 'grade', label: '批改' }
       ];
+    },
+
+    // 一行「学习画像」：只用已有数据源，不新增后端接口。
+    //  · 对话次数：本页列表接口返回的 total（每条记录对应一次引导对话）。
+    //  · 错题 / 待复习：读 wrong-book store 的全局概览 getter，AppNav 进场时已刷新过它；
+    //    拉取失败时 store 会静默降级（loaded 仍为 false），这里据此整段不显示，
+    //    而不是把它当成真实的 0。
+    // 之所以不加「本周」前缀：现有接口只能按类型/关键词分页，没有周维度的计数，
+    // 硬套「本周」等于给一个假口径，宁可只说总量。
+    profileSummary: function() {
+      var parts = [];
+      if (this.total > 0) parts.push('对话 ' + this.total + ' 次');
+      if (this.$store.state.wrongBook.loaded) {
+        var ov = this.$store.getters['wrongBook/overview'];
+        if (ov.total > 0) parts.push('错题 ' + ov.total + ' 道');
+        if (ov.due > 0) parts.push('待复习 ' + ov.due + ' 道');
+      }
+      return parts.length ? parts.join(' · ') : '';
     }
   },
   watch: {
-    type: function() { this.load(1); }
+    type: function() {
+      // 首次进入时若从本地恢复了筛选，这次变化是「恢复」触发的，
+      // 不该再发一次请求 —— 请求统一由 mounted 里的 load(1) 发起（避免进页打两次接口）
+      if (this._restoringType) { this._restoringType = false; return; }
+      this.saveViewState();
+      this.load(1);
+    }
   },
   mounted: function() {
+    this.restoreViewState();
     this.load(1);
   },
   beforeDestroy: function() {
     clearTimeout(this._searchTimer);
   },
   methods: {
+    // 记住上次选的记录类型：切页回来不该又默认成「全部」。
+    // 存本地即可——这是「我上次想看什么」，跨设备无意义（同 Chat.vue 的 cluss_persona）。
+    restoreViewState: function() {
+      var saved = {};
+      try { saved = JSON.parse(localStorage.getItem('cluss_view_records') || '{}') || {}; } catch (e) { saved = {}; }
+      // 只在值合法且与默认不同时才恢复并打闸，否则不触发 watcher（默认值交给 mounted 的 load）
+      if ((saved.type === 'solve' || saved.type === 'grade') && saved.type !== this.type) {
+        this._restoringType = true;
+        this.type = saved.type;
+      }
+    },
+
+    saveViewState: function() {
+      try { localStorage.setItem('cluss_view_records', JSON.stringify({ type: this.type })); } catch (e) { /* 隐私模式下会抛，忽略 */ }
+    },
+
     // 输入防抖 350ms：学生打"二次函数"要按六七个键，
     // 每个键都打一次接口既浪费也会让列表闪个不停
     onSearchInput: function() {
@@ -213,6 +261,19 @@ html.no-flex-gap .body > * + * {
 
 
 
+
+/* 学习画像摘要：一条轻量的单行小胶囊。
+   用现存令牌上色，竖屏窄到一行放不下时自然换行（数字要能读全，不做省略）。 */
+.profile-line {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--ink-1);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.5;
+  word-break: break-word;
+}
 
 .toolbar {
   display: flex;

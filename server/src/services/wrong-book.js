@@ -184,10 +184,15 @@ function saveExtracted(items, ctx) {
 
 // ---- 查询 ----
 
-function serialize(row) {
+// examMap：临考科目表（subject → { days_left, exam_title }），来自 CI 的学业倒计时。
+// 只是给前端一个"为什么这道题排前面"的交代，不参与任何判定。
+function serialize(row, examMap) {
+  var boost = (examMap && row.subject) ? examMap[row.subject] : null;
   return {
     id: row.id,
     subject: row.subject || '',
+    // 这道题所属的科目快要考试了（null = 没有 / 该生关掉了这个功能）
+    exam_boost: boost ? { days_left: boost.days_left, exam_title: boost.exam_title } : null,
     question: row.question,
     student_answer: row.student_answer || '',
     correct_answer: row.correct_answer || '',
@@ -256,7 +261,33 @@ function overview(userId) {
   };
 }
 
-// opts: { userId, mastered: ''|'0'|'1', subject, due: '1', page, limit }
+// 临考科目 → 排序权重表。返回 { map, pairs }：
+//   map   : subject → { days_left, exam_title }（给前端标注用）
+//   pairs : [[subject, weight], ...]（给 SQL CASE 用，已按天数升序）
+//
+// 拿不到就返回 null，调用方保持原有排序 —— CI 不可用 / 没考试 / 对不上科目
+// 都必须**静默回退**，绝不能让"复习队列打不开"。
+function examWeights(userId) {
+  try {
+    var campusContext = require('./campus-context');
+    var list = campusContext.urgentSubjects(userId);
+    if (!list || !list.length) return null;
+
+    var map = {};
+    var pairs = [];
+    list.forEach(function(x, i) {
+      if (!x || !x.subject || map[x.subject]) return;
+      map[x.subject] = { days_left: x.days_left, exam_title: x.exam_title };
+      pairs.push([String(x.subject), i]);
+    });
+    return pairs.length ? { map: map, pairs: pairs } : null;
+  } catch (e) {
+    // 校园情境不可用（表未迁移 / CI 未联动 / 缓存空）都不该影响错题本
+    return null;
+  }
+}
+
+// opts: { userId, mastered: ''|'0'|'1', subject, due: '1', page, limit, examFirst? }
 function list(opts) {
   var o = opts || {};
   var page = Math.max(1, parseInt(o.page, 10) || 1);
@@ -293,16 +324,51 @@ function list(opts) {
   var countStmt = db.prepare('SELECT COUNT(*) AS c FROM wrong_questions WHERE ' + whereSql);
   var total = (countStmt.get.apply(countStmt, params) || {}).c || 0;
 
-  // 复习队列按「该复习的先后」排：日期早的（拖得久的）排前面。
+  // ---- 排序 ----
+  //
+  // 复习队列默认按「该复习的先后」排：日期早的（拖得久的）排前面。
   // 其余场景保持「最新收录在前」——那时学生找的是"我刚做错的那道"。
+  //
+  // ---- 临考优先（2026-10-12 加；两个系统真正的协同点）----
+  // 只在复习队列（due=1）里生效：明天考数学，队列却按排期日期机械推进、
+  // 把一堆英语错题排在数学前面 —— 这正是学生最需要它靠谱的时刻。
+  //
+  // 刻意做成**排序权重**而不是改判定：
+  //   · 不改 due：间隔重复阶梯照走，不会因为临考就把还没到期的题硬塞进来
+  //     （那是把"复习节奏"和"复习顺序"两件事混为一谈）；
+  //   · 不改数据：不写库、不排期，CI 一断就自动恢复原有顺序。
+  //
+  // 权重进 SQL 而不是拉回来再排：分页必须全表一致，
+  // 否则第 2 页会重复出现第 1 页的题（"我明明刚看过"）。
+  //
+  // 临考信息**两种模式都算**：学生一进错题本就该看到"数学快考试了"，
+  // 而不是等他点进复习才知道 —— 那时他已经做完了决策。
+  // 排序权重只在复习队列里生效（见下）。
+  var weights = o.examFirst !== false ? examWeights(o.userId) : null;
+
+  var caseSql = '';
+  var orderParams = [];
+  if (weights && o.due === '1') {
+    // 科目值一律走参数绑定（即便它来自本库，也不手拼字符串）
+    caseSql = '(CASE subject ' +
+      weights.pairs.map(function() { return 'WHEN ? THEN ?'; }).join(' ') +
+      ' ELSE 999 END), ';
+    weights.pairs.forEach(function(p) {
+      orderParams.push(p[0]);   // 科目
+      orderParams.push(p[1]);   // 权重（剩余天数升序 → 越近越靠前）
+    });
+  }
+
   var orderSql = o.due === '1'
-    ? 'ORDER BY next_review_on ASC, id ASC'
+    ? ('ORDER BY ' + caseSql + 'next_review_on ASC, id ASC')
     : 'ORDER BY id DESC';
 
   var listStmt = db.prepare(
     'SELECT * FROM wrong_questions WHERE ' + whereSql + ' ' + orderSql + ' LIMIT ? OFFSET ?'
   );
-  var rows = listStmt.all.apply(listStmt, params.concat([limit, (page - 1) * limit]));
+  var rows = listStmt.all.apply(
+    listStmt, params.concat(orderParams, [limit, (page - 1) * limit])
+  );
 
   // 计数统一从 countsOf 取，保证与角标、复习卡片完全同源
   return {
@@ -311,7 +377,13 @@ function list(opts) {
     total: total,
     total_pages: Math.ceil(total / limit),
     counts: countsOf(o.userId),
-    items: rows.map(serialize)
+    // 前端要解释"为什么这道题排在最前面"，所以把临考信息一并给出去
+    exam_first: weights
+      ? weights.pairs.map(function(p) {
+          return { subject: p[0], days_left: weights.map[p[0]].days_left, exam_title: weights.map[p[0]].exam_title };
+        })
+      : [],
+    items: rows.map(function(r) { return serialize(r, weights ? weights.map : null); })
   };
 }
 

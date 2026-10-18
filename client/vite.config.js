@@ -8,7 +8,11 @@ export default defineConfig({
   plugins: [vue()],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, 'src')
+      '@': path.resolve(__dirname, 'src'),
+      // 前后端共用的常量（学生偏好档位）放在项目根的 shared/ 下。
+      // 前端从这里读、服务端 prompt-registry 也 require 同一份文件 ——
+      // 一份真源，避免"改了一端忘了另一端"的漂移。
+      '@shared': path.resolve(__dirname, '..', 'shared')
     }
   },
   // 统一按设备基线降级，避免出现"打包后能用、开发时不能用"（或反过来）这种
@@ -35,6 +39,12 @@ export default defineConfig({
     // 端口被占时**直接失败**而不是悄悄换到 9103：一旦漂移，内网那台设备
     // 按约定 IP:9102 访问就会连不上，而错误只出现在没人看的那台机器上。
     strictPort: true,
+    // 开发服务器默认只允许读工作区（client/）内的文件；@shared 指向上一层的
+    // shared/，这里显式放行，否则 dev 下会报"文件不在允许目录内"。
+    // （只影响 dev；构建时由 rollup 解析，不受此限）
+    fs: {
+      allow: [path.resolve(__dirname), path.resolve(__dirname, '..', 'shared')]
+    },
     // 开发期一律不做强缓存。Vite 默认会给预打包依赖（/node_modules/.vite/deps/*）
     // 发 `max-age=31536000, immutable`，于是平板那边会攥着旧依赖不放 ——
     // 改了依赖版本或配置后，设备上跑的还是老代码，且现象是"我明明改好了它没变"。

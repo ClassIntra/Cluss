@@ -121,7 +121,7 @@
         </div>
       </div>
 
-      <div v-if="error" class="alert alert-danger">{{ error }}</div>
+      <ErrorBanner :message="error" retry @retry="load(page)" />
 
       <!-- 列表 -->
       <div class="list-wrap glass">
@@ -309,13 +309,14 @@
 
 <script>
 import AppNav from '@/components/AppNav.vue';
+import ErrorBanner from '@/components/ErrorBanner.vue';
 import Segmented from '@/components/Segmented.vue';
 import { renderMarkdown, ensureKatexIdle, onKatexReady } from '@/utils/markdown';
 import mermaidCharts from '@/mixins/mermaid';
 
 export default {
   name: 'WrongBookView',
-  components: { AppNav, Segmented },
+  components: { AppNav, Segmented, ErrorBanner },
   mixins: [mermaidCharts],
   data: function() {
     return {
@@ -359,8 +360,18 @@ export default {
   },
   watch: {
     // 换筛选就重置到第一页：否则会停在一个新筛选下不存在的页码上
-    masteredFilter: function() { this.load(1); },
-    subject: function() { this.load(1); }
+    masteredFilter: function() {
+      // 首进页时若从本地恢复了筛选，这次变化是「恢复」触发的，不该再发请求
+      // （请求统一由 mounted 里的 load(1) 发起，避免进页打两次接口）
+      if (this._restoringMastered) { this._restoringMastered = false; return; }
+      this.saveViewState();
+      this.load(1);
+    },
+    subject: function() {
+      if (this._restoringSubject) { this._restoringSubject = false; return; }
+      this.saveViewState();
+      this.load(1);
+    }
   },
   mounted: function() {
     // katex 按需加载 + 就绪重绘：列表模板里 v-html="render(q.*)" 直接调方法，
@@ -368,15 +379,49 @@ export default {
     var self = this;
     ensureKatexIdle();
     onKatexReady(function () { self.$forceUpdate(); });
+    this.restoreViewState();
     this.load(1);
     this.loadSubjects();
   },
   methods: {
+    // 记住上次的筛选与自测偏好：切页回来不该又回到「待复习 · 全部学科 · 无自测」。
+    // 存本地即可——这是「我上次想看什么」，跨设备无意义。
+    restoreViewState: function() {
+      var saved = {};
+      try { saved = JSON.parse(localStorage.getItem('cluss_view_wrongbook') || '{}') || {}; } catch (e) { saved = {}; }
+      // 各字段分别打闸：只在值合法且与默认不同时恢复，避免触发多余的 watcher
+      if ((saved.masteredFilter === '0' || saved.masteredFilter === '1' || saved.masteredFilter === '') && saved.masteredFilter !== this.masteredFilter) {
+        this._restoringMastered = true;
+        this.masteredFilter = saved.masteredFilter;
+      }
+      if (typeof saved.subject === 'string' && saved.subject !== this.subject) {
+        this._restoringSubject = true;
+        this.subject = saved.subject;
+      }
+      // 自测模式没有 watcher（它不是筛选），直接恢复即可。
+      // 刻意不恢复 reviewMode —— 那是「一轮复习流程」而不是持久偏好，
+      // 记下来的话下次进页会把人直接困在复习态里。
+      if (typeof saved.quizMode === 'boolean') this.quizMode = saved.quizMode;
+    },
+
+    saveViewState: function() {
+      try {
+        localStorage.setItem('cluss_view_wrongbook', JSON.stringify({
+          masteredFilter: this.masteredFilter,
+          subject: this.subject,
+          quizMode: this.quizMode
+        }));
+      } catch (e) { /* 隐私模式下会抛，忽略 */ }
+    },
+
     render: function(text) { return renderMarkdown(text); },
 
     toggleQuiz: function() {
       this.quizMode = !this.quizMode;
       this.revealed = {};
+      // 学生手动开关自测是一次明确选择，值得记住。只在手动入口写，
+      // 复习流程里自动开关（startReview / exitReview）不覆盖这份偏好。
+      this.saveViewState();
     },
 
     reveal: function(id) {

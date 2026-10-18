@@ -69,9 +69,13 @@
 </template>
 
 <script>
+import modalEsc from '@/mixins/modal-esc';
+
 // 模型源编辑弹窗（迁移 022）：一个上游常一次提供多个模型，地址/密钥放这里共享
 export default {
   name: 'SourceForm',
+  // Esc 关闭：与 AiPrefs 等表单弹窗保持一致（按 Esc = 点「取消」）
+  mixins: [modalEsc],
   props: {
     // 传入则为编辑，否则新增
     source: { type: Object, default: null }

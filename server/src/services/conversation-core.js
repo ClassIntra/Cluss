@@ -183,6 +183,19 @@ function deleteMessage(msgId) {
   db.prepare('DELETE FROM ai_messages WHERE id = ?').run(Number(msgId));
 }
 
+// 会话里已落库的消息总数（含流式占位行之外的全部历史）
+//
+// 用途：给前端的「上下文状态」算分母 —— 学生想知道的不是"这一轮送了多少 token"，
+// 而是"AI 还记得我们前面聊的多少条"。只有拿到会话总条数才回答得了这个问题。
+// 只数 streaming=0 的行：正在生成的那半条不算"已聊过的历史"。
+function countMessages(convId) {
+  var row = db.prepare([
+    'SELECT COUNT(*) AS n FROM ai_messages',
+    'WHERE conversation_id = ? AND streaming = 0'
+  ].join('\n')).get(String(convId));
+  return Number(row && row.n || 0);
+}
+
 // 读取用于组装上下文的历史消息（取最近 N 条，按时间正序返回）
 // 只返回 role 与 content —— 历史消息的附件不回填图片（见 context-builder）
 function loadContextMessages(convId, limit) {
@@ -476,6 +489,7 @@ module.exports = {
   updateMessageContent: updateMessageContent,
   deleteMessage: deleteMessage,
   loadContextMessages: loadContextMessages,
+  countMessages: countMessages,
   listConversations: listConversations,
   serializeConversation: serializeConversation,
   serializeMessage: serializeMessage,

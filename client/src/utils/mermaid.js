@@ -41,6 +41,28 @@ function loadMermaid() {
   return loadPromise;
 }
 
+// 预热 mermaid：提前加载 + 按当前主题初始化。
+//
+// 为什么需要它 —— 这是「图表渲染太慢」的主因：
+//   mermaid 679KB（比 katex 还大一倍），而它原先**只在真的要画图的那一刻**
+//   才开始下载（唯一触发点是 renderMermaidCharts）。于是 AI 回答里一出现图表，
+//   学生就要眼睁睁等 679KB 下载完 + 初始化，图才慢慢显出来。
+//   实测渲染本身只要几毫秒 —— 大量时间是在等下载，不是在画。
+//
+// 调用时机：① 页面空闲时（与 katex 同样"等首屏画完再拉"的门控）；
+//   ② 每次发问时 —— AI 生成通常要几秒到几十秒，足够把库拉下来，
+//   而这正好覆盖"学生打开页面立刻就提问"的极端情况。
+// 幂等，重复调用无副作用。
+export function ensureMermaid(isDark) {
+  var dark = typeof isDark === 'boolean'
+    ? isDark
+    : document.documentElement.getAttribute('data-theme') === 'dark';
+  return loadMermaid().then(function(mermaid) {
+    ensureInit(mermaid, dark);
+    return mermaid;
+  });
+}
+
 // ---------- 初始化 ----------
 
 function ensureInit(mermaid, isDark) {

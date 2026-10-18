@@ -106,12 +106,15 @@
 
 <script>
 import Segmented from './Segmented.vue';
+import modalEsc from '@/mixins/modal-esc';
 
 // 云盘选择器：从云盘选文件（可多选）、上传新文件、删除文件
 // 对话页与学习页共用同一个组件，保证两处的选择体验一致
 export default {
   name: 'CloudPicker',
   components: { Segmented },
+  // Esc 关闭（组件由 v-if 控制，存在即打开，见 mixin 说明）
+  mixins: [modalEsc],
   props: {
     // 只选图片（拍题）还是任意文件（对话附件）
     imagesOnly: { type: Boolean, default: false },
@@ -549,21 +552,42 @@ html.no-flex-gap .filter-row > * + * {
   font-size: 13px;
   line-height: 1;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity var(--transition);
+  /* ⚠️ 不用 opacity: 0 藏起来：opacity 不拦截点击，
+     那只会把按钮变成"看不见却仍然点得到"的陷阱。
+     触屏没有 hover，选择器里每个文件缩略图上都会挂一个隐形删除键，
+     手指落在左上角就删掉一个云盘文件。
+     改为低透明度常显：不抢视线，但始终可见、可预期。
+     0.7 是下限 —— 它压在图片上，比压在纯色背景上更难辨认。 */
+  opacity: 0.7;
+  transition: opacity var(--transition), background var(--transition);
+}
+
+/* 命中区向四周撑到 32px。绝对定位不占流，不会影响网格布局 */
+.cell-del::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 32px;
+  height: 32px;
+  transform: translate(-50%, -50%);
+  background: transparent;
 }
 
 @media (hover: hover) {
 .cell:hover .cell-del {
   opacity: 1;
 }
-}
 
-
-@media (hover: hover) {
 .cell-del:hover {
   background: var(--danger);
 }
+}
+
+/* 触屏：按下即提亮变红，给出"我按到的是删除"的即时反馈 */
+.cell-del:active {
+  opacity: 1;
+  background: var(--danger);
 }
 
 

@@ -224,6 +224,8 @@
 </template>
 
 <script>
+import modalEsc from '@/mixins/modal-esc';
+
 // 模型编辑弹窗
 
 // 库存单位是「微元 / 千 token」，表单按管理员习惯的「元 / 百万 token」口径显示与提交：
@@ -251,6 +253,8 @@ function isoToLocal(iso) {
 
 export default {
   name: 'ModelForm',
+  // Esc 关闭：与 AiPrefs 等表单弹窗保持一致（按 Esc = 点「取消」）
+  mixins: [modalEsc],
   props: {
     // 传入则为编辑，否则新增
     model: { type: Object, default: null },

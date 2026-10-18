@@ -36,14 +36,6 @@ var routes = [
     meta: { requiresAuth: true }
   },
   {
-    // Cluss Cloud 公共服务：注册学校 + 学校管理员看板。
-    // 不加 meta：未登录可注册、登录后可看板（页面自管两种状态），
-    // guest/requiresAuth 都会把其中一种状态弹走。
-    path: '/org',
-    name: 'Org',
-    component: function() { return import('@/views/Org.vue'); }
-  },
-  {
     path: '/writing',
     name: 'Writing',
     component: function() { return import('@/views/Writing.vue'); },
@@ -125,7 +117,9 @@ router.onError(function(err) {
   if (!CHUNK_ERROR.test(msg)) return;
 
   // 只兜底刷一次：万一新版本本身有问题，不能变成无限刷新
-  var last = Number(sessionStorage.getItem(CHUNK_RELOAD_KEY) || 0);
+  // sessionStorage 在受限 WebView 里可能拿不到对象（为 null），包一层避免 onError 里再抛错
+  var last = 0;
+  try { last = Number(sessionStorage.getItem(CHUNK_RELOAD_KEY) || 0); } catch (e) {}
   if (Date.now() - last < 15000) return;
   try { sessionStorage.setItem(CHUNK_RELOAD_KEY, String(Date.now())); } catch (e) {}
   window.location.reload();

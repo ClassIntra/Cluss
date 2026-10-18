@@ -256,47 +256,6 @@
             </p>
           </template>
         </section>
-
-        <!-- Cluss-Cloud 账号绑定：把「本班班管」和「云端学校管理员」认成同一个人。
-             两边原本是两个账号两套密码，交接/换届时最容易乱；绑定后管理员在云端
-             的每一次操作都落在「哪个班 + 哪个学号」上。方向必须从这台电脑发起 ——
-             云端不存班级密码，网页上填学号等于谁都能声称自己是任何人，只有本机
-             能证明「此刻登录的是本班学号 X 且他是班管」。 -->
-        <section class="panel glass bind-panel">
-          <h2 class="panel-title">Cluss-Cloud 账号绑定</h2>
-          <div class="row-line">
-            <span class="line-key">本机身份</span>
-            <span class="line-amount mono">{{ meUserId || '未知' }} · {{ isNodeMode ? 'node 模式（可发起）' : '未接入中继' }}</span>
-          </div>
-          <div class="row-line">
-            <span class="line-key">云端管理员</span>
-            <span class="line-amount">
-              <input
-                class="input input-sm mono"
-                v-model="cloudBind.adminUsername"
-                placeholder="你在云端注册学校时填的用户名"
-                autocapitalize="off" spellcheck="false"
-              />
-            </span>
-          </div>
-          <div class="roster-actions">
-            <button
-              class="btn btn-sm btn-ghost roster-btn"
-              type="button"
-              :disabled="cloudBind.busy || !cloudBind.adminUsername"
-              @click="requestCloudBind"
-            >{{ cloudBind.busy ? '生成中…' : '生成确认码' }}</button>
-          </div>
-          <div v-if="cloudBind.code" class="bind-code">
-            <span class="tiny muted">确认码（15 分钟内有效，只能用一次）</span>
-            <div class="bind-code-value mono">{{ cloudBind.code }}</div>
-            <p class="tiny muted" style="margin: 6px 0 0;">
-              打开 Cluss-Cloud 网页 → 用管理员账号登录 → 「账号绑定」页签 → 粘贴上面的码确认。
-              一个学校只能有一个班管占管理员席位，别的班管来时会看到席位已被占用。
-            </p>
-          </div>
-          <p v-if="cloudBind.error" class="tiny" style="color: var(--danger-text, #d64545); margin: 8px 0 0;">{{ cloudBind.error }}</p>
-        </section>
       </template>
 
 <!-- ================= 额度分配 ================= -->
@@ -809,6 +768,116 @@
           </div>
         </section>
       </template>
+
+      <!-- ================= AI 洞察（管理员用 AI 读台账） ================= -->
+      <template v-else-if="tab === 'ai'">
+        <section class="panel glass">
+          <div class="panel-head">
+            <div>
+              <h2 class="panel-title">AI 洞察</h2>
+              <p class="panel-sub tiny muted">
+                让 AI 读一遍当前台账，给出体检结论与运维建议。数据来源与左侧各页同一口径
+                （近 7 天用量、账目总盘、本月预算、模型与单价配置、异常检出）。每次分析会真实调用一次模型，
+                但不计入学生额度。
+              </p>
+            </div>
+          </div>
+
+          <div class="insight-ask">
+            <div class="insight-presets">
+              <button
+                v-for="(q, i) in insightPresets"
+                :key="i"
+                type="button"
+                class="insight-chip"
+                :disabled="insight.loading"
+                @click="askInsight(q)"
+              >{{ q }}</button>
+            </div>
+
+            <div class="insight-input">
+              <textarea
+                v-model="insight.question"
+                class="insight-textarea"
+                rows="2"
+                maxlength="500"
+                placeholder="也可以直接问一个具体问题，例如：本月会不会超预算？哪个班消耗最快？"
+                @keydown.ctrl.enter="runInsight"
+              ></textarea>
+              <button
+                class="btn btn-primary"
+                :disabled="insight.loading"
+                @click="runInsight"
+              >{{ insight.loading ? '分析中…' : '开始分析' }}</button>
+            </div>
+            <p v-if="insight.error" class="insight-error">{{ insight.error }}</p>
+          </div>
+        </section>
+
+        <section v-if="insight.loading" class="panel glass">
+          <div class="insight-wait">
+            <i class="insight-spin"></i>
+            <span class="tiny muted">AI 正在读取台账并生成分析，通常十几秒，请稍候…</span>
+          </div>
+        </section>
+
+        <section v-else-if="insight.answer" class="panel glass">
+          <div class="panel-head">
+            <h2 class="panel-title">分析结果</h2>
+            <span class="tiny muted nowrap">
+              {{ insight.model || 'AI' }} · 用时 {{ (insight.elapsed / 1000).toFixed(1) }}s
+            </span>
+          </div>
+          <div class="insight-body md-body" v-html="insight.html"></div>
+
+          <!-- 本次分析依据：AI 结论所依据的原始数字 + 当前模型单价。
+               默认收起 —— 结论是主体，依据是给"想核对一下 / 想调配置"的管理员随手展开用的。
+               单价在这里出现，是因为「该不该换模型 / 单价贵不贵」这类问题只有对着价目才谈得下去。 -->
+          <details v-if="insight.context" class="insight-facts">
+            <summary class="insight-facts-sum">本次分析依据（展开核对数字）</summary>
+
+            <div class="insight-facts-grid">
+              <div class="fact"><span class="fact-k">统计窗口</span><span class="fact-v">近 {{ insight.context.window_days }} 天</span></div>
+              <div class="fact"><span class="fact-k">学生 / 管理员</span><span class="fact-v">{{ insight.context.students }} / {{ insight.context.admins }} 人</span></div>
+              <div class="fact"><span class="fact-k">近 7 天活跃学生</span><span class="fact-v">{{ insight.context.active_students_7d }} 人</span></div>
+              <div class="fact"><span class="fact-k">已分配额度</span><span class="fact-v">¥{{ insight.context.allocated_yuan }}</span></div>
+              <div class="fact"><span class="fact-k">已消耗</span><span class="fact-v">¥{{ insight.context.used_yuan }}</span></div>
+              <div class="fact"><span class="fact-k">剩余</span><span class="fact-v">¥{{ insight.context.remaining_yuan }}</span></div>
+              <div class="fact"><span class="fact-k">消耗率</span><span class="fact-v">{{ insight.context.used_pct }}%</span></div>
+              <div class="fact"><span class="fact-k">本月消耗</span><span class="fact-v">¥{{ insight.context.month.cost_yuan }}（{{ insight.context.month.calls }} 次）</span></div>
+              <div class="fact">
+                <span class="fact-k">本月预算</span>
+                <span class="fact-v">{{ insight.context.month.threshold_yuan > 0 ? '¥' + insight.context.month.threshold_yuan : '未设置' }}</span>
+              </div>
+              <div class="fact"><span class="fact-k">异常突增</span><span class="fact-v">{{ insight.context.spike_count }} 处</span></div>
+            </div>
+
+            <div v-if="insight.context.models && insight.context.models.length" class="insight-models">
+              <div class="insight-models-title tiny muted">当前启用模型与单价（元 / 百万 token）</div>
+              <div v-for="m in insight.context.models" :key="m.id" class="model-row">
+                <span class="model-name">{{ m.label }}</span>
+                <span class="tiny muted">
+                  输入 ¥{{ m.in_yuan_per_m }}/M · 输出 ¥{{ m.out_yuan_per_m }}/M{{ m.multiplier !== 1 ? ' · ×' + m.multiplier : '' }}{{ m.is_default ? ' · 默认' : '' }}{{ m.ready ? '' : ' · 未配 Key' }}
+                </span>
+              </div>
+            </div>
+          </details>
+
+          <div class="panel-actions">
+            <button class="btn btn-sm btn-ghost" @click="copyInsight">复制全文</button>
+            <button class="btn btn-sm btn-ghost" :disabled="insight.loading" @click="runInsight">重新分析</button>
+          </div>
+        </section>
+
+        <section v-else class="panel glass">
+          <div class="insight-hint">
+            <p class="tiny muted">
+              点上面的问题开始一次分析，或自己输入问题。AI 只会依据页面上的数据作答，
+              数据里没有的东西它不会编 —— 需要更多信息时会直接告诉你要导出哪份表。
+            </p>
+          </div>
+        </section>
+      </template>
     </main>
 
     <!-- 追加充值弹窗：叠加式，不覆盖原额度，可连续多轮追加 -->
@@ -906,6 +975,9 @@ import Segmented from '@/components/Segmented.vue';
 import UsageChart from '@/components/UsageChart.vue';
 import ModelForm from '@/components/ModelForm.vue';
 import SourceForm from '@/components/SourceForm.vue';
+// AI 洞察的结果是 markdown（列表 / 加粗 / 表格）。复用全站同一个渲染入口，
+// 不在这里另造一套 —— 它已内含 DOMPurify 净化，v-html 是安全的。
+import { renderMarkdown } from '@/utils/markdown';
 
 var SOURCE_LABELS = {
   chat: '对话', study: '学习', solve: '拍题', grade: '批改', vision_relay: '图片识别'
@@ -918,9 +990,6 @@ export default {
     return {
       tab: 'overview',
       error: '',
-
-      // ---- Cluss-Cloud 账号绑定（班管本机发起，见「账号绑定」面板）----
-      cloudBind: { adminUsername: '', busy: false, code: '', error: '' },
 
       // 加载态：请求回来之前不要先摆出「没有匹配的学生 / 暂无流水」这种空态文案
       loading: true,
@@ -1000,7 +1069,21 @@ export default {
       usageItems: [],
       usageTotals: {},
       usageRecords: [],
-      usageRecordTotal: 0
+      usageRecordTotal: 0,
+
+      // ---- AI 洞察 ----
+      // 打开页签**不自动跑**：每次分析都是一次真实模型调用，
+      // 不该因为"切了个页签"就发生（与「模型连通性测试」同一个原则）。
+      insight: {
+        question: '',
+        answer: '',
+        html: '',
+        model: '',
+        elapsed: 0,
+        context: null,
+        loading: false,
+        error: ''
+      }
     };
   },
   computed: {
@@ -1045,7 +1128,8 @@ export default {
         { id: 'quota', label: '额度分配' },
         { id: 'models', label: '模型与单价' },
         { id: 'vision', label: '视觉配置' },
-        { id: 'usage', label: '用量统计' }
+        { id: 'usage', label: '用量统计' },
+        { id: 'ai', label: 'AI 洞察' }
       ];
     },
     instanceLabel: function() {
@@ -1105,6 +1189,16 @@ export default {
     },
     usageGroupTitle: function() {
       return { user: '账号明细', model: '模型明细', source: '类型明细', day: '每日明细' }[this.usageGroup] || '明细';
+    },
+    // AI 洞察的预设问题：覆盖管理员最常关心的四件事（花钱进度 / 异常 / 结构 / 降本）。
+    // 有预设是因为"不知道该问什么"是这类功能的第一个门槛。
+    insightPresets: function() {
+      return [
+        '本月会不会超预算？',
+        '近 7 天用量有没有异常？',
+        '哪个班 / 哪些学生消耗最快？',
+        '怎么把成本降下来？'
+      ];
     }
   },
   watch: {
@@ -1115,6 +1209,7 @@ export default {
       else if (val === 'models') { this.loadModels(); this.loadOffpeak(); }
       else if (val === 'vision') this.loadVision();
       else if (val === 'usage') { this.loadUsage(); this.loadAnomalies(); }
+      // ai 标签**刻意不预加载**：每次分析都是一次真实模型调用，理由见 data 里 insight 的注释
     },
     usageDays: function() { this.loadUsage(); },
     usageGroup: function() { this.loadUsageSummary(); }
@@ -1169,28 +1264,6 @@ export default {
         self.roster.unavailable = err.message || '名册状态读取失败';
       }).then(function() {
         self.roster.loading = false;
-      });
-    },
-
-    // 拉名册并纳入本班：幂等、只增不删，随时可以按
-    // 生成 Cluss-Cloud 账号绑定确认码。
-    // 失败原因原样透出（403「只有班管可以发起」/ 404「中继不支持」都要看得懂），
-    // 这类错误都是「配置或身份对不上」，编一个友好提示只会把人带偏。
-    requestCloudBind: function() {
-      var self = this;
-      self.cloudBind.busy = true;
-      self.cloudBind.error = '';
-      self.cloudBind.code = '';
-      this.$http.post('/admin/cloud/bind-request', {
-        admin_username: self.cloudBind.adminUsername
-      }).then(function(r) {
-        self.cloudBind.code = (r.data && r.data.bind_code) || '';
-        if (!self.cloudBind.code) self.cloudBind.error = (r.data && r.data.message) || '中继没有返回确认码';
-      }).catch(function(err) {
-        var d = (err.response && err.response.data) || {};
-        self.cloudBind.error = d.message || err.message || '生成失败';
-      }).then(function() {
-        self.cloudBind.busy = false;
       });
     },
 
@@ -1672,6 +1745,72 @@ export default {
       return item.label || item.key;
     },
 
+    // ---------- AI 洞察 ----------
+    runInsight: function() {
+      var self = this;
+      if (this.insight.loading) return Promise.resolve();
+      this.insight.loading = true;
+      this.insight.error = '';
+      // 超时放宽到 90s：服务端那段分析读的是整份快照，比一轮普通对话长；
+      // 沿用实例默认的 30s 会先被前端掐断 —— 明明服务端算得出来，前端却报"请求超时"。
+      return this.$http.post('/admin/ai/insight', {
+        question: this.insight.question.trim()
+      }, { timeout: 90000 }).then(function(r) {
+        // 失败走的是 HTTP 200 + data.ok:false（与「模型连通性测试」同风格），
+        // 所以这里先判 ok，不能让 error 分支把 message 当成正文渲染出来
+        var d = (r.data && r.data.data) || {};
+        if (!d.ok) {
+          self.insight.answer = '';
+          self.insight.html = '';
+          self.insight.error = d.error || '分析失败，请稍后重试';
+          return;
+        }
+        self.insight.answer = d.answer || '';
+        self.insight.html = renderMarkdown(d.answer || '');
+        self.insight.model = d.model || '';
+        self.insight.elapsed = d.elapsed_ms || 0;
+        self.insight.context = d.context || null;
+      }).catch(function(err) {
+        self.insight.error = err.message || '分析失败，请稍后重试';
+      }).then(function() {
+        self.insight.loading = false;
+      });
+    },
+
+    askInsight: function(q) {
+      this.insight.question = q;
+      return this.runInsight();
+    },
+
+    copyInsight: function() {
+      var self = this;
+      var text = this.insight.answer || '';
+      var ok = function() {
+        self.$store.dispatch('toast', { message: '已复制分析全文', type: 'success' });
+      };
+      var fail = function() {
+        self.$store.dispatch('toast', { message: '复制失败，请手动选择后复制', type: 'error' });
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(ok).catch(fail);
+        return;
+      }
+      // 老内核兜底：clipboard API 不可用时退回 textarea + execCommand
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        ok();
+      } catch (e) {
+        fail();
+      }
+    },
+
     // ---------- 导出 ----------
     download: function(url, filename) {
       var self = this;
@@ -1848,6 +1987,194 @@ html.no-flex-gap .panel-actions > * + * {
 
 .panel-head .panel-actions {
   margin-top: 0;
+}
+
+/* ---------- AI 洞察 ---------- */
+.insight-ask {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-md);
+}
+html.no-flex-gap .insight-ask > * + * {
+  margin-top: var(--gap-md);
+}
+
+.insight-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-sm);
+}
+html.no-flex-gap .insight-presets > * + * {
+  margin-left: var(--gap-sm);
+}
+
+/* 预设问题做成胶囊按钮：与对话页的「场景标签」同一视觉语言，
+   刻意不复用 Chat.vue 的 .chip-suggest —— 那是 scoped 样式，跨组件拿不到 */
+.insight-chip {
+  padding: 7px 13px;
+  border: 1px solid var(--ink-3);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: border-color .16s ease, background .16s ease, color .16s ease;
+}
+.insight-chip:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.insight-chip:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.insight-input {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--gap-sm);
+}
+html.no-flex-gap .insight-input > * + * {
+  margin-left: var(--gap-sm);
+}
+.insight-textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 78px;
+  padding: 10px 12px;
+  border: 1px solid var(--ink-3);
+  border-radius: var(--radius-sm);
+  background: var(--ink-1);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.6;
+  resize: vertical;
+}
+.insight-textarea:focus {
+  outline: none;
+  border-color: var(--accent-border-strong);
+  background: var(--surface-2);
+}
+
+.insight-error {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.insight-wait {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  padding: 16px 18px;
+  border-radius: var(--radius-md);
+  background: var(--ink-1);
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+html.no-flex-gap .insight-wait > * + * {
+  margin-left: var(--gap-sm);
+}
+.insight-spin {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  border: 2px solid var(--ink-4);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: insight-rotate .8s linear infinite;
+}
+@keyframes insight-rotate {
+  to { transform: rotate(360deg); }
+}
+
+/* 结果正文：复用 global.css 的 .md-body 排版，这里只管外层节奏 */
+.insight-body {
+  margin-top: var(--gap-md);
+  font-size: 14.5px;
+  line-height: 1.75;
+  color: var(--text-primary);
+}
+
+/* ---------- AI 洞察：本次分析依据 ----------
+   结论是主体、依据是附注，所以整块做成默认收起的折叠区（原生 <details>，
+   零 JS）。单价也放这里 —— 「该不该换模型 / 单价贵不贵」只有对着价目才谈得下去。 */
+.insight-facts {
+  margin-top: var(--gap-md);
+  border: 1px solid var(--ink-3);
+  border-radius: var(--radius-md);
+  background: var(--ink-1);
+  padding: 0 12px;
+}
+.insight-facts-sum {
+  cursor: pointer;
+  padding: 10px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  /* 去掉浏览器默认的三角标记，改用自绘，避免各端箭头样式不一 */
+  list-style: none;
+  user-select: none;
+}
+.insight-facts-sum::-webkit-details-marker { display: none; }
+.insight-facts-sum::before { content: '▸ '; }
+.insight-facts[open] .insight-facts-sum::before { content: '▾ '; }
+
+/* 指标网格：CSS Grid 的 gap 在 Chrome 57+ 就有，不需要 no-flex-gap 兜底 */
+.insight-facts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: var(--gap-sm);
+  padding: 4px 0 12px;
+}
+.fact { display: block; }
+.fact-k {
+  display: block;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.fact-v {
+  display: block;
+  margin-top: 2px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.insight-models {
+  border-top: 1px solid var(--ink-3);
+  padding: 10px 0 12px;
+}
+.insight-models-title { margin-bottom: 6px; }
+.model-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-sm);
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--ink-3);
+  /* 窄屏下单价那一长串会换行，包住避免撑宽整块 */
+  flex-wrap: wrap;
+}
+/* Chrome 80 不支持 flex gap：模型名与单价之间补左边距 */
+html.no-flex-gap .model-row > * + * { margin-left: var(--gap-sm); }
+.model-row:last-child { border-bottom: none; }
+.model-name {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.insight-hint {
+  margin: 0;
+  padding: 16px 18px;
+  border-radius: var(--radius-md);
+  background: var(--ink-1);
+  color: var(--text-tertiary);
+  font-size: 13.5px;
+  line-height: 1.7;
 }
 
 .filters-row {
@@ -2054,31 +2381,6 @@ html.no-flex-gap .roster-actions > * + * {
 
 .roster-note {
   margin: var(--gap-sm) 0 0;
-}
-
-/* 账号绑定：确认码要一眼看清、方便照着敲，别缩在一行小字里 */
-.bind-panel {
-  margin-top: var(--gap);
-}
-
-.bind-panel .input-sm {
-  max-width: 220px;
-  padding: 6px 10px;
-  font-size: .86rem;
-}
-
-.bind-code {
-  margin-top: var(--gap-sm);
-  padding: 12px 14px;
-  border-radius: var(--radius-md, 12px);
-  background: var(--accent-soft, rgba(47, 107, 221, .12));
-}
-
-.bind-code-value {
-  font-size: 1.5rem;
-  font-weight: 600;
-  letter-spacing: .18em;
-  margin-top: 2px;
 }
 
 /* 云端接入面板 */
@@ -2380,6 +2682,15 @@ html.no-flex-gap .modal-actions > * + * {
   }
   .col-op {
     width: auto;
+  }
+  /* AI 洞察：窄屏把「输入 + 分析」竖排，按钮铺满一行，避免输入框被挤成一条缝 */
+  .insight-input {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  html.no-flex-gap .insight-input > * + * {
+    margin-left: 0;
+    margin-top: var(--gap-sm);
   }
 }
 

@@ -2,13 +2,33 @@ import Vue from 'vue';
 import axios from 'axios';
 import api from '@/utils/api';
 
+// 受限 WebView（智熄网应用壳内嵌环境）里 window.localStorage 可能拿不到对象（为 null），
+// 直接访问会抛 TypeError。而本模块的初始 state 就在**模块求值期**读存储 ——
+// 一旦抛错会打断 Vue 初始化、页面白屏（其余调用点普遍有 try/catch，唯独这里没有）。
+// 只在"读不到存储"时才降级为内存对象：正常浏览器仍走原生 localStorage，行为不变。
+var _memStore = null;
+function storage() {
+  try {
+    if (window.localStorage) return window.localStorage;
+  } catch (e) { /* 访问器本身抛错也走降级 */ }
+  if (!_memStore) {
+    var m = {};
+    _memStore = {
+      getItem: function(k) { return Object.prototype.hasOwnProperty.call(m, k) ? m[k] : null; },
+      setItem: function(k, v) { m[k] = String(v); },
+      removeItem: function(k) { delete m[k]; }
+    };
+  }
+  return _memStore;
+}
+
 var state = {
-  token: localStorage.getItem('cluss_token') || '',
+  token: storage().getItem('cluss_token') || '',
   user: (function() {
     try {
-      return JSON.parse(localStorage.getItem('cluss_user') || 'null');
+      return JSON.parse(storage().getItem('cluss_user') || 'null');
     } catch (e) {
-      localStorage.removeItem('cluss_user');
+      storage().removeItem('cluss_user');
       return null;
     }
   })(),
@@ -25,13 +45,13 @@ var getters = {
 var mutations = {
   SET_TOKEN: function(state, token) {
     state.token = token;
-    if (token) localStorage.setItem('cluss_token', token);
-    else localStorage.removeItem('cluss_token');
+    if (token) storage().setItem('cluss_token', token);
+    else storage().removeItem('cluss_token');
   },
   SET_USER: function(state, user) {
     state.user = user;
-    if (user) localStorage.setItem('cluss_user', JSON.stringify(user));
-    else localStorage.removeItem('cluss_user');
+    if (user) storage().setItem('cluss_user', JSON.stringify(user));
+    else storage().removeItem('cluss_user');
   },
   SET_WALLET: function(state, wallet) {
     state.wallet = wallet;
@@ -40,8 +60,8 @@ var mutations = {
     state.token = '';
     state.user = null;
     state.wallet = null;
-    localStorage.removeItem('cluss_token');
-    localStorage.removeItem('cluss_user');
+    storage().removeItem('cluss_token');
+    storage().removeItem('cluss_user');
   }
 };
 

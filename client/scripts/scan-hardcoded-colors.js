@@ -19,8 +19,15 @@ var ALLOWLIST = {
   'views/Register.vue': null
 };
 
-// logo 的 SVG 允许这些值
-var LOGO_ALLOW = ['#ffffff', '#5b9bff', '#2f6bdd'];
+// logo 的 SVG 允许这些值（原稿玻璃色板 + 原稿投影色 + 深色主题专属色板 -300→-200）
+var LOGO_ALLOW = [
+  '#ffffff',
+  '#c7d2fe', '#e0e7ff',
+  '#ddd6fe', '#f3e8ff',
+  '#bae6fd', '#e0f2fe',
+  '#818cf8',
+  '#a5b4fc', '#c4b5fd', '#7dd3fc'
+];
 
 var PATTERNS = [
   { re: /rgba\(\s*31\s*,\s*41\s*,\s*72/, label: '墨色阶漏令牌' },

@@ -90,11 +90,10 @@ app.use('/api/usage', require('./routes/usage'));
 app.use('/api/writing', require('./routes/writing'));
 app.use('/api/notes', require('./routes/notes'));
 app.use('/api/memories', require('./routes/memories'));
+app.use('/api/campus-context', require('./routes/campus-context'));
 app.use('/api/wrong-book', require('./routes/wrong-book'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/sync', require('./routes/sync'));
-// Cluss Cloud 公共服务：注册学校 / 节点接入 / 学校管理员视角（多租户）
-app.use('/api/org', require('./routes/org'));
 
 // 健康检查：让学生端排障页/运维能一眼看出实例身份、模式与版本。
 // 故意不鉴权、不暴露任何账号/路径信息——监控探针只需要这些字段。

@@ -24,10 +24,31 @@ function readStored() {
   }
 }
 
+// 主题切换的过渡窗口（毫秒）。比 CSS 里的 0.22s 略长，确保样式落定后再摘类。
+var TRANSITION_CLASS = 'theme-switching';
+var TRANSITION_MS = 260;
+var transitionTimer = null;
+
 // 把主题应用到 DOM（store 与 index.html 的内联脚本共用同一套约定）
-function applyToDom(theme) {
+//
+// opts.instant —— 不做过渡，直接切。
+//   必须区分这两条路径：**启动时**应用主题是"把页面画成它本该有的样子"，
+//   带上过渡就变成了"从浅色渐变到深色"的闪动（深色用户每次启动都会看到）。
+//   只有用户主动点切换，那次变化才值得动画。
+function applyToDom(theme, opts) {
   var t = THEMES.indexOf(theme) !== -1 ? theme : 'light';
-  document.documentElement.setAttribute('data-theme', t);
+  var root = document.documentElement;
+
+  if (!(opts && opts.instant)) {
+    root.classList.add(TRANSITION_CLASS);
+    if (transitionTimer) clearTimeout(transitionTimer);
+    transitionTimer = setTimeout(function() {
+      root.classList.remove(TRANSITION_CLASS);
+      transitionTimer = null;
+    }, TRANSITION_MS);
+  }
+
+  root.setAttribute('data-theme', t);
 
   var meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', THEME_COLOR[t]);

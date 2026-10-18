@@ -62,7 +62,7 @@
         <a class="btn btn-sm btn-ghost export-btn" :href="exportUrl" target="_blank">导出 CSV</a>
       </div>
 
-      <div v-if="error" class="alert alert-danger">{{ error }}</div>
+      <ErrorBanner :message="error" retry @retry="loadAll()" />
 
       <div class="panels">
         <!-- 趋势 / 分组柱状图 -->
@@ -132,12 +132,13 @@
 
 <script>
 import AppNav from '@/components/AppNav.vue';
+import ErrorBanner from '@/components/ErrorBanner.vue';
 import Segmented from '@/components/Segmented.vue';
 import UsageChart from '@/components/UsageChart.vue';
 
 export default {
   name: 'UsageView',
-  components: { AppNav, Segmented, UsageChart },
+  components: { AppNav, Segmented, UsageChart, ErrorBanner },
   data: function() {
     return {
       days: '7',
@@ -179,13 +180,44 @@ export default {
     }
   },
   watch: {
-    days: function() { this.loadAll(); },
-    groupBy: function() { this.loadSummary(); }
+    days: function() {
+      // 首进页时若从本地恢复了区间，这次变化是「恢复」触发的，不该再发一次请求：
+      // 请求统一由 mounted 里的 loadAll() 发起（否则进页会打两次接口）
+      if (this._restoringDays) { this._restoringDays = false; return; }
+      this.saveViewState();
+      this.loadAll();
+    },
+    groupBy: function() {
+      if (this._restoringGroup) { this._restoringGroup = false; return; }
+      this.saveViewState();
+      this.loadSummary();
+    }
   },
   mounted: function() {
+    this.restoreViewState();
     this.loadAll();
   },
   methods: {
+    // 记住「看多久 / 怎么看」：切页回来不该又回到「近 7 天 · 按天」。
+    // 存本地即可——这是「我上次想看什么」，跨设备无意义。
+    restoreViewState: function() {
+      var saved = {};
+      try { saved = JSON.parse(localStorage.getItem('cluss_view_usage') || '{}') || {}; } catch (e) { saved = {}; }
+      // 只在值合法且与默认不同时才恢复并打闸，避免触发多余的 watcher
+      if ((saved.days === '7' || saved.days === '30' || saved.days === '90') && saved.days !== this.days) {
+        this._restoringDays = true;
+        this.days = saved.days;
+      }
+      if ((saved.groupBy === 'day' || saved.groupBy === 'source') && saved.groupBy !== this.groupBy) {
+        this._restoringGroup = true;
+        this.groupBy = saved.groupBy;
+      }
+    },
+
+    saveViewState: function() {
+      try { localStorage.setItem('cluss_view_usage', JSON.stringify({ days: this.days, groupBy: this.groupBy })); } catch (e) { /* 隐私模式下会抛，忽略 */ }
+    },
+
     loadAll: function() {
       var self = this;
       this.$store.dispatch('auth/fetchWallet').catch(function() {});

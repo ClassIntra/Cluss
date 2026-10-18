@@ -901,7 +901,7 @@ export default {
         self.drawImportedImagePreview();
       };
       img.onerror = function() {
-        self.$store.commit('SHOW_TOAST', { message: '图片加载失败', type: 'error' });
+        self.$store.dispatch('toast', { message: '图片加载失败', type: 'error' });
       };
       img.src = file.url;
     },

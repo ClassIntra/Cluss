@@ -3,14 +3,21 @@
     <div v-if="!items.length" class="empty-hint tiny">暂无数据</div>
 
     <div v-else class="bars">
+      <!-- 柱子本身就是按钮（点按看数值），但有 role 却没 tabindex ——
+           键盘用户看不到也点不到任何一根。补 tabindex 与 Enter/Space。
+           aria-label 带上数值：title 在触屏上永不出现，读屏也拿不到它。 -->
       <div
         v-for="(item, idx) in items"
         :key="idx"
         class="bar-col"
         :class="{ 'is-active': idx === activeIdx }"
         role="button"
+        tabindex="0"
         :title="tooltip(item)"
+        :aria-label="tooltip(item)"
         @click="activeIdx = activeIdx === idx ? -1 : idx"
+        @keydown.enter.prevent="activeIdx = activeIdx === idx ? -1 : idx"
+        @keydown.space.prevent="activeIdx = activeIdx === idx ? -1 : idx"
       >
         <!-- 点按显示数值：title 属性在触屏上永远不出现（没有悬停），
              平板学生此前只能看到柱子高度，看不到具体积分与次数 -->

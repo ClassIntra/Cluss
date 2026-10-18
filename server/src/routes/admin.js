@@ -628,33 +628,6 @@ router.post('/nodes/:instanceId/restore', auth.requireAuth, auth.requireAdmin, f
 });
 
 // ============================================================
-// POST /admin/cloud/bind-request —— Cluss-Cloud 账号绑定（班管本机发起）
-// ============================================================
-// 「班管」和「云端学校管理员」原本是两个账号、两套密码，交接时最容易乱。
-// 绑定后管理员在云端的一切操作都落在「哪个班 + 哪个学号」上。
-//
-// 为什么必须从这台教室电脑发起：云端不存班级密码，网页上填学号等于
-// 谁都能声称自己是任何人；只有本机能证明「此刻登录的是本班学号 X 且
-// 他是班管」。所以这里把当前登录人的 user_id 一起送上去，云端回一个
-// 一次性确认码，再由那位管理员用自己的密码在网页上确认。
-router.post('/cloud/bind-request', auth.requireAuth, auth.requireAdmin, function(req, res) {
-  var adminUsername = String((req.body || {}).admin_username || '').trim().toLowerCase();
-  if (!/^[a-z0-9_-]{3,30}$/.test(adminUsername)) {
-    return res.status(400).json({ code: 400, message: '请填写 Cluss-Cloud 上的管理员用户名（3-30 位小写字母/数字/下划线）' });
-  }
-  if (!syncService.isEnabled()) {
-    return res.status(400).json({ code: 400, message: '本机未接入中继（当前不是 node 模式），无法发起绑定' });
-  }
-  syncService.requestBindCode(adminUsername, req.user.user_id).then(function(data) {
-    console.log('[Admin] 账号绑定确认码已生成（云端管理员 %s，本班学号 %s）by %s',
-      data.admin_username, req.user.user_id, req.user.user_id);
-    res.json({ code: 200, message: '确认码已生成', data: data });
-  }).catch(function(err) {
-    res.status(502).json({ code: 502, message: '生成失败：' + (err && err.message ? err.message : String(err)) });
-  });
-});
-
-// ============================================================
 // GET /admin/dashboard —— 总览（管理台首页）
 // ============================================================
 // 口径分两套，刻意不合并（2026-10-09 修正过一次真实的自相矛盾）：
@@ -803,8 +776,11 @@ router.put('/budget', auth.requireAuth, auth.requireAdmin, function(req, res) {
 //
 // 口径含管理员，与 /admin/dashboard 的金额汇总保持一致（同 /admin/users 的理由：
 // 班管本人就是主要消耗者，滤掉等于把最大的一笔成本藏起来）。
+//
+// 抽成函数给 /usage/anomalies 与「AI 洞察」共用：管理台页面上列出的
+// 「突增账号」与 AI 分析里引用的必须是同一份结果，各写一份迟早会口径漂移。
 // ============================================================
-router.get('/usage/anomalies', auth.requireAuth, auth.requireAdmin, function(req, res) {
+function computeAnomalies() {
   var since24 = time.utcBeforeDays(1);
   var since7 = time.utcBeforeDays(8);
   var MIN_SPIKE_YUAN = 0.5;   // 低于这个量级的突增没有讨论意义
@@ -850,24 +826,24 @@ router.get('/usage/anomalies', auth.requireAuth, auth.requireAdmin, function(req
   });
   spikes.sort(function(a, b) { return b.day_yuan - a.day_yuan; });
 
-  res.json({
-    code: 200,
-    message: 'ok',
-    data: {
-      top7d: topRows.map(function(r) {
-        return {
-          user_id: r.user_id,
-          name: (r.real_name || r.net_name) || r.user_id,
-          class_no: r.class_no || '',
-          is_admin: r.is_admin === 1 ? 1 : 0,
-          cost_yuan: config.microToYuan(r.cost_micro).toFixed(2),
-          calls: r.calls
-        };
-      }),
-      spikes: spikes,
-      rule: { min_day_yuan: MIN_SPIKE_YUAN, ratio: SPIKE_RATIO }
-    }
-  });
+  return {
+    top7d: topRows.map(function(r) {
+      return {
+        user_id: r.user_id,
+        name: (r.real_name || r.net_name) || r.user_id,
+        class_no: r.class_no || '',
+        is_admin: r.is_admin === 1 ? 1 : 0,
+        cost_yuan: config.microToYuan(r.cost_micro).toFixed(2),
+        calls: r.calls
+      };
+    }),
+    spikes: spikes,
+    rule: { min_day_yuan: MIN_SPIKE_YUAN, ratio: SPIKE_RATIO }
+  };
+}
+
+router.get('/usage/anomalies', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  res.json({ code: 200, message: 'ok', data: computeAnomalies() });
 });
 
 // ============================================================
@@ -1836,6 +1812,264 @@ router.get('/usage/export.csv', auth.requireAuth, auth.requireAdmin, function(re
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="cluss-usage-all.csv"');
   res.send(stats.recordsToCsv(data.items));
+});
+
+// ============================================================
+// AI 洞察（POST /admin/ai/insight）
+//
+// 管理台从来不缺数字，缺的是「这些数字说明什么、我该先做什么」。
+// 这件事必须在服务端做：模型地址与 Key 只存在于下发配置里，前端拿不到。
+//
+// 复用 chatOnce（与「模型连通性测试」「记忆提取」同一条非流式通道），
+// 不新造第二条调用路径。**刻意不写 cluss_usage_log**：这是运维侧自身的
+// 调用，若记账就会被算进「学生用量」，污染管理员此刻正在看的那份统计
+//（同理 /models/:id/test 也不记账）。
+//
+// 两种用法：
+//   { question: '' }    基于全局快照出一份常规体检
+//   { question: '...' } 在同一份数据底座上回答管理员的具体问题
+// ============================================================
+
+// 挑一个真正可用的模型：管理台自己的分析不能因为「默认模型没配 Key」就整个不可用。
+// 逐个 enabled 模型试 resolveModel（ready = 地址与 Key 都配齐了），取第一个能用的。
+function pickInsightModel() {
+  var ai = require('../services/ai');
+  var rows = ai.getEnabledModels();
+  for (var i = 0; i < rows.length; i++) {
+    var mc = ai.resolveModel(rows[i].id);
+    if (mc && mc.ready) return mc;
+  }
+  return null;
+}
+
+// 组装给模型看的数据底座。
+// 口径全部复用既有来源：账号/账目与 /admin/dashboard 同一组子查询，
+// 用量分组走 services/usage-stats，突增走 computeAnomalies —— 各写一份
+// 迟早会出现「页面上是这个数、AI 说的是那个数」。
+function buildInsightSnapshot() {
+  var stats = require('../services/usage-stats');
+  var win = stats.resolveWindow({ days: 7 });
+
+  var totals = db.prepare([
+    'SELECT',
+    '  (SELECT COUNT(*) FROM users WHERE is_admin = 0) AS user_count,',
+    '  (SELECT COUNT(*) FROM users WHERE IFNULL(is_admin, 0) = 1) AS admin_count,',
+    '  (SELECT IFNULL(SUM(allocated_micro), 0) FROM cluss_credit) AS allocated_micro,',
+    '  (SELECT IFNULL(SUM(cost_micro), 0) FROM cluss_usage_log) AS used_micro,',
+    '  (SELECT COUNT(*) FROM cluss_usage_log) AS calls'
+  ].join('\n')).get();
+
+  // 本月窗口按服务器本地日历月对齐（与「本月消耗」「峰谷」同一面钟），再转 UTC 查台账
+  var nowLocal = new Date();
+  var monthStartUtc = time.fmtUtc(new Date(nowLocal.getFullYear(), nowLocal.getMonth(), 1));
+  var monthRow = db.prepare(
+    'SELECT IFNULL(SUM(cost_micro), 0) AS cost_micro, COUNT(*) AS calls' +
+    ' FROM cluss_usage_log WHERE created_at >= ?'
+  ).get(monthStartUtc);
+  var budgetYuan = Number(initDb.getMeta('budget_threshold_yuan', '0')) || 0;
+  var monthCostYuan = config.microToYuan(monthRow.cost_micro);
+
+  var byClass = db.prepare([
+    'SELECT IFNULL(NULLIF(u.class_no, \'\'), \'--\') AS class_no,',
+    '       COUNT(DISTINCT u.user_id) AS students,',
+    '       IFNULL(SUM(c.allocated_micro), 0) AS allocated_micro',
+    'FROM users u',
+    'LEFT JOIN cluss_credit c ON c.user_id = u.user_id',
+    'GROUP BY class_no',
+    'ORDER BY class_no ASC'
+  ].join('\n')).all();
+
+  var byModel = stats.summary({ from: win.from, to: win.to, days: win.days, groupBy: 'model' });
+  var bySource = stats.summary({ from: win.from, to: win.to, days: win.days, groupBy: 'source' });
+  var byDay = stats.summary({ from: win.from, to: win.to, days: win.days, groupBy: 'day' });
+  var byUser = stats.summary({ from: win.from, to: win.to, days: win.days, groupBy: 'user' });
+  var anomalies = computeAnomalies();
+
+  var pricing = require('../services/pricing');
+  var oc = pricing.getOffpeakConfig();
+
+  var allocatedYuan = config.microToYuan(totals.allocated_micro);
+  var usedYuan = config.microToYuan(totals.used_micro);
+  var remainYuan = Math.max(0, allocatedYuan - usedYuan);
+  var usedPct = allocatedYuan > 0 ? Math.round(usedYuan / allocatedYuan * 1000) / 10 : 0;
+
+  // 「额度花得值不值」的核心指标：有实际调用的学生数（不含管理员，管理员的用量是运维成本）
+  var activeStudents = byUser.items.filter(function(it) { return !it.is_admin; }).length;
+
+  // 模型与单价配置：管理员问「单价合不合理 / 该不该换模型」时要有依据。
+  // 与「模型与单价」页同一口径：price_in/price_out 是"每千 token 的微元数"，
+  // 这里换算成更好读的"元 / 百万 token"（×1000/1e6 = ÷1000）。
+  // 最多列 12 个，避免模型多时把快照撑成一张大表。
+  var aiSvc = require('../services/ai');
+  var defaultModelId = aiSvc.getDefaultModelId();
+  var enableRows = aiSvc.getEnabledModels();
+  var modelFacts = [];
+  for (var mi = 0; mi < enableRows.length && mi < 12; mi++) {
+    var mm = aiSvc.resolveModel(enableRows[mi].id);
+    if (!mm) continue;
+    modelFacts.push({
+      id: String(enableRows[mi].id),
+      label: mm.label || String(enableRows[mi].id),
+      in_yuan_per_m: Number((Number(mm.price_in || 0) / 1000).toFixed(4)),
+      out_yuan_per_m: Number((Number(mm.price_out || 0) / 1000).toFixed(4)),
+      multiplier: Math.round(Number(mm.price_multiplier_bp || 10000)) / 10000,
+      ready: !!mm.ready,
+      is_default: String(enableRows[mi].id) === String(defaultModelId)
+    });
+  }
+
+  var L = [];
+  L.push('【统计窗口】近 ' + win.days + ' 天（自 ' + String(win.from).slice(0, 10) + '）；本月自 ' + monthStartUtc.slice(0, 10));
+  L.push('【账号规模】学生 ' + totals.user_count + ' 人（近 7 天有调用 ' + activeStudents + ' 人），管理员 ' + totals.admin_count + ' 人');
+  L.push('【额度总盘】已分配 ¥' + allocatedYuan.toFixed(2) + '，已消耗 ¥' + usedYuan.toFixed(2) +
+    '，剩余 ¥' + remainYuan.toFixed(2) + '（消耗率 ' + usedPct + '%）');
+  L.push('【本月（自然月）】消耗 ¥' + monthCostYuan.toFixed(2) + '，调用 ' + monthRow.calls + ' 次；' +
+    (budgetYuan > 0
+      ? ('预算阈值 ¥' + budgetYuan.toFixed(2) + '，' + (monthCostYuan >= budgetYuan ? '**已超预算**' : '尚未触达'))
+      : '未设置预算阈值'));
+  L.push('【峰谷计价】' + (oc.enabled
+    ? ('启用中，谷时 ' + (Math.round(oc.discountBp / 100) / 10) + ' 折，当前' +
+       (pricing.isInOffpeakWindow(oc) ? '处于谷时' : '处于峰时'))
+    : '未启用（全天原价）'));
+  L.push('【模型与单价】' + (modelFacts.length
+    ? ('共 ' + enableRows.length + ' 个启用模型' +
+       (enableRows.length > modelFacts.length ? '（下列前 ' + modelFacts.length + ' 个）' : '') + '；' +
+       modelFacts.map(function(m) {
+         return m.label + '：输入 ¥' + m.in_yuan_per_m + '/百万token、输出 ¥' + m.out_yuan_per_m + '/百万token' +
+           (m.multiplier !== 1 ? '、倍率 ×' + m.multiplier : '') +
+           (m.is_default ? '、默认' : '') + (m.ready ? '' : '、未配 Key');
+       }).join('；'))
+    : '无启用模型 —— 学生当前无法提问'));
+  L.push('【班级分布】' + (byClass.length
+    ? byClass.map(function(r) {
+        return r.class_no + '班 ' + r.students + ' 人 / 已分配 ¥' + config.microToYuan(r.allocated_micro).toFixed(2);
+      }).join('；')
+    : '无'));
+  L.push('【近 7 天 · 按模型】' + (byModel.items.length
+    ? byModel.items.map(function(it) {
+        return (it.label || it.key) + ' ' + it.calls + ' 次 / ¥' + it.cost_yuan + ' / ' + it.total_tokens + ' token';
+      }).join('；')
+    : '无调用'));
+  L.push('【近 7 天 · 按调用类型】' + (bySource.items.length
+    ? bySource.items.map(function(it) {
+        return stats.sourceLabel(it.key) + ' ' + it.calls + ' 次 / ¥' + it.cost_yuan;
+      }).join('；')
+    : '无调用'));
+  L.push('【近 7 天 · 按天】' + (byDay.items.length
+    ? byDay.items.map(function(it) { return it.key + ' ¥' + it.cost_yuan + '(' + it.calls + '次)'; }).join('；')
+    : '无调用'));
+  L.push('【近 7 天 · 消耗 Top】' + (anomalies.top7d.length
+    ? anomalies.top7d.map(function(r) {
+        return r.name + (r.class_no ? '(' + r.class_no + '班)' : '') + (r.is_admin ? '[管理]' : '') +
+          ' ¥' + r.cost_yuan + ' / ' + r.calls + ' 次';
+      }).join('；')
+    : '无记录'));
+  L.push('【异常突增（最近 24 小时）】' + (anomalies.spikes.length
+    ? anomalies.spikes.map(function(r) {
+        return r.name + ' ¥' + r.day_yuan + '（前 7 天日均 ¥' + r.avg_yuan + '，' + r.ratio + ' 倍）';
+      }).join('；')
+    : '无（这是好事）'));
+
+  return {
+    text: L.join('\n'),
+    facts: {
+      window_days: win.days,
+      students: totals.user_count,
+      active_students_7d: activeStudents,
+      admins: totals.admin_count,
+      allocated_yuan: allocatedYuan.toFixed(2),
+      used_yuan: usedYuan.toFixed(2),
+      remaining_yuan: remainYuan.toFixed(2),
+      used_pct: usedPct,
+      models: modelFacts,
+      month: {
+        cost_yuan: monthCostYuan.toFixed(2),
+        calls: monthRow.calls,
+        threshold_yuan: budgetYuan,
+        exceeded: budgetYuan > 0 && monthCostYuan >= budgetYuan
+      },
+      spike_count: anomalies.spikes.length
+    }
+  };
+}
+
+var INSIGHT_SYSTEM = [
+  '你是「Cluss」学习平台的管理运营分析助手，服务对象是管理台的管理员（班管 / 校管）。',
+  '你的任务是把系统数据翻译成他能立刻行动的判断与建议。',
+  '',
+  '规则：',
+  '1. 只依据用户消息里给出的【数据快照】作答。快照里没有的数字、趋势、原因，一个字都不要编；',
+  '   需要快照之外的信息才能判断时，明确说「需要再导出 X」，不要猜。',
+  '2. 金额一律说「元」，用量说「次」，不要复述快照里的原始表格。',
+  '3. 结论先行：先给 3~5 条最重要的判断，再逐条展开。不要写「总体来看」这类空开头。',
+  '4. 每条建议都要具体、可执行、可验证，写清「做什么 → 预期看到什么 → 怎么确认」。',
+  '   反例（不要写）：「加强成本管理」「注意用量异常」。',
+  '5. 快照里出现「已超预算」「异常突增」这类风险项时必须单独点出，并给出处置动作。',
+  '6. 管理员问的是一个具体问题时，直接回答它，不要扩写成全面体检。',
+  '7. 用中文，语气像给同事的一份运维简报：平实、直接，不客套、不堆形容词、不用 emoji。',
+  '8. 篇幅控制在 600 字以内；确有必要可适当超出，但不要为凑长度重复。',
+  '9. 快照里的【模型与单价】【峰谷计价】【本月预算】是管理台当前的配置项。',
+  '   管理员问「怎么省」「单价合不合理」「该不该换模型」时，直接对着这些配置给建议：',
+  '   说清改哪一项、改成什么、预计省多少；不要只说「优化模型选择」这类空话。'
+].join('\n');
+
+router.post('/ai/insight', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var question = String((req.body && req.body.question) || '').trim().slice(0, 500);
+
+  var mc = pickInsightModel();
+  if (!mc) {
+    return res.status(400).json({
+      code: 400,
+      message: '当前没有可用的模型 —— 需要先在「模型与单价」里给至少一个模型配好地址与 Key'
+    });
+  }
+
+  var snapshot = buildInsightSnapshot();
+  var userText = '【数据快照】\n' + snapshot.text + '\n\n' +
+    (question
+      ? ('【管理员的问题】\n' + question)
+      : '【任务】\n请基于以上快照给出一份常规体检：最需要注意的几点 + 具体、可执行的运维建议。');
+
+  var started = Date.now();
+  var ai = require('../services/ai');
+  // 超时给到 90s：这段分析读的是整份快照，比一轮普通对话长；
+  // 客户端调用侧也要相应放宽 axios 的 30s 默认超时，否则会先被前端掐断。
+  ai.chatOnce(mc, [
+    { role: 'system', content: INSIGHT_SYSTEM },
+    { role: 'user', content: userText }
+  ], { temperature: 0.3, timeout: 90000, maxTokens: 1400 }).then(function(data) {
+    var text = data && data.choices && data.choices[0] &&
+      data.choices[0].message && data.choices[0].message.content;
+    var answer = String(text || '').trim();
+    if (!answer) {
+      return res.json({
+        code: 200,
+        message: '模型没有返回内容',
+        data: { ok: false, error: '模型没有返回内容，请重试' }
+      });
+    }
+    console.log('[Admin] AI 洞察生成完成（模型 %s，%dms）by %s', mc.id, Date.now() - started, req.user.user_id);
+    res.json({
+      code: 200,
+      message: 'ok',
+      data: {
+        ok: true,
+        answer: answer,
+        model: mc.label || mc.id,
+        elapsed_ms: Date.now() - started,
+        context: snapshot.facts
+      }
+    });
+  }).catch(function(err) {
+    console.warn('[Admin] AI 洞察生成失败：%s', err.message);
+    // 与 /models/:id/test 同风格：HTTP 200 + ok:false，前端只读 data.error，
+    // 不让拦截器把它渲染成一句泛化的「服务器暂时不可用」
+    res.json({
+      code: 200,
+      message: 'AI 洞察生成失败',
+      data: { ok: false, error: err.message || '生成失败，请稍后重试' }
+    });
+  });
 });
 
 // ============================================================

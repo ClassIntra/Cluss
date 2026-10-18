@@ -31,6 +31,7 @@ var memoryExtractor = require('./memory-extractor');
 // ClassIntra 联动桥：用于取"Cluss 自己没有的那一维"画像素材（校园社区活动痕迹）。
 // 注意它**不读** ClassIntra 的数据库，只是调用 CI 侧的只读接口（见该文件顶部说明）。
 var ciBridge = require('./ci-bridge');
+var campusContext = require('./campus-context');
 var modelHealth = require('../utils/model-health');
 var config = require('../config');
 
@@ -191,10 +192,10 @@ function runStreamTurn(ctx) {
     return fail(res, 400, '请先选择题目图片');
   }
   // ⚠️ 空内容判定必须把**引用的笔记**也算作输入 ——
-  //   只引了笔记不写字是完全合法的用法，之前只看文字和图片，
-  //   note-only 的请求被误杀「消息内容不能为空」（实测踩到）。
-  //   客户端 canSend 早已放行，服务端这里却拦下，
-  //   表现为"按钮能点、一发就报错"。
+  //   只引了笔记不写字是完全合法的用法（"帮我讲讲这篇笔记"都不用写），
+  //   之前这里只看文字和图片，note-only 的请求被误杀
+  //   「消息内容不能为空」（实测踩到）。客户端 canSend 早已放行，
+  //   服务端这里却拦下，表现为"按钮能点、一发就报错"。
   var hasNotes = Array.isArray(ctx.noteIds) && ctx.noteIds.length > 0;
   if (!task.kind && !content && !hasImages && !hasNotes) {
     return fail(res, 400, '消息内容不能为空');
@@ -470,13 +471,28 @@ function runStreamTurn(ctx) {
         }
       }
 
+      // 学生偏好：他在设置里选的回复风格 / 常学科目 / 是否允许参考学习记录。
+      // 解析放在这一层而不是各路由：chat / study / writing / notes 全部经由本函数，
+      // 这里改一处四条链路一起生效，不必在四个路由里各抄一遍归一化逻辑。
+      var studentPrefs = prompts.normalizeStudentPrefs(
+        ctx.req && ctx.req.body && ctx.req.body.student_prefs
+      );
+      // 「参考学习记录」关掉 = 不要用系统从他的使用记录里推断出来的东西
+      //（画像 / 校园素材 / 长期记忆）。
+      // ⚠️ 关掉时**连取都不取**：只过滤提示词是不够的 —— 那等于每轮仍去算画像、
+      //    仍向 ClassIntra 发一次请求，数据照样在流动，开关就成了安慰按钮。
+      //    理由与校园开关（campus-context.applyOpt）完全一致。
+      var useRecords = studentPrefs.useRecords !== false;
+
       // 学生画像：让模型知道他在跟谁说话（年级、薄弱学科、常错类型、最近在问什么）。
       // 构建失败只降级为空画像，绝不能因此中断对话。
       var profile = null;
-      try {
-        profile = userProfile.buildProfile(userId);
-      } catch (e) {
-        console.warn('[Turn] 学生画像构建失败（不影响对话）:', e.message);
+      if (useRecords) {
+        try {
+          profile = userProfile.buildProfile(userId);
+        } catch (e) {
+          console.warn('[Turn] 学生画像构建失败（不影响对话）:', e.message);
+        }
       }
 
       // ClassIntra 活动素材：**只读缓存**（同步、零延迟），再"发射后不管"地触发一次
@@ -486,12 +502,25 @@ function runStreamTurn(ctx) {
       // CI 挂掉还要吃满超时 —— 为一个"锦上添花"把主链路绑上别人的可用性不划算。
       // 代价是"新数据晚一轮生效"，对画像完全可接受。详见 ci-bridge 的说明。
       // refreshStudentProfile **永不抛**，但仍包一层 try：这里的任何异常都不该中断对话。
+      //
+      // ---- 学生侧的开关（2026-10-12 加）----
+      // 学生在设置里可以关掉"让 AI 参考我的校园信息"（整体或逐项）。
+      // 关掉后这里**连取都不去取** —— 只过滤提示词是不够的：学生表达的是
+      // "不要用我的校园信息"，若仍每轮向 CI 发一次请求，数据还是在流动，
+      // 开关就成了安慰按钮。见 campus-context.applyOpt 的说明。
       var ciProfile = null;
-      try {
-        ciProfile = ciBridge.getCachedStudentProfile(userId);
-        ciBridge.refreshStudentProfile(userId);
-      } catch (e) {
-        console.warn('[Turn] ClassIntra 画像读取失败（不影响对话）:', e.message);
+      if (useRecords) {
+        try {
+          var campusOpt = ciBridge.isEnabled() ? campusContext.getOpt(userId) : null;
+          if (!campusOpt || campusOpt.enabled) {
+            ciProfile = ciBridge.getCachedStudentProfile(userId);
+            // 只在"整体开启"时才刷新；逐项关闭不影响刷新（那些项仍可能在别处用）
+            ciBridge.refreshStudentProfile(userId);
+            ciProfile = campusContext.applyOpt(ciProfile, campusOpt);
+          }
+        } catch (e) {
+          console.warn('[Turn] ClassIntra 画像读取失败（不影响对话）:', e.message);
+        }
       }
 
       // 余额也交给模型一把：学生问「我还有多少积分」时能直接答，
@@ -502,11 +531,13 @@ function runStreamTurn(ctx) {
       // 全量塞进上下文既费 token，也会让陈年旧事被当成当前语境。
       // 构建失败只降级为空 —— 记忆是增强项，不该因为它挂掉整轮对话。
       var memories = [];
-      try {
-        var memorySvc = require('./memory');
-        memories = memorySvc.selectForContext(userId, content, memorySvc.MAX_INJECT);
-      } catch (e) {
-        console.warn('[Turn] 记忆检索失败（不影响对话）:', e.message);
+      if (useRecords) {
+        try {
+          var memorySvc = require('./memory');
+          memories = memorySvc.selectForContext(userId, content, memorySvc.MAX_INJECT);
+        } catch (e) {
+          console.warn('[Turn] 记忆检索失败（不影响对话）:', e.message);
+        }
       }
 
       // 人格：把会话里存的 id 解析成一条可渲染的记录。
@@ -533,8 +564,13 @@ function runStreamTurn(ctx) {
         writing: task.writing || null,
         hasAttachment: attachmentMeta.length > 0,
         studentProfile: profile,
-        // 本轮是否注入了引用笔记正文（非空即真）。画像段"你并不知道笔记正文"
-        // 要据此改口 —— 不然与注入的【我引用的笔记】自相矛盾，模型会声称看不到。
+        // 学生偏好（他自己在设置里选的）：回复风格 / 常学科目。
+        // 与画像分开传：画像可能因"不参考学习记录"被清空，偏好则始终生效
+        //（他明确设定的东西不该被"隔离推断数据"的开关一起关掉）。
+        studentPrefs: studentPrefs,
+        // 本轮是否注入了引用笔记正文（'……' 非空即真）。
+        // 画像段里"你并不知道笔记正文"那句要据此改口 —— 不然与注入的
+        // 【我引用的笔记】自相矛盾，模型会声称看不到笔记（实测踩到）。
         noteText: noteText,
         // ClassIntra 侧脱敏活动素材（可能为 null = CI 未联动 / 取不到）
         ciProfile: ciProfile,
@@ -594,6 +630,23 @@ function runStreamTurn(ctx) {
         trailingContext: trailingContext,
         budgetTokens: DEFAULT_CONTEXT_BUDGET
       });
+
+      // 会话历史总条数（不受「最近 20 条」限制）—— 前端上下文圆环的分母。
+      //
+      // 为什么必须单独查一次：loadContextMessages 只取最近 20 条，
+      // 拿它当分母的话，聊到第 21 条之后分母就永远卡在 20，
+      // 圆环会一直显示 100%（"AI 记得全部"），而实际上更早的内容早就被裁掉了。
+      //
+      // 减 1：本轮刚落库的那条 user 消息不算「已聊过的历史」，
+      // 它正是这一轮要问的东西（loadContextMessages 那边也把它 slice 掉了）。
+      // Math.max 兜底：极端情况下（并发/边界）不让分母小于已纳入条数，
+      // 否则比例会超过 100%，圆环画出一圈不可能的进度。
+      if (built.stats) {
+        built.stats.history_total = Math.max(
+          built.stats.history_included,
+          conv.countMessages(convRow.id) - 1
+        );
+      }
 
       // 历史被 token 预算裁掉时，明确告诉模型"你看不到更早的内容"。
       // 不说明的话学生问「刚才那道题」时它会硬编一个答案。

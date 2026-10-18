@@ -1646,8 +1646,11 @@ html.use-drawer .app-sidebar-drawer {
   width: min(320px, 84vw);
   z-index: 300;
   padding: var(--gap-md);
-  /* 手柄机型的手势条 / 摄像头挖孔会吃掉底部一段：
-     抽屉滚到底时最后一项不被遮住，靠这个留白兜底 */
+  /* 横屏刘海机型的挖孔在左右两侧，抽屉贴左 edge 时首项会被压住；
+     竖屏机型顶部有摄像头挖孔，抽屉首项同样会被顶栏高度以外的一段遮住。
+     两端都用安全区兜底，抽屉里的第一项与最后一项都完整可见。 */
+  padding-top: calc(var(--gap-md) + env(safe-area-inset-top, 0px));
+  padding-left: calc(var(--gap-md) + env(safe-area-inset-left, 0px));
   padding-bottom: calc(var(--gap-md) + env(safe-area-inset-bottom, 0px));
   overflow-y: auto;
   background: var(--glass-bg-strong);
@@ -1902,6 +1905,28 @@ html.no-flex-gap .segmented > * + * {
 .badge-danger {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+/* 从 Records.vue 的 scoped 提到全局（2026-10-12）：
+   WrongBook 也在用 .badge-warning（「△ 部分对」与「该复习了」），
+   但 scoped 样式不跨组件 —— 那两处**从来没有高亮过**，一直是默认灰底。
+   徽标系列本来就全在全局（accent/success/danger），warning 漏在这里只是遗漏。 */
+.badge-warning {
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+
+/* 临考标记（错题本）：这道题所属科目快考试了。
+   用 warning 色系 —— 它是"提醒"，不是"出错"，不能用 danger。 */
+.badge-exam {
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  font-weight: 600;
+}
+
+.badge-exam i {
+  margin-right: 4px;
+  font-size: 10px;
 }
 
 /* 等待首字的状态提示（对话 / 拍题 / 作文三处共用）

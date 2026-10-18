@@ -149,7 +149,11 @@ function buildMessages(opts) {
       history_available: history.length,
       image_count: imageCount,
       image_token_reserve: imageCount * IMAGE_TOKEN_RESERVE,
-      estimated_tokens: fixedCost + used
+      estimated_tokens: fixedCost + used,
+      // 本轮上下文预算（历史裁剪的天花板）。
+      // 带上它前端才不用硬编码一个 10000 —— 硬编码的分母一旦和服务端不一致，
+      // 圆环显示的百分比就是撒谎（学生看到的"用了 60%"其实是 30%）。
+      budget_tokens: budget
     }
   };
 }

@@ -65,9 +65,10 @@ Vue.prototype.$fmtLocal = fmtLocal;
 // 三条任一命中即降级：
 //   1) deviceMemory ≤ 4 —— Chrome 会取整到 0.25/0.5/1/2/4/8，≤4 是中低端机型；
 //   2) Android 且硬件线程 ≤ 4 —— 主线程与 GPU 都紧张，是判据 1 报不准时的补充；
-//   3) Android 且 Chrome 主版本 < 87 —— 老 WebView 本身性能差、渲染 bug 多
-//      （合成层降质会让整片文字发虚，见 global.css 低配段的说明），
-//      目标设备 Chrome 80 从这条稳稳命中。
+//   3) Android 且 Chrome/Chromium 主版本 < 90 —— 老内核本身性能差、渲染 bug 多
+//      （合成层降质会让整片文字发虚，见 global.css 低配段的说明）。
+//   4) Android 上 deviceMemory 与 hardwareConcurrency **都取不到** ——
+//      这两个 API 缺失本身就是老内核的强信号（详见下方代码处的说明）。
 // 刻意保守：任何一项拿不到就跳过该项，宁可留着玻璃质感，也不要误降好设备
 // （比如桌面弱机不命中任何一条，就保持完整玻璃效果）。
 (function() {
@@ -84,8 +85,22 @@ Vue.prototype.$fmtLocal = fmtLocal;
 
     if (isAndroid) {
       var m = /Chrome\/(\d+)/.exec(ua);
-      if (m && Number(m[1]) < 87) low = true;
+      // 阈值为什么从 87 提到 90：
+      //   87 是按"Chrome 80 基线"定的，但受管平板上实际跑的是 X5/TBS 内核，
+      //   UA 报 Chrome/89 —— 正好卡在阈值之上，**最需要降级的那批设备反而漏掉**。
+      //   89 是 2021 年的内核，同期老 WebView 都落在这个区间；
+      //   而现役 Android 设备普遍 Chrome 100+，不会被误伤。
+      if (m && Number(m[1]) < 90) low = true;
     }
+
+    // 补一条「什么数据都报不出来」的判据。
+    //   旧逻辑只看数值大小，不看**有没有数据** —— 而 deviceMemory 与
+    //   hardwareConcurrency 都是 Chrome 63+ 才有的 API，老 WebView 恰好
+    //   两个都拿不到，于是 `mem = 0`、`cores = 0`，两条 `> 0` 的判断全部跳过，
+    //   low 保持 false。结果就是：**越老的设备越拿不到降级**，
+    //   这是典型"用缺失值当安全值"的沉默失败。
+    //   在 Android 上，这两个 API 同时缺失本身就是"内核很老"的强信号。
+    if (isAndroid && !mem && !cores) low = true;
 
     if (low) document.documentElement.className += ' low-perf';
   } catch (e) {
@@ -135,7 +150,10 @@ Vue.prototype.$fmtLocal = fmtLocal;
 // 把 store 里读到的主题同步到 DOM。
 // index.html 的内联脚本已经设过一次（防刷新闪白），这里再设一次是为了
 // 覆盖两种内联脚本管不到的情况：多标签页改过主题、以及 localStorage 被清。
-applyToDom(store.state.theme.theme);
+//
+// instant: true —— 这是"把页面画成它本该有的样子"，不是一次变化。
+// 带上过渡的话，深色用户每次启动都会看到整页从浅色渐变过来。
+applyToDom(store.state.theme.theme, { instant: true });
 
 // 全局指令：点击外部关闭浮层（下拉菜单等）
 Vue.directive('click-outside', {

@@ -4,7 +4,7 @@
       <!-- 左侧品牌区：大标题 + 特性列表 -->
       <aside class="brand-pane">
         <div class="brand-head">
-          <ClussLogo :size="48" />
+          <ClussLogo :size="56" />
           <div>
             <div class="brand-name">Cluss</div>
             <div class="brand-tag">引导式 AI 解题</div>
@@ -68,8 +68,6 @@
         <div class="form-foot">
           <span class="muted tiny">还没有账号？</span>
           <router-link class="link" to="/register">立即注册</router-link>
-          <span class="muted tiny">·</span>
-          <router-link class="link" to="/org">多班部署 / Cloud 服务</router-link>
         </div>
 
         <!-- 嵌入态：这里必须留一个返回出口。
@@ -93,6 +91,10 @@
 <script>
 import ClussLogo from '@/components/ClussLogo.vue';
 import { isEmbedded, backToClassIntra } from '@/utils/embedded';
+
+// 「默认打开页」允许的取值（与 AiPrefs 弹窗里那份保持一致）。
+// 按项目约定不新建 utils 文件，读取就近加 try/catch。
+var HOME_PAGES = ['/', '/study', '/wrong-book', '/notes'];
 
 export default {
   name: 'LoginView',
@@ -125,6 +127,16 @@ export default {
     // 回到 ClassIntra 桌面（宿主未监听时静默，此时学生本就没别的路可走）
     backToClassIntra: backToClassIntra,
 
+    // 读取「默认打开页」偏好：与 AiPrefs 弹窗里同一套键与校验，
+    // 非法值 / 未设置一律兜底到对话页（即保持现状）。
+    homePage: function() {
+      try {
+        var v = localStorage.getItem('cluss_home_page');
+        if (HOME_PAGES.indexOf(v) !== -1) return v;
+      } catch (e) { /* 隐私模式拿不到 localStorage，忽略 */ }
+      return '/';
+    },
+
     handleLogin: function() {
       var self = this;
       this.errorMsg = '';
@@ -141,7 +153,9 @@ export default {
         account: this.account.trim(),
         password: this.password
       }).then(function() {
-        var redirect = self.$route.query.redirect || '/';
+        // 优先尊重来源跳转：被守卫弹回登录时会带 redirect，那是学生本来想去的页；
+        // 没有来源跳转时，才落到「设置」里选的默认打开页（未设置 = 对话页，原行为）。
+        var redirect = self.$route.query.redirect || self.homePage();
         self.$router.replace(redirect);
       }).catch(function(err) {
         self.errorMsg = err.message || '登录失败，请重试';
@@ -159,7 +173,10 @@ export default {
   align-items: center;
   justify-content: center;
   min-height: var(--app-height);
-  padding: var(--gap-lg);
+  /* 保留 gap-lg 的呼吸感，同时用安全区兜底：登录页没有顶栏，
+     刘海/挖孔会直接压住品牌区，横屏时左侧挖孔也可能切到卡片边。
+     无刘海设备上 max() 的结果仍等于 gap-lg，观感不变。 */
+  padding: max(var(--gap-lg), env(safe-area-inset-top, 0px)) max(var(--gap-lg), env(safe-area-inset-right, 0px)) max(var(--gap-lg), env(safe-area-inset-bottom, 0px)) max(var(--gap-lg), env(safe-area-inset-left, 0px));
 }
 
 .auth-shell {

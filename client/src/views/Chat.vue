@@ -231,6 +231,74 @@
             </svg>
           </button>
 
+          <!-- 上下文状态：圆环常显 + 点击展开明细。
+               两者刻意分开——圆环负责"一眼看得出 AI 还记得多少"，
+               token 构成是排查时才看的东西，常显只会把本来就很挤的模式栏撑爆。
+               平板上没有 hover（title 永远不会出现），所以明细只能走点击。 -->
+          <div ref="ctxRoot" class="ctx-wrap">
+            <button
+              type="button"
+              class="ctx-btn"
+              :class="{ 'is-open': ctxPopOpen }"
+              :aria-expanded="ctxPopOpen ? 'true' : 'false'"
+              :title="ctxSummary"
+              aria-label="上下文状态"
+              @click="toggleCtxPop"
+            >
+              <ContextRing
+                :percent="ctxPercent"
+                :level="ctxLevel"
+                :unknown="!ctxMeasured"
+                :size="18"
+                :stroke="2.4"
+              />
+            </button>
+
+            <transition name="ctx-pop">
+              <div
+                v-if="ctxPopOpen"
+                class="ctx-pop float-panel"
+                role="dialog"
+                aria-label="上下文状态详情"
+              >
+                <div class="ctx-pop-head">
+                  <ContextRing
+                    :percent="ctxPercent"
+                    :level="ctxLevel"
+                    :unknown="!ctxMeasured"
+                    :size="34"
+                    :stroke="3.6"
+                  />
+                  <div class="ctx-pop-lead">
+                    <div class="ctx-pop-pct">{{ ctxMeasured ? ctxPercent + '%' : '—' }}</div>
+                    <div class="ctx-pop-cap tiny muted">记忆完整度</div>
+                  </div>
+                </div>
+
+                <p class="ctx-pop-sum tiny" :class="'is-' + ctxLevel">{{ ctxSummary }}</p>
+
+                <div v-if="ctxMeasured" class="ctx-rows">
+                  <div class="ctx-row">
+                    <span class="ctx-k">纳入这一轮</span>
+                    <span class="ctx-v">{{ ctxIncluded }} / {{ ctxTotal }} 条</span>
+                  </div>
+                  <div class="ctx-row">
+                    <span class="ctx-k">本轮上下文</span>
+                    <span class="ctx-v">约 {{ ctxTokens }} token · 占预算 {{ ctxBudgetPercent }}%</span>
+                  </div>
+                  <div v-if="ctxImageCount" class="ctx-row">
+                    <span class="ctx-k">图片预留</span>
+                    <span class="ctx-v">{{ ctxImageCount }} 张 · 约 {{ ctxImageReserve }} token</span>
+                  </div>
+                </div>
+
+                <p class="ctx-pop-foot tiny muted">
+                  上下文有预算上限：更早的对话这一轮不参与回答，但不会丢失。
+                </p>
+              </div>
+            </transition>
+          </div>
+
           <span class="mode-hint tiny muted">{{ modeHint }}</span>
         </div>
 
@@ -240,6 +308,20 @@
               <ClussLogo :size="52" />
               <h2 class="empty-title">{{ emptyTitle }}</h2>
               <p class="empty-sub">{{ emptySub }}</p>
+
+              <!-- 「继续上次」：空态最常见的情形是学生上次没聊完就退出了。
+                   给一行最近会话的入口，比让他先去侧栏翻历史快得多。
+                   没有历史会话时整行不出现——不给一个点了没反应的空壳按钮 -->
+              <button
+                v-if="lastConversation"
+                class="resume-row"
+                type="button"
+                @click="openConversation(lastConversation.id)"
+              >
+                <span class="resume-label">继续上次</span>
+                <span class="resume-title">{{ lastConversation.title }}</span>
+                <span class="resume-time">{{ relTime(lastConversation.updated_at) }}</span>
+              </button>
 
               <div class="chips-wrap">
                 <button
@@ -339,6 +421,20 @@
                   <button v-if="m.content" class="tool-btn" @click="copyMessage(m.content, idx)">
                     {{ copiedKey === idx ? '已复制' : '复制' }}
                   </button>
+                  <!-- 加入错题本 / 存进笔记：把这条讲解沉淀成"可复习、可回看"的资产。
+                       状态存在消息对象上（见下方注释），生成中不给点——半截的回复存下来没有意义 -->
+                  <button
+                    v-if="m.content && !m.streaming"
+                    class="tool-btn"
+                    :disabled="m.wrongAdding || m.wrongAdded"
+                    @click="addToWrongBook(idx, m)"
+                  >{{ m.wrongAdded ? '已加入错题本' : '加入错题本' }}</button>
+                  <button
+                    v-if="m.content && !m.streaming"
+                    class="tool-btn"
+                    :disabled="m.noteAdding || m.noteSaved"
+                    @click="saveToNotes(m)"
+                  >{{ m.noteSaved ? '已存入笔记' : '存进笔记' }}</button>
                   <button
                     v-if="idx === messages.length - 1 && !sending"
                     class="tool-btn"
@@ -506,12 +602,15 @@ import CloudPicker from '@/components/CloudPicker.vue';
 import NotePicker from '@/components/NotePicker.vue';
 import ModelSelect from '@/components/ModelSelect.vue';
 import AiPrefs from '@/components/AiPrefs.vue';
+import ContextRing from '@/components/ContextRing.vue';
 import { renderMarkdown, renderStream, ensureKatexIdle, onKatexReady } from '@/utils/markdown';
 // 流式增量渲染（冻结已稳定的前缀，每帧只重渲染尾巴）——见 utils/stream-paint
 import { createStreamPainter } from '@/utils/stream-paint';
 import { appendStreamCaret } from '@/utils/stream-caret';
 import { readSseStream } from '@/utils/sse';
 import streamSession from '@/utils/stream-session';
+// 学习偏好：随每次提问一起上报，让 AI 按学生设定的风格与科目作答
+import { readStudentPrefs } from '@/utils/student-prefs';
 import waiting from '@/mixins/waiting';
 import streamFrame from '@/mixins/streamFrame';
 import noteRefs from '@/mixins/note-refs';
@@ -525,7 +624,7 @@ var CHIPS = {
 
 export default {
   name: 'ChatView',
-  components: { AppNav, ClussLogo, Segmented, AttachmentChips, CloudPicker, NotePicker, ModelSelect, AiPrefs },
+  components: { AppNav, ClussLogo, Segmented, AttachmentChips, CloudPicker, NotePicker, ModelSelect, AiPrefs, ContextRing },
   mixins: [waiting, streamFrame, orientation, noteRefs, mermaidCharts],
   data: function() {
     return {
@@ -588,12 +687,105 @@ export default {
       renamingId: '',
       renameDraft: '',
       // 附件全屏预览的原图地址；'' 表示关闭
-      previewUrl: ''
+      previewUrl: '',
+      // 上下文状态：服务端每轮 done 事件带回的统计（后端 context-builder 的 stats）。
+      // null = 这个会话还没跑过一轮，圆环走"未测量"虚线态而不是显示 0%。
+      //
+      // ⚠️ 只在**当前会话内**有效：它描述的是"这一轮送进模型的东西"，
+      //    切到别的会话后留着旧值，圆环就会在新会话里撒谎 ——
+      //    所以 openConversation / newConversation 里一律清空。
+      contextStats: null,
+      // 上下文详情浮窗开关
+      ctxPopOpen: false
     };
   },
   computed: {
     user: function() { return this.$store.state.auth.user || {}; },
     wallet: function() { return this.$store.state.auth.wallet; },
+
+    // ---------- 上下文状态（顶部圆环）----------
+    //
+    // 主指标**刻意选「记忆完整度」而不是「token 占用率」**：
+    //   本轮 token 量会被 1 万的上下文预算封顶，聊长之后恒定顶格 ——
+    //   那是个死表盘：学生看不到任何变化，只会以为圆环坏了。
+    //   而「这一轮 AI 实际纳入了多少条历史 / 会话里一共聊了多少条」是持续变化的，
+    //   也正对着他真正的疑问：「它还记得我们前面聊的多少？」
+    //   token 明细不是不重要，只是更适合躺在浮窗里按需查看，而不是顶在圆环上。
+    ctxMeasured: function() {
+      var s = this.contextStats;
+      return !!(s && typeof s.history_total === 'number');
+    },
+    ctxIncluded: function() {
+      return this.contextStats ? Number(this.contextStats.history_included || 0) : 0;
+    },
+    ctxTotal: function() {
+      return this.contextStats ? Number(this.contextStats.history_total || 0) : 0;
+    },
+    // 「最近可取回」的条数（后端取最近 20 条之后的结果，见 DEFAULT_CONTEXT_MESSAGES）。
+    //
+    // 它和 ctxTotal 分工不同，别混用：
+    //   ctxTotal     = 这个会话一共聊了多少条 —— 决定圆环**画多长**
+    //   ctxAvailable = 这一轮本该记得的有多少条 —— 决定圆环**什么颜色**
+    ctxAvailable: function() {
+      return this.contextStats ? Number(this.contextStats.history_available || 0) : 0;
+    },
+    ctxPercent: function() {
+      if (!this.ctxMeasured) return 0;
+      // 第一轮没有历史可言，也就没有"丢"这回事 —— 记作完整
+      if (this.ctxTotal <= 0) return 100;
+      var p = Math.round(this.ctxIncluded / this.ctxTotal * 100);
+      return Math.min(100, Math.max(0, p));
+    },
+    // 圆环配色看的不是圆环长度，而是「该记得的是否全记住了」。
+    //
+    // 为什么不能拿 ctxPercent 定色：聊久了之后会话总条数（total）远大于可取回的 20 条，
+    //   记忆完整度必然掉到 40%~50% —— 但那时最近该记的 20 条**一条没丢**，
+    //   更早的不参与是设计如此（有上限），不是故障。
+    //   按百分比定色的话，正常状态会被染成红色，学生只会以为对话坏了。
+    //
+    // 真正需要警示的只有一种情况：上下文预算被撑爆，连"最近的 20 条"都装不全。
+    ctxLevel: function() {
+      if (!this.ctxMeasured) return 'idle';
+      var avail = this.ctxAvailable;
+      if (avail > 0 && this.ctxIncluded < avail) {
+        var r = this.ctxIncluded / avail;
+        return r >= 0.6 ? 'warn' : 'danger';
+      }
+      return 'ok';
+    },
+    // 这一轮实际送进模型的估算量 / 上下文预算
+    ctxTokens: function() {
+      return this.contextStats ? Number(this.contextStats.estimated_tokens || 0) : 0;
+    },
+    ctxBudget: function() {
+      return this.contextStats ? Number(this.contextStats.budget_tokens || 0) : 0;
+    },
+    ctxBudgetPercent: function() {
+      if (!this.ctxMeasured || this.ctxBudget <= 0) return 0;
+      return Math.min(100, Math.round(this.ctxTokens / this.ctxBudget * 100));
+    },
+    ctxImageCount: function() {
+      return this.contextStats ? Number(this.contextStats.image_count || 0) : 0;
+    },
+    ctxImageReserve: function() {
+      return this.contextStats ? Number(this.contextStats.image_token_reserve || 0) : 0;
+    },
+    // 圆环旁／浮窗顶部那句人话。
+    //
+    // 只陈述事实，不评判：「更早的不参与」比"你的对话太长了"强 ——
+    //   后者是在指责学生，而前者他还能拿去做决定（要不要开个新会话）。
+    // 「不参与」而不是「丢失」：那些消息一条都没删，只是这一轮没送进模型。
+    ctxSummary: function() {
+      if (!this.ctxMeasured) return '发送一条消息后，这里会显示 AI 用到的上下文';
+      var avail = this.ctxAvailable;
+      // 预算撑爆：连最近的对话都装不全，这时候才需要他注意
+      if (avail > 0 && this.ctxIncluded < avail) {
+        return '上下文已满：最近的 ' + avail + ' 条只纳入了 ' + this.ctxIncluded + ' 条';
+      }
+      var older = Math.max(0, this.ctxTotal - this.ctxIncluded);
+      if (older <= 0) return '前面的对话都还记得';
+      return '最近的 ' + this.ctxIncluded + ' 条都记得，更早的 ' + older + ' 条不参与这一轮';
+    },
 
     // 谷时段折扣的「折」口径（0.5 → 5，0.65 → 6.5）；不在活动期返回空。
     //
@@ -663,6 +855,11 @@ export default {
         : (this.studyStyle === 'direct'
           ? '我会直接给出完整步骤与答案，并点明考点。'
           : '我不直接给答案，会先带你理清思路，再一步步给提示。');
+    },
+    // 空态「继续上次」取列表第一条：服务端已按 updated_at 倒序排好（见 listConversations），
+    // 前端不再自己排序，避免"两处排序规则"迟早打架。列表为空时返回 null，整行不渲染
+    lastConversation: function() {
+      return this.conversations.length ? this.conversations[0] : null;
     },
     // 学生端只看积分：整数、无货币符号，理解成"我还有多少可用"而不是"我在花钱"
     availableValue: function() {
@@ -779,11 +976,63 @@ export default {
     // 服务端本来也不因为客户端断开而中断（它会生成完再入库）。
     // 只有学生主动点「停止生成」才真的掐断（见 stop）。
     streamSession.detach(this);
+    // 上下文浮窗开着就切走了：全局监听必须撤，否则它会攥着这块已销毁的 vm
+    this.unbindCtxGlobal();
     // 供 runTurn 的收尾判断"组件还在不在"：已经销毁就不能把后台会话收掉，
     // 否则学生切回来什么都看不到
     this.destroyed = true;
   },
   methods: {
+
+    // ---------- 上下文状态浮窗 ----------
+    //
+    // 为什么必须点击才展开（不能做成 hover 提示）：
+    //   教室里的平板没有 hover，title 属性永远不会出现（同 UsageChart 的结论）。
+    //   而做成常显的面板又会长期占住本来就很挤的模式栏。
+    //   所以：圆环常显（一眼看状态） + 点击出浮窗（按需看明细）。
+    toggleCtxPop: function() {
+      if (this.ctxPopOpen) { this.closeCtxPop(); return; }
+      this.ctxPopOpen = true;
+      this.bindCtxGlobal();
+    },
+    closeCtxPop: function() {
+      if (!this.ctxPopOpen) return;
+      this.ctxPopOpen = false;
+      this.unbindCtxGlobal();
+    },
+    // 点在浮窗与按钮之外就收起。用捕获阶段（true）：
+    //   模式栏里其他按钮可能在冒泡阶段 stopPropagation，捕获阶段不受影响。
+    onCtxDocPointer: function(e) {
+      var root = this.$refs.ctxRoot;
+      if (root && !root.contains(e.target)) this.closeCtxPop();
+    },
+    // 页面滚动 / 尺寸变化直接收：浮窗是按按钮位置绝对定位的，
+    //   一动就"飘"到错误的对齐位置上，不如干脆收回。
+    onCtxWinChange: function() {
+      this.closeCtxPop();
+    },
+    // Esc 关浮窗：所有浮层的通用预期（项目里独立弹窗走 mixins/modal-esc，
+    // 这一处是内联在页面里的，就地实现同一行为）
+    onCtxEsc: function(e) {
+      if (e.key === 'Escape' || e.keyCode === 27) {
+        e.preventDefault();
+        this.closeCtxPop();
+      }
+    },
+    bindCtxGlobal: function() {
+      document.addEventListener('pointerdown', this.onCtxDocPointer, true);
+      window.addEventListener('scroll', this.onCtxWinChange, true);
+      window.addEventListener('resize', this.onCtxWinChange);
+      window.addEventListener('orientationchange', this.onCtxWinChange);
+      document.addEventListener('keydown', this.onCtxEsc);
+    },
+    unbindCtxGlobal: function() {
+      document.removeEventListener('pointerdown', this.onCtxDocPointer, true);
+      window.removeEventListener('scroll', this.onCtxWinChange, true);
+      window.removeEventListener('resize', this.onCtxWinChange);
+      window.removeEventListener('orientationchange', this.onCtxWinChange);
+      document.removeEventListener('keydown', this.onCtxEsc);
+    },
 
     modeLabel: function(c) {
       if (c.mode === 'daily') {
@@ -1000,6 +1249,10 @@ export default {
         self.streamError = '';
         self.attachments = [];
         self.drawerOpen = false;
+        // 换会话 = 换上下文：上一轮的统计描述的是**另一个会话**，
+        // 带着过去会让圆环在新会话里显示假的完整度（见 data 里 contextStats 的说明）
+        self.contextStats = null;
+        self.closeCtxPop();
         self.scrollToBottom();
       }).catch(function(err) {
         self.$store.dispatch('toast', { message: err.message || '打开失败', type: 'error' });
@@ -1014,6 +1267,9 @@ export default {
       this.drawerOpen = false;
       // 新会话回到"受限"：无限制是按会话存的，新开一个就该从安全默认开始
       this.dailyStyle = '';
+      // 新会话还没有任何上下文可测 —— 圆环回到未测量的虚线态
+      this.contextStats = null;
+      this.closeCtxPop();
       // 换了会话就别再轮询上一轮的服务端生成了
       this.clearServerPoll();
       this.$nextTick(this.focusInput);
@@ -1155,6 +1411,114 @@ export default {
         if (ok) self.markCopied(idx);
         else self.$store.dispatch('toast', { message: '复制失败，请长按选中文本', type: 'error' });
       });
+    },
+
+    // ---- 把 AI 回复沉淀成资产：加入错题本 / 存进笔记 ----
+    //
+    // 「已加入 / 已存入」这类终态刻意挂在**消息对象**上，而不是按下标存数组：
+    // 下标会随 regenerate（slice 掉末轮）和重新打开会话而变化，
+    // 挂在消息上，状态才跟着这条回复本身走，不会张冠李戴。
+
+    // 取回复首行当标题/兜底题干。
+    // 首行常常是 markdown 标题（"## 解题思路"）或列表项，直接拿去当标题很丑，
+    // 所以剥掉行首的标题/引用/列表标记
+    firstLine: function(text) {
+      var line = String(text || '').split('\n')[0].trim();
+      line = line.replace(/^\s*(#{1,6}\s*|>\s*|[-*+]\s+|\d+[.)]\s+)/, '').trim();
+      return line;
+    },
+
+    // 加入错题本：字段与 WrongBook.vue 手动新增完全相同（POST /wrong-book），
+    // 不另造字段名。题干优先用学生上一条提问（错题本关心的是"这题是什么"），
+    // 找不到就退回回复首行 —— 绝不提交空题干（服务端会拒）
+    addToWrongBook: function(idx, m) {
+      var self = this;
+      if (m.wrongAdded || m.wrongAdding) return;
+
+      var question = '';
+      for (var i = idx - 1; i >= 0; i--) {
+        if (this.messages[i] && this.messages[i].role === 'user' && this.messages[i].content) {
+          question = this.messages[i].content;
+          break;
+        }
+      }
+      if (!question) question = this.firstLine(m.content);
+      if (!question) {
+        this.$store.dispatch('toast', { message: '这条回复没有可用的题干', type: 'error' });
+        return;
+      }
+
+      this.$set(m, 'wrongAdding', true);
+      // AI 的整段讲解作为「正确解法」（默认 tag=✗，进复习队列）；
+      // 学生之后可以在错题本里编辑修正
+      this.$http.post('/wrong-book', {
+        subject: '',
+        tag: '✗',
+        question: question,
+        student_answer: '',
+        correct_answer: m.content || '',
+        reason: '',
+        note: '',
+        mastered: false
+      }).then(function(r) {
+        if (!r.data || r.data.code !== 200) throw new Error((r.data && r.data.message) || '加入失败');
+        self.$set(m, 'wrongAdded', true);
+        self.$store.dispatch('toast', { message: '已加入错题本', type: 'success' });
+      }).catch(function(err) {
+        // 失败不置终态：按钮回到可点，学生可直接重试
+        self.$store.dispatch('toast', { message: err.message || '加入失败', type: 'error' });
+      }).then(function() {
+        self.$set(m, 'wrongAdding', false);
+      });
+    },
+
+    // 存进笔记：字段与 Notes.vue 上传云端笔记完全相同（POST /notes/notes），
+    // id 也照抄它的 'note_<时间戳>_<随机>' 生成方式。
+    // 标题取回复首行（截 20 字），正文用该条回复的 markdown
+    saveToNotes: function(m) {
+      var self = this;
+      if (m.noteSaved || m.noteAdding) return;
+
+      var content = String(m.content || '');
+      var title = this.firstLine(content);
+      if (title.length > 20) title = title.slice(0, 20);
+      if (!title) title = 'Cluss 问答';
+
+      this.$set(m, 'noteAdding', true);
+      this.$http.post('/notes/notes', {
+        id: 'note_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+        title: title,
+        content: content,
+        tags: [],
+        folder: '默认',
+        visibility: 'private',
+        is_pinned: 0,
+        canvas_data: '',
+        type: 'note'
+      }).then(function(r) {
+        if (!r.data || r.data.code !== 200) throw new Error((r.data && r.data.message) || '保存失败');
+        self.$set(m, 'noteSaved', true);
+        self.$store.dispatch('toast', { message: '已存入笔记', type: 'success' });
+      }).catch(function(err) {
+        self.$store.dispatch('toast', { message: err.message || '保存失败', type: 'error' });
+      }).then(function() {
+        self.$set(m, 'noteAdding', false);
+      });
+    },
+
+    // 会话列表/空态用的相对时间。文案与 Notes.vue 的 formatDate 对齐——
+    // 同一个库里"刚刚 / 分钟前 / 小时前 / 天前"的说法不该有两套；
+    // 更早的直接走统一的 $fmtLocal，不再各页自己拼月日
+    relTime: function(iso) {
+      if (!iso) return '';
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return '';
+      var diff = Date.now() - d.getTime();
+      if (diff < 60000) return '刚刚';
+      if (diff < 3600000) return Math.floor(diff / 60000) + '分钟前';
+      if (diff < 86400000) return Math.floor(diff / 3600000) + '小时前';
+      if (diff < 604800000) return Math.floor(diff / 86400000) + '天前';
+      return this.$fmtLocal(iso, { short: true });
     },
 
     // 把当前会话的全部内容按"我 / AI"的格式拼成纯文本复制出去。
@@ -1504,6 +1868,9 @@ export default {
           // 深度思考：用户偏好原样上报，"当前模型认不认"由服务端按
           // supports_thinking 把关（换模型后不带开关也不会把请求打坏）
           thinking: this.thinking === true,
+          // 学习偏好：每次发送时现读（学生在设置里改完立刻生效，无需重开页面）。
+          // 读不到就回默认档，服务端也会再筛一遍白名单。
+          student_prefs: readStudentPrefs(),
           attachment_hashes: (atts || []).map(function(a) { return a.hash; }),
           note_ids: (notes || []).map(function(n) { return n.id; })
         }),
@@ -1565,6 +1932,10 @@ export default {
             self.cancelFrame();
             paint();
             self.visionStatus = '';
+            // 上下文统计：服务端这一轮真实组装出来的东西（历史纳入条数 / 估算 token …）。
+            // 它随 done 事件一起下来，不用额外请求 —— 但**只有真的跑过一轮才有**，
+            // 所以没发过消息的会话圆环保持"未测量"，不去猜一个数填上。
+            if (done && done.context) self.contextStats = done.context || null;
             // 钱包是唯一消耗出口：每轮结束立即刷新，学生看到的是准确的余量。
             // 估算轮次（上游未回 usage）不弹提示——那是管理员要修的配置问题，
             // 弹给学生只会制造焦虑（他既改不了，也无从判断）；用量页保留「约」标记。
@@ -2163,6 +2534,128 @@ html.is-portrait .free-btn {
   text-align: right;
 }
 
+/* ---------- 上下文状态（圆环按钮 + 明细浮窗）---------- */
+.ctx-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+/* 命中区与旁边的「人格与记忆」按钮同规格：
+   大屏同步放大，下限 30px 保证 960×680 基线一字不变。 */
+.ctx-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: clamp(30px, 20px + 1vw, 44px);
+  height: clamp(30px, 20px + 1vw, 44px);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+@media (hover: hover) {
+.ctx-btn:hover {
+  background: var(--ink-2);
+}
+}
+
+.ctx-btn.is-open { background: var(--ink-2); }
+
+/* 向下展开、右对齐。
+   用 absolute 而不是 fixed —— 宿主的 .mode-bar 是玻璃面板（backdrop-filter），
+   它会劫持 fixed 的包含块，浮窗会飘到莫名其妙的位置（ModelSelect 踩过同一个坑）。
+   间距一律用 margin 而不是 flex gap：目标基线 Chrome 80 还没有 flex gap。 */
+.ctx-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 60;
+  width: 272px;
+  padding: 13px 15px 12px;
+  text-align: left;
+}
+
+.ctx-pop-head {
+  display: flex;
+  align-items: center;
+}
+
+.ctx-pop-lead {
+  margin-left: 11px;
+  min-width: 0;
+}
+
+.ctx-pop-pct {
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--text-primary);
+}
+
+.ctx-pop-cap { margin-top: 1px; }
+
+/* 一句话结论：颜色跟着圆环档位走，
+   视线能从圆环一路滑到这句话上，不用在两处重新建立对应。 */
+.ctx-pop-sum {
+  margin: 9px 0 0;
+  line-height: 1.5;
+}
+.ctx-pop-sum.is-ok { color: var(--success); }
+.ctx-pop-sum.is-warn { color: var(--warning); }
+.ctx-pop-sum.is-danger { color: var(--danger); }
+.ctx-pop-sum.is-idle { color: var(--text-tertiary); }
+
+.ctx-rows {
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid var(--ink-2);
+}
+
+.ctx-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  line-height: 1.9;
+  font-size: 12.5px;
+}
+
+.ctx-k { color: var(--text-tertiary); }
+/* 表格数字等宽：百分比跳动时这一行不会左右抖 */
+.ctx-v {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx-pop-foot {
+  margin: 10px 0 0;
+  line-height: 1.55;
+}
+
+/* 入场：从上方轻轻落下，与 ModelSelect 弹层同一套手感 */
+.ctx-pop-enter-active,
+.ctx-pop-leave-active {
+  transition: opacity var(--dur-base) var(--ease-out),
+              transform var(--dur-base) var(--ease-out);
+}
+.ctx-pop-enter,
+.ctx-pop-leave-to {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+}
+
+/* 低性能降级：浮窗只做淡入淡出，不做位移与缩放 */
+html.low-perf .ctx-pop-enter-active,
+html.low-perf .ctx-pop-leave-active {
+  transition: opacity var(--dur-fast) linear;
+}
+html.low-perf .ctx-pop-enter,
+html.low-perf .ctx-pop-leave-to {
+  transform: none;
+}
+
 /* 滚动容器 + 浮在右下角的「回到底部」按钮，两者必须同处一个定位上下文 */
 .messages-wrap {
   position: relative;
@@ -2226,6 +2719,55 @@ html.is-portrait .free-btn {
   font-size: 13.5px;
   line-height: 1.7;
   color: var(--text-secondary);
+}
+
+/* 空态的「继续上次」：一行轻入口，不是卡片。
+   做成整行可点的胶囊按钮，但只比副标题重一点点——空态的主角仍应是
+   「说说你卡在哪一步」，这个入口是顺手，不该抢戏。
+   标题单行省略，窄屏不会把这一行撑破 */
+.resume-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  max-width: clamp(460px, 30vw, 680px);
+  margin-top: var(--gap-md);
+  padding: 8px 14px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-pill);
+  background: var(--glass-bg);
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+html.no-flex-gap .resume-row > * + * {
+  margin-left: 8px;
+}
+.resume-label {
+  flex-shrink: 0;
+  color: var(--accent);
+  font-weight: 600;
+}
+.resume-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.resume-time {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+@media (hover: hover) {
+.resume-row:hover {
+  border-color: var(--accent);
+  background: var(--glass-bg-strong);
+  color: var(--text-primary);
+}
 }
 
 .chips-wrap {
@@ -2330,6 +2872,9 @@ html.no-flex-gap .msg-col > * + * {
 .msg-tools {
   display: flex;
   gap: 6px;
+  /* 现在有 4 个动作，窄屏/竖屏一行放不下。
+     允许换行，否则会把气泡撑宽、挤出横向滚动条 */
+  flex-wrap: wrap;
   opacity: 0.5;
   transition: opacity var(--transition);
 }
@@ -2364,6 +2909,13 @@ html.no-flex-gap .msg-tools > * + * {
   position: relative;
 }
 
+/* 「已加入错题本 / 已存入笔记」是终态：置灰并挡住继续点，防重复提交。
+   置灰但不隐藏——学生需要看到"这件事已经做过了" */
+.tool-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .tool-btn::after {
   content: '';
   position: absolute;
@@ -2377,7 +2929,7 @@ html.no-flex-gap .msg-tools > * + * {
 }
 
 @media (hover: hover) {
-.tool-btn:hover {
+.tool-btn:hover:not(:disabled) {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent);
