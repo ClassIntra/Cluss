@@ -26,6 +26,20 @@ var app = express();
 app.disable('x-powered-by');
 app.use(compression({ level: 6, threshold: 1024 }));
 // 生产用 tiny 一行式，开发用 dev 彩色格式
+//
+// ⚠️ 两种格式都会打出 `:url`，而 ClassIntra 免登链路是把 JWT 拼在查询串上
+//    传进来的（`GET /?token=<JWT>`）。前端收到后会用 history.replaceState 立刻
+//    从地址栏抹掉，但**服务端的访问日志已经先记下了完整 URL** —— 一个可用的
+//    会话令牌就这样明文落在 pm2 日志里，谁拿到日志文件（备份/同步盘/随手外发）
+//    谁就拿到了该用户的会话。本仓库的 verify-no-secrets.cjs 就是在日志里扫出
+//    过这种带签名的完整 JWT 才发现这个缺口的。
+//
+//    这里直接重定义 morgan 内置的 url token，把 token 参数换成固定占位串：
+//    保留「这个请求免登进来的」这一事实，抹掉令牌本身。
+morgan.token('url', function (req) {
+  var u = String(req.originalUrl || req.url || '');
+  return u.replace(/([?&]token=)[^&#]*/gi, '$1[redacted]');
+});
 app.use(morgan(config.isProd ? 'tiny' : 'dev'));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));

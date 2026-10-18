@@ -1,6 +1,6 @@
 {
   "name": "cluss",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Cluss - 引导式 AI 解题应用（可独立部署，亦可与 ClassIntra 深度联动）",
   "scripts": {
@@ -9,6 +9,7 @@
     "dev": "node server/src/app.js",
     "build": "cd client && npm run build",
     "verify:version": "node server/scripts/verify-version-sync.cjs",
+    "verify:secrets": "node server/scripts/verify-no-secrets.cjs",
     "bump": "node scripts/bump-version.js"
   }
 }
