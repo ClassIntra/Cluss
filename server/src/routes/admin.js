@@ -165,12 +165,41 @@ router.get('/users', auth.requireAuth, auth.requireAdmin, function(req, res) {
   var stmt = db.prepare(sql);
   var rows = stmt.all.apply(stmt, params);
 
+  // ---- 全校花名册并入（跨班充值的可见性） ----
+  //
+  // 上面这条查询只看本机 users：席位班（如 18 班）握着全校写入权，列表里
+  // 却只有本班学生，**根本找不到可点的别班学生**；而别班自己的班管没有
+  // 写入权，一点提交就 403。两头合起来 = 谁都充不了别人班。
+  //
+  // 补法是把云端花名册（镜像在 sync_roster）并进来。它只加**行**，
+  // 不加权限：本班学生仍然只由上面这条本地查询给出，外班学生的钱与消耗
+  // 直接来自云端快照（本机没有他们的 cluss_credit）。非席位班 listRoster
+  // 恒返回空，这段等于不存在。
+  var merged = rows.slice();
+  syncService.listRoster({
+    keyword: keyword,
+    onlyAllocated: onlyAllocated,
+    limit: limit
+  }).forEach(function(r) {
+    merged.push(Object.assign({ source: 'roster', remote: true, created_at: null }, r));
+  });
+
+  // 两段各自排过序，合并后要重排，否则外班学生会整块挤在列表尾部
+  merged.sort(function(a, b) {
+    if (b.allocated_micro !== a.allocated_micro) return b.allocated_micro - a.allocated_micro;
+    return b.used_micro - a.used_micro;
+  });
+  if (merged.length > limit) merged = merged.slice(0, limit);
+
   res.json({
     code: 200,
     message: 'ok',
     data: {
       assign_version: currentAssignVersion(),
-      users: rows.map(function(r) {
+      // 花名册状态（版本 / 拉取时刻 / 人数）：面板要能回答
+      // 「我现在看到的是不是全校、是什么时候的」
+      roster: syncService.rosterSummary(),
+      users: merged.map(function(r) {
         return {
           user_id: r.user_id,
           net_name: r.net_name,
@@ -189,7 +218,9 @@ router.get('/users', auth.requireAuth, auth.requireAdmin, function(req, res) {
           weekly_quota_yuan: config.microToYuan(r.weekly_quota_micro).toFixed(2),
           calls: r.calls,
           last_at: time.toISO(r.last_at),
-          created_at: time.toISO(r.created_at)
+          created_at: time.toISO(r.created_at),
+          // 外班学生：余额来自云端快照（本机账本里没有他），前端据此打标
+          remote: !!r.remote
         };
       })
     }
@@ -231,13 +262,25 @@ function requireCanEditQuota(req, res, next) {
 router.put('/users/:userId/quota', auth.requireAuth, auth.requireAdmin, requireCanEditQuota, function(req, res) {
   var userId = String(req.params.userId || '').trim();
   var user = db.prepare('SELECT user_id, net_name, real_name FROM users WHERE user_id = ?').get(userId);
-  if (!user) return res.status(404).json({ code: 404, message: '用户不存在：' + userId });
+
+  // 本班没有这个学号 —— 只有一种可能是席位班从云端花名册并进来的**外班**学生。
+  // 非席位班 listRoster/getRosterRow 恒空，所以这条路只对席位班开放，
+  // 不存在「绕过 requireCanEditQuota」的口子（那道闸门在中间件里已经过完了）。
+  var remote = null;
+  if (!user) {
+    remote = syncService.getRosterRow(userId);
+    if (!remote) return res.status(404).json({ code: 404, message: '用户不存在：' + userId });
+  }
 
   var parsed = parseYuan(req.body.quota_yuan, '追加金额');
   if (!parsed.ok) return res.status(400).json({ code: 400, message: parsed.message });
   if (parsed.micro <= 0) return res.status(400).json({ code: 400, message: '追加金额需大于 0' });
 
-  var before = credit.getAssignment(userId);
+  // 余额从哪来：本班读本机账本；外班读云端快照 —— 本机根本没有他的
+  // cluss_credit 行，读出来会是 0，叠加就变成「从零充起」的错账。
+  var before = user
+    ? credit.getAssignment(userId)
+    : { allocated_micro: Number(remote.allocated_micro || 0), weekly_quota_micro: Number(remote.weekly_quota_micro || 0) };
 
   // 周限额仅在显式传入时更新；留空 = 沿用原值（叠加充值不该顺带把周限额清零）
   var weeklyMicro = Number(before.weekly_quota_micro || 0);
@@ -258,31 +301,42 @@ router.put('/users/:userId/quota', auth.requireAuth, auth.requireAdmin, requireC
     'topup', userId, String(parsed.micro), String(weeklyMicro), String(Date.now()), config.instanceId
   ]);
 
-  credit.applyAssignment({
-    user_id: userId,
-    allocated_micro: newAllocated,
-    weekly_quota_micro: weeklyMicro,
-    assigned_by: req.user.user_id,
-    idem_key: idemKey,
-    kind: 'topup',
-    reason: String(req.body.reason || ''),
-    origin_instance: config.instanceId
-  });
+  if (user) {
+    credit.applyAssignment({
+      user_id: userId,
+      allocated_micro: newAllocated,
+      weekly_quota_micro: weeklyMicro,
+      assigned_by: req.user.user_id,
+      idem_key: idemKey,
+      kind: 'topup',
+      reason: String(req.body.reason || ''),
+      origin_instance: config.instanceId
+    });
+  }
+  // 外班学生：**不写本机台账**（他的账在云端，写进来就成两处口径），
+  // 只把花名册镜像改成乐观值，让管理员马上看到新数字；
+  // 权威值由下一轮 fetchRoster 覆盖（推送失败时靠它自愈）。
+  syncService.applyRosterAllocation(userId, newAllocated, weeklyMicro);
 
-  var version = bumpAssignAndQueue(req, userId, newAllocated, weeklyMicro,
-    String(req.body.reason || '') || ('本机追加充值 ' + config.microToYuan(parsed.micro).toFixed(2) + ' 元'));
-  console.log('[Admin] 追加充值: %s (%s) +%s → %s 元 / 周限额 %s 元，操作人 %s',
-    userId, user.real_name, config.microToYuan(parsed.micro), config.microToYuan(newAllocated),
-    config.microToYuan(weeklyMicro), req.user.user_id);
+  var reason = String(req.body.reason || '') ||
+    ('本机追加充值 ' + config.microToYuan(parsed.micro).toFixed(2) + ' 元' + (remote ? '（外班 ' + (remote.class_no || '?') + ' 班）' : ''));
+  var version = bumpAssignAndQueue(req, userId, newAllocated, weeklyMicro, reason);
+  console.log('[Admin] 追加充值: %s (%s) +%s → %s 元 / 周限额 %s 元，操作人 %s%s',
+    userId, user ? user.real_name : (remote.real_name || ''), config.microToYuan(parsed.micro).toFixed(2),
+    config.microToYuan(newAllocated), config.microToYuan(weeklyMicro), req.user.user_id,
+    remote ? '［外班，走云端账本］' : '');
 
   res.json({
     code: 200,
-    message: '已追加 ¥' + config.microToYuan(parsed.micro).toFixed(2),
+    message: remote
+      ? ('已追加 ¥' + config.microToYuan(parsed.micro).toFixed(2) + '（' + (remote.class_no || '外') + ' 班学生，将同步到云端账本）')
+      : ('已追加 ¥' + config.microToYuan(parsed.micro).toFixed(2)),
     data: {
       user_id: userId,
       delta_yuan: config.microToYuan(parsed.micro).toFixed(2),
       allocated_yuan: config.microToYuan(newAllocated).toFixed(2),
-      assign_version: version
+      assign_version: version,
+      remote: !!remote
     }
   });
 });
@@ -313,9 +367,20 @@ router.post('/users/quota/batch', auth.requireAuth, auth.requireAdmin, requireCa
       if (parsed.micro <= 0) { failed.push({ user_id: userId, message: '追加金额需大于 0' }); continue; }
 
       var user = db.prepare('SELECT user_id FROM users WHERE user_id = ?').get(userId);
-      if (!user) { failed.push({ user_id: userId, message: '用户不存在' }); continue; }
+      // 外班学生（席位班从云端花名册并进来的行）：本机没有他的账，
+      // 余额从镜像读、不写本机台账，理由同单个充值。
+      var remoteRow = null;
+      if (!user) {
+        remoteRow = syncService.getRosterRow(userId);
+        if (!remoteRow) { failed.push({ user_id: userId, message: '用户不存在' }); continue; }
+      }
 
-      var before = credit.getAssignment(userId);
+      var before = user
+        ? credit.getAssignment(userId)
+        : {
+            allocated_micro: Number(remoteRow.allocated_micro || 0),
+            weekly_quota_micro: Number(remoteRow.weekly_quota_micro || 0)
+          };
 
       // 周限额：显式传入才更新，否则沿用原值
       var weeklyMicro = Number(before.weekly_quota_micro || 0);
@@ -335,22 +400,25 @@ router.post('/users/quota/batch', auth.requireAuth, auth.requireAdmin, requireCa
         'batch', userId, String(parsed.micro), String(weeklyMicro), String(Date.now()), config.instanceId, String(i)
       ]);
 
-      credit.applyAssignment({
-        user_id: userId,
-        allocated_micro: newAllocated,
-        weekly_quota_micro: weeklyMicro,
-        assigned_by: req.user.user_id,
-        idem_key: idemKey,
-        kind: 'topup',
-        reason: String(req.body.reason || '批量充值'),
-        origin_instance: config.instanceId
-      });
+      if (user) {
+        credit.applyAssignment({
+          user_id: userId,
+          allocated_micro: newAllocated,
+          weekly_quota_micro: weeklyMicro,
+          assigned_by: req.user.user_id,
+          idem_key: idemKey,
+          kind: 'topup',
+          reason: String(req.body.reason || '批量充值'),
+          origin_instance: config.instanceId
+        });
+      }
 
       results.push({
         user_id: userId,
         allocated_yuan: config.microToYuan(newAllocated).toFixed(2),
         allocated_micro: newAllocated,
-        weekly_quota_micro: weeklyMicro
+        weekly_quota_micro: weeklyMicro,
+        remote: !!remoteRow
       });
     }
   });
@@ -371,6 +439,12 @@ router.post('/users/quota/batch', auth.requireAuth, auth.requireAdmin, requireCa
         syncService.queueAllocation(results[qi].user_id, results[qi].allocated_micro,
           results[qi].weekly_quota_micro, '本机批量分配', req.user.user_id);
       }
+      // 外班学生改的是云端账本：把花名册镜像改成乐观值，并置位下轮回拉，
+      // 让推送失败时也能拿云端权威值盖回来（同单个充值）
+      if (results[qi].remote) {
+        syncService.applyRosterAllocation(results[qi].user_id,
+          results[qi].allocated_micro, results[qi].weekly_quota_micro);
+      }
     }
     version = bumpAssignVersion();
     if (syncService.isEnabled()) syncService.pushPending(req.user.user_id).catch(function() {});
@@ -390,24 +464,29 @@ router.post('/users/quota/batch', auth.requireAuth, auth.requireAdmin, requireCa
 router.delete('/users/:userId/quota', auth.requireAuth, auth.requireAdmin, requireCanEditQuota, function(req, res) {
   var userId = String(req.params.userId || '').trim();
   var user = db.prepare('SELECT user_id FROM users WHERE user_id = ?').get(userId);
-  if (!user) return res.status(404).json({ code: 404, message: '用户不存在' });
+  // 外班学生同样能收回（见 PUT /quota 里对 remote 的说明）
+  var remote = user ? null : syncService.getRosterRow(userId);
+  if (!user && !remote) return res.status(404).json({ code: 404, message: '用户不存在' });
 
   var idemKey = constants.makeIdemKey(['revoke', userId, String(Date.now()), config.instanceId]);
-  credit.applyAssignment({
-    user_id: userId,
-    allocated_micro: 0,
-    weekly_quota_micro: 0,
-    assigned_by: req.user.user_id,
-    idem_key: idemKey,
-    kind: 'revoke',
-    reason: String(req.body && req.body.reason || '管理员收回额度'),
-    origin_instance: config.instanceId
-  });
+  if (user) {
+    credit.applyAssignment({
+      user_id: userId,
+      allocated_micro: 0,
+      weekly_quota_micro: 0,
+      assigned_by: req.user.user_id,
+      idem_key: idemKey,
+      kind: 'revoke',
+      reason: String(req.body && req.body.reason || '管理员收回额度'),
+      origin_instance: config.instanceId
+    });
+  }
+  syncService.applyRosterAllocation(userId, 0, 0);
 
   var version = bumpAssignAndQueue(req, userId, 0, 0,
     String(req.body && req.body.reason || '管理员收回额度'));
-  console.log('[Admin] 额度已收回: %s，操作人 %s', userId, req.user.user_id);
-  res.json({ code: 200, message: '已收回额度', data: { assign_version: version } });
+  console.log('[Admin] 额度已收回: %s%s，操作人 %s', userId, remote ? '（外班，走云端账本）' : '', req.user.user_id);
+  res.json({ code: 200, message: '已收回额度', data: { assign_version: version, remote: !!remote } });
 });
 
 // ============================================================

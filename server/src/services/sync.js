@@ -9,11 +9,15 @@
 //   5. **反过来**：如果本班持有云端的管理员席位，班管在本地改的模型配置与
 //      积分分配由本节点推给云端，云端再下发给同校所有班。先推后拉——
 //      否则刚改完的东西会被云端版本覆盖回去（这正是原来额度改了会丢的原因）。
+//   6. 全校花名册：每个班把本班学生报上去，**只有席位班**把全校名册拉回本地
+//      当只读镜像。它解决的是「18 班手握写入权，列表里却看不到 8 班学生」，
+//      所以只补**看得见**，不给任何一条权限开新口子（见 pushRoster 上方注释）。
 //
 // 容错原则：**同步失败绝不能影响学生使用**。
 // 所有请求失败只记日志、下次重试；额度沿用本地已有分配，配合同步容错额继续放行。
 
 var axios = require('axios');
+var crypto = require('crypto');
 var config = require('../config');
 var credit = require('./credit');
 var modelConfig = require('./model-config');
@@ -60,7 +64,21 @@ var status = {
   last_push_policy_at: null,
   last_push_policy_error: '',
   last_push_alloc_at: null,
-  last_push_alloc_error: ''
+  last_push_alloc_error: '',
+  // 全校花名册：只有席位班才有（非席位班拉云端也是 403）。
+  // 用途只有一件事 —— 让手握写入权的班管在列表里看得见**别班**学生，
+  // 否则「18 班给 8 班充值」在 UI 上根本无从下手（见 026 迁移头注）。
+  roster_version: 0,
+  roster_pulled_at: null,
+  roster_count: 0,
+  roster_error: '',
+  // 本轮需要强制回拉一次名册。置位场景：本机名册刚推上去（云端版本变了，
+  // 但同轮里别的班可能也在推，只比版本号会漏）以及额度推送刚落地
+  // （镜像里的余额是乐观值，要拿云端权威值覆盖）。
+  roster_refetch_pending: false,
+  last_push_roster_at: null,
+  last_push_roster_count: 0,
+  last_push_roster_error: ''
 };
 
 // 上行待推的额度项（内存态）。每项带一个稳定的 idem_key：
@@ -212,8 +230,14 @@ function pollOnce(force) {
   // 先推后拉：班管刚在本机改的东西，必须先上行到云端，再拉云端权威版本。
   // 顺序反了的话，本机改动会被云端版本直接覆盖回去——这正是原来
   // 「老师改了额度，学生那边却没变」的原因。
+  //
+  // 花名册排在两者之间：它既要先把本班学生报上去（否则席位班看不到别班），
+  // 又要在同轮拿到云端权威名册（本机名册刚变，别班可能也在同轮推过）。
+  // 名册每个班都要推，但只有席位班会拉。
   var seatUser = pendingSeatUser();
   return pushPending(seatUser).then(function() {
+    return pushRoster();
+  }).then(function() {
     return doPoll(force);
   });
 }
@@ -233,10 +257,18 @@ function doPoll(force) {
   if (force) {
     // 各自兜底：老中继没有 /sync/model-config（404）时，额度分配照常落地，
     // 不能因为模型配置这一路失败就把启动同步整体标成失败
-    return Promise.all([
+    var boot = [
       fetchAssignments().catch(function(err) { markError(err); return null; }),
       fetchModelConfig().catch(function(err) { markError(err); return null; })
-    ]).then(function() { return { changed: true, forced: true }; });
+    ];
+    // 启动时还不知道本班是不是席位（那要等下面那次轮询告诉咱们），
+    // 所以用「以前拉到过花名册」当旁证：拉到过 = 曾经是席位，先补一次。
+    // 全新学校第一次启动会等一个轮询周期（≤60s），换来的是非席位班
+    // 不会在每次重启时白吃一个 403。
+    if (status.is_seat_admin || (parseInt(initDb.getMeta('roster_version', '0'), 10) || 0) > 0) {
+      boot.push(fetchRoster());
+    }
+    return Promise.all(boot).then(function() { return { changed: true, forced: true }; });
   }
 
   return axios.get(config.relay.url + '/api/sync/version', {
@@ -273,6 +305,20 @@ function doPoll(force) {
     var jobs = [];
     if (remoteAssign !== localAssignVersion()) jobs.push(fetchAssignments());
     if (remoteModel !== localModelVersion()) jobs.push(fetchModelConfig());
+
+    // 全校花名册：只有席位班才拉（云端对非席位班一律 403）。
+    // 两个触发条件缺一不可 —— 只看版本号会漏掉「本机刚推完、云端同轮又被
+    // 别的班改过」这一种；只看置位会漏掉别班自己上报的变化。
+    // 老云端没有 roster_version 这个字段时只认置位，不去凑一次必 404 的请求。
+    if (remote.is_seat_admin) {
+      var remoteRoster = remote.roster_version;
+      var rosterStale = (remoteRoster !== undefined && remoteRoster !== status.roster_version);
+      if (rosterStale || status.roster_refetch_pending) jobs.push(fetchRoster());
+    } else {
+      // 本班没有席位 = 不存在「全校名册」这回事，把置位收掉，
+      // 免得哪天真的拿到席位时被一个陈旧标记牵着多拉一次。
+      status.roster_refetch_pending = false;
+    }
 
     if (!jobs.length) {
       markOk();
@@ -501,6 +547,221 @@ function pushPending(classUserId) {
   });
 }
 
+// ---- 全校花名册：补的是**可见性**，不是权限 ----
+//
+// 死结（2026-10-19 实测）：席位班手握写入权，本机 users 表却只有本班学生，
+// 管理台里根本没有「8 班张三」这一行可点；非席位班看得见自己学生，一提交
+// 又被 requireCanEditQuota 403。结果是**谁都不能给 8 班充钱**。
+//
+// 额度那条路本来就是通的（云端 allocations 全校口径、上行只挡跨校），
+// 所以这里只做一件事：把本班学生报上去、把全校名册拉下来当**只读镜像**。
+//
+// 三条不变：
+//   · 本机 users 表照旧只收本班 —— class-roster 的世界边界一个字不动；
+//   · 镜像不进 cluss_credit / cluss_usage_log —— 外班的钱与消耗只在云端账本；
+//   · 写入权仍由 requireCanEditQuota + 云端 checkSeat 把守，名册只让列表
+//     多出几行可点的外班学生。
+function rosterPushSignature(items) {
+  return crypto.createHash('sha1').update(JSON.stringify(items)).digest('hex');
+}
+
+// 上行：把**本班**学生整份报给云端（云端按 instance 整表替换）
+function pushRoster() {
+  if (!isEnabled()) return Promise.resolve({ pushed: 0, skipped: true });
+
+  var rows;
+  try {
+    rows = db.prepare(
+      'SELECT user_id, net_name, real_name, class_no, is_admin, status FROM users ORDER BY user_id'
+    ).all();
+  } catch (err) {
+    // 读不到名册就不能拿空数组去覆盖云端（那会把本班学生从全校名册里抹掉）
+    status.last_push_roster_error = '读取本班名册失败: ' + err.message;
+    return Promise.resolve({ pushed: 0, error: status.last_push_roster_error });
+  }
+
+  var items = rows.map(function(r) {
+    return {
+      user_id: String(r.user_id || ''),
+      class_no: String(r.class_no || ''),
+      net_name: String(r.net_name || ''),
+      real_name: String(r.real_name || ''),
+      is_admin: r.is_admin === 1 ? 1 : 0,
+      status: String(r.status || 'active')
+    };
+  });
+
+  // 变化判定放本机：云端也有比对，但本机能先省掉这一次网络往返。
+  // 每轮一次 SELECT + sha1，远比每分钟一次 HTTP 便宜。
+  var sig = rosterPushSignature(items);
+  if (sig === String(initDb.getMeta('roster_push_hash', '') || '')) {
+    return Promise.resolve({ pushed: 0, unchanged: true, count: items.length });
+  }
+
+  return axios.post(config.relay.url + '/api/sync/roster', {
+    items: items
+  }, { timeout: TIMEOUT_MS, headers: headers() }).then(function(resp) {
+    var data = (resp.data && resp.data.data) || {};
+    // 成功才记哈希：失败不记 → 下一轮仍然重试（本机名册一直是「没同步」状态）
+    initDb.setMeta('roster_push_hash', sig);
+    status.last_push_roster_at = time.nowUtc();
+    status.last_push_roster_count = items.length;
+    status.last_push_roster_error = '';
+    // 本机名册刚变，云端那一版里可能夹着同轮别的班推上来的改动，
+    // 只比版本号会漏 —— 置位让席位班本轮回拉一次权威名册。
+    status.roster_refetch_pending = true;
+    console.log('[Sync] 已上行本班名册: %d 人（云端 v%s）', items.length, data.roster_version);
+    return { pushed: 1, count: items.length, version: data.roster_version || 0 };
+  }).catch(function(err) {
+    status.last_push_roster_error = (err && err.message) || String(err);
+    return { pushed: 0, error: status.last_push_roster_error };
+  });
+}
+
+// 下行：拉全校花名册，整表替换本地镜像（云端 403 = 本班不是席位，镜像保持为空）
+function fetchRoster() {
+  if (!isEnabled()) return Promise.resolve({ count: 0, skipped: true });
+
+  return axios.get(config.relay.url + '/api/sync/roster', {
+    timeout: TIMEOUT_MS, headers: headers()
+  }).then(function(resp) {
+    var data = (resp.data && resp.data.data) || {};
+    var list = Array.isArray(data.roster) ? data.roster : [];
+    var version = data.roster_version || 0;
+    var syncedAt = time.nowUtc();
+
+    var tx = db.transaction(function() {
+      db.prepare('DELETE FROM sync_roster').run();
+      var ins = db.prepare([
+        'INSERT INTO sync_roster (user_id, instance_id, class_no, net_name, real_name, is_admin, status,',
+        '  allocated_micro, weekly_quota_micro, used_micro, calls, last_at, synced_at)',
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ].join('\n'));
+      for (var i = 0; i < list.length; i++) {
+        var r = list[i] || {};
+        var uid = String(r.user_id || '').trim();
+        if (!uid) continue;
+        ins.run(
+          uid, String(r.instance_id || ''), String(r.class_no || ''),
+          String(r.net_name || ''), String(r.real_name || ''),
+          r.is_admin ? 1 : 0, String(r.status || 'active'),
+          Math.max(0, Math.round(Number(r.allocated_micro) || 0)),
+          Math.max(0, Math.round(Number(r.weekly_quota_micro) || 0)),
+          Math.max(0, Math.round(Number(r.used_micro) || 0)),
+          Math.max(0, Math.round(Number(r.calls) || 0)),
+          String(r.last_at || ''), syncedAt
+        );
+      }
+    });
+    tx();
+
+    status.roster_version = version;
+    status.roster_pulled_at = syncedAt;
+    status.roster_count = list.length;
+    status.roster_error = '';
+    status.roster_refetch_pending = false;
+    initDb.setMeta('roster_version', String(version));
+    initDb.setMeta('roster_synced_at', syncedAt);
+    console.log('[Sync] 已拉取全校花名册: %d 人（v%s）', list.length, version);
+    return { count: list.length, version: version };
+  }).catch(function(err) {
+    // 名册拉不到**不算**同步失败：额度与模型照常走，只是管理台暂时看不到外班。
+    // 403 时的措辞对管理员最有用，原样留着。
+    status.roster_error = (err && err.message) || String(err);
+    status.roster_refetch_pending = false;
+    return { count: status.roster_count, error: status.roster_error };
+  });
+}
+
+// 给管理台用：全校外班学生（已按本机查询条件过滤）
+// 返回结构与 GET /admin/users 的行字段对齐，调用方直接套同一个映射函数。
+function listRoster(opts) {
+  opts = opts || {};
+  // 没有席位就没有全校可见性，镜像也应该是空的（云端 403 拉不到）。
+  // 兜这一句是因为「席位被解绑」后旧镜像还留在库里 —— 不能继续拿它显示。
+  if (!isEnabled() || !status.is_seat_admin) return [];
+
+  var where = [];
+  var params = [];
+  // 本机有的账号一律以本机账本为准；同时排除本班上报的行（本班学生的
+  // 权威数据就在 users/cluss_credit 里，镜像那份只会更旧）
+  where.push('r.instance_id <> ?');
+  params.push(String(config.instanceId || ''));
+  where.push('NOT EXISTS (SELECT 1 FROM users u WHERE u.user_id = r.user_id)');
+
+  if (opts.keyword) {
+    where.push('(r.user_id LIKE ? OR r.net_name LIKE ? OR r.real_name LIKE ?)');
+    var kw = '%' + opts.keyword + '%';
+    params.push(kw, kw, kw);
+  }
+  if (opts.onlyAllocated) where.push('r.allocated_micro > 0');
+
+  var sql = [
+    'SELECT r.user_id, r.instance_id, r.class_no, r.net_name, r.real_name, r.is_admin, r.status,',
+    '       r.allocated_micro, r.weekly_quota_micro, r.used_micro, r.calls, r.last_at, r.synced_at',
+    'FROM sync_roster r',
+    'WHERE ' + where.join(' AND '),
+    'ORDER BY r.allocated_micro DESC, r.used_micro DESC'
+  ].join('\n');
+
+  try {
+    var limit = Number(opts.limit) > 0 ? Math.min(Number(opts.limit), 500) : 500;
+    sql += ' LIMIT ?';
+    params.push(limit);
+    var stmt = db.prepare(sql);
+    // better-sqlite3 不接受参数数组（会被当成具名参数对象），必须展开传
+    return stmt.all.apply(stmt, params);
+  } catch (err) {
+    console.warn('[Sync] 读取花名册镜像失败:', err.message);
+    return [];
+  }
+}
+
+// 单个外班学生（充值前要先拿到他的云端余额，才能在云端值上叠加）
+function getRosterRow(userId) {
+  if (!isEnabled() || !status.is_seat_admin) return null;
+  try {
+    return db.prepare('SELECT * FROM sync_roster WHERE user_id = ?').get(String(userId)) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// 充值写进镜像的乐观值（管理员马上要看到新数字）。
+// 云端权威值由下一轮 fetchRoster 覆盖 —— 推送失败时这正是唯一的自愈路径，
+// 所以无论成功失败都要置 roster_refetch_pending。
+function applyRosterAllocation(userId, allocatedMicro, weeklyMicro) {
+  if (!status.is_seat_admin) return false;
+  try {
+    var hit = db.prepare('SELECT 1 FROM sync_roster WHERE user_id = ?').get(String(userId));
+    if (!hit) return false;
+    db.prepare(
+      'UPDATE sync_roster SET allocated_micro = ?, weekly_quota_micro = ? WHERE user_id = ?'
+    ).run(
+      Math.max(0, Math.round(Number(allocatedMicro) || 0)),
+      Math.max(0, Math.round(Number(weeklyMicro) || 0)),
+      String(userId)
+    );
+    status.roster_refetch_pending = true;
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// 面板一行状态用
+function rosterSummary() {
+  return {
+    version: status.roster_version,
+    synced_at: status.roster_pulled_at,
+    count: status.roster_count,
+    error: status.roster_error,
+    pushed_at: status.last_push_roster_at,
+    pushed_count: status.last_push_roster_count,
+    push_error: status.last_push_roster_error
+  };
+}
+
 // ---- 启动定时任务 ----
 var timers = [];
 
@@ -579,6 +840,8 @@ function getStatus() {
     last_push_policy_error: status.last_push_policy_error,
     last_push_alloc_at: status.last_push_alloc_at,
     last_push_alloc_error: status.last_push_alloc_error,
+    // 全校花名册：让班管知道「这份跨班可见的名单是什么时候、多少人」
+    roster: rosterSummary(),
     clock_skew_ms: status.clock_skew_ms,
     server_time: status.server_time
   };
@@ -597,5 +860,12 @@ module.exports = {
   pushPending: pushPending,
   pushModelConfig: pushModelConfig,
   pushAllocations: pushAllocations,
-  rememberSeatUser: rememberSeatUser
+  rememberSeatUser: rememberSeatUser,
+  // 全校花名册（跨班充值的可见性）
+  pushRoster: pushRoster,
+  fetchRoster: fetchRoster,
+  listRoster: listRoster,
+  getRosterRow: getRosterRow,
+  applyRosterAllocation: applyRosterAllocation,
+  rosterSummary: rosterSummary
 };

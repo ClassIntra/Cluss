@@ -313,12 +313,14 @@ function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
     "VALUES ('keepme', '要保住的模型', 'http://127.0.0.1:9200', 'sk-x', 'keepme', 'openai',",
     '  2000, 8000, 200, 0, 1, 1, 0, ?)'
   ].join('\n')).run('2026-10-12 08:00:00');
-  ok('本机先有一个模型', dbMod.prepare('SELECT COUNT(*) AS c FROM ai_models').get().c === 1);
+  // 按 id 查，不要 COUNT===1：脚本可能跑在已经有模型的真实库上，
+  // 「数一下有几行」在这里只会在好库上误报失败。
+  ok('本机先有一个模型', !!dbMod.prepare("SELECT 1 FROM ai_models WHERE id = 'keepme'").get());
 
   await sync5.pollOnce(true);
-  var kept = dbMod.prepare('SELECT id FROM ai_models').get();
+  var kept = dbMod.prepare("SELECT id FROM ai_models WHERE id = 'keepme'").get();
   ok('云端 v0 空配置不会清空本机模型', kept && kept.id === 'keepme',
-    '本机现有: ' + JSON.stringify(kept));
+    'keepme 还在: ' + JSON.stringify(kept));
   ok('状态里标出云端尚未接管', sync5.getStatus().model_version === 0,
     String(sync5.getStatus().model_version));
   // 清理，别污染后续运行
@@ -368,7 +370,7 @@ function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
     '  2000, 8000, 200, 0, 1, 1, 0, ?)'
   ].join('\n')).run('2026-10-12 08:00:00');
   await sync7.pollOnce(true);
-  var kept2 = dbMod.prepare('SELECT id FROM ai_models').get();
+  var kept2 = dbMod.prepare("SELECT id FROM ai_models WHERE id = 'keepme2'").get();
   ok('回拉时跳过自己推的版本，模型保住', kept2 && kept2.id === 'keepme2', JSON.stringify(kept2));
   dbMod.prepare("DELETE FROM ai_models WHERE id = 'keepme2'").run();
   await relay7.close();

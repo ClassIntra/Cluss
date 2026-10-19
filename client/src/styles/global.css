@@ -1897,6 +1897,14 @@ html.no-flex-gap .segmented > * + * {
   color: var(--accent);
 }
 
+/* 外班学生（全校花名册并进来的行）。刻意用中性灰而不是 warning：
+   跨班看账、跨班充值本来就是这套多班部署的**正常状态**，不是异常。
+   它存在的意义是提醒「这一行的余额来自云端快照、本机台账没有他」。 */
+.badge-remote {
+  background: var(--ink-3);
+  color: var(--text-secondary);
+}
+
 .badge-success {
   background: var(--success-soft);
   color: var(--success);

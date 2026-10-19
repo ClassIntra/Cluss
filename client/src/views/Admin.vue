@@ -266,7 +266,7 @@
             <div class="panel-head">
               <div>
                 <h2 class="panel-title">额度分配</h2>
-                <p class="panel-sub tiny muted">充值按「追加」计算，在现有额度上累加，永不覆盖。带「管理」徽标的是管理员账号（含班管本人）——他们同样在这张表里</p>
+                <p class="panel-sub tiny muted">充值按「追加」计算，在现有额度上累加，永不覆盖。带「管理」徽标的是管理员账号（含班管本人）——他们同样在这张表里<template v-if="rosterLine">。{{ rosterLine }}</template></p>
               </div>
             <div class="panel-actions">
               <button class="btn btn-sm btn-ghost" @click="exportSnapshot">导出台账</button>
@@ -317,7 +317,10 @@
                     {{ u.real_name }}
                     <span v-if="u.is_admin" class="badge badge-accent admin-badge">管理</span>
                   </td>
-                  <td>{{ u.class_no ? u.class_no + ' 班' : '--' }}</td>
+                  <td>
+                    {{ u.class_no ? u.class_no + ' 班' : '--' }}
+                    <span v-if="u.remote" class="badge badge-remote" title="本班没有这个学生——余额与消耗来自云端账本，充值会同步到他所在的班">外班</span>
+                  </td>
                   <td class="num">¥{{ u.allocated_yuan }}</td>
                   <td class="num">¥{{ u.used_yuan }}</td>
                   <td class="num" :class="{ 'text-danger': Number(u.remaining_yuan) <= 0 }">¥{{ u.remaining_yuan }}</td>
@@ -1001,6 +1004,9 @@ export default {
       logs: [],
       keyword: '',
       classFilter: '',
+      // 全校花名册状态（GET /admin/users 的 roster 字段）：额度页副标题
+      // 要回答「我看到的是不是全校、是什么时候的」
+      usersRoster: {},
       selected: [],
       quotaModal: {
         open: false, mode: 'single', userId: '', targetName: '',
@@ -1162,7 +1168,33 @@ export default {
       return Math.round(y * this.pointsPerYuan);
     },
     classes: function() {
-      return (this.dashboard && this.dashboard.by_class) || [];
+      var base = (this.dashboard && this.dashboard.by_class) || [];
+      var out = base.slice();
+      var have = {};
+      out.forEach(function(c) { have[c.class_no || '--'] = true; });
+
+      // 外班学生是花名册并进来的，本机 dashboard 的 by_class 只统计本班 ——
+      // 不补的话班级下拉里根本没有「8 班」这一项，选了也是空列表。
+      var count = {};
+      (this.users || []).forEach(function(u) {
+        var k = u.class_no || '--';
+        count[k] = (count[k] || 0) + 1;
+      });
+      Object.keys(count).forEach(function(k) {
+        if (have[k]) return;
+        out.push({ class_no: k, students: count[k], allocated_yuan: '0.00' });
+      });
+      return out;
+    },
+    // 额度页副标题里那一句：现在看到的是不是全校、是哪个版本、什么时候拉的
+    rosterLine: function() {
+      if (!this.isSeatAdmin) return '';
+      var r = this.usersRoster || {};
+      if (r.error) return '全校花名册拉取失败：' + r.error;
+      if (!r.count) return '全校花名册还没同步上（等别班上报后即可给外班学生充值）';
+      var when = r.synced_at ? this.formatTime(r.synced_at) : '—';
+      return '已载入全校花名册 v' + (r.version || 0) + ' · ' + r.count + ' 人 · ' + when +
+        '，带「外班」标的学生可直接充值（钱走云端账本，会同步到他所在的班）';
     },
     filteredUsers: function() {
       var self = this;
@@ -1378,6 +1410,7 @@ export default {
       return this.$http.get('/admin/users', { params: { keyword: this.keyword, limit: 500 } }).then(function(r) {
         if (r.data.code === 200) {
           self.users = r.data.data.users || [];
+          self.usersRoster = r.data.data.roster || {};
           self.selected = [];
         }
       }).catch(function(err) {
