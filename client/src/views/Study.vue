@@ -1070,12 +1070,39 @@ html.no-flex-gap .hist-item > * + * {
   cursor: pointer;
   opacity: 0;
   flex-shrink: 0;
+  /* ::after 撑命中区需要定位上下文 */
+  position: relative;
 }
 
 @media (hover: hover) {
 .hist-item:hover .hist-del {
   opacity: 1;
 }
+}
+
+/* 触屏没有 hover：「悬停才出现」在平板上等于「永远不出现」。
+   判据用 @media (hover: none) 而不是方向类 —— 横屏平板才是主力姿态。
+   与 Chat.vue 的 .conv-del 同一套：常显 0.7 让位正文，:active 提亮，
+   命中区用 ::after 向上下扩到 40px（不动布局）。 */
+@media (hover: none) {
+  .hist-del {
+    opacity: 0.7;
+  }
+  .hist-del:active {
+    opacity: 1;
+    background: var(--danger-tint);
+    color: var(--danger);
+  }
+  .hist-del::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 40px;
+    transform: translateY(-50%);
+    background: transparent;
+  }
 }
 
 .hist-empty {

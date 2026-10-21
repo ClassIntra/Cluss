@@ -8,13 +8,22 @@
 var path = require('path');
 
 // 模式枚举
-var MODES = { STANDALONE: 'standalone', NODE: 'node', RELAY: 'relay' };
+//
+// standalone  独立部署：一台机器服务一个班，不联网组。
+// node        班级节点：接入一个中枢（云端或本机组网），拉策略与额度、上报名册与用量。
+// relay       云端中枢：只做中继服务，不服务学生（管理员走 ClassIntra 班管）。
+// mesh        **组网中枢**（2026-10-21 新增）：一台机器**既是**普通实例（照常服务本班
+//             学生、有完整管理台）**又是**组网中心，同网段的班级节点直接连它。
+//             与 relay 的区别就这一条 —— relay 是「专职中继、没有自己的班」，
+//             mesh 是「我自己有班，顺带当中心」。走 Tailscale 组网、不上云时用它。
+var MODES = { STANDALONE: 'standalone', NODE: 'node', RELAY: 'relay', MESH: 'mesh' };
 
 function readMode() {
   var raw = String(process.env.CLUSS_MODE || '').trim().toLowerCase();
-  if (raw === MODES.NODE || raw === MODES.RELAY || raw === MODES.STANDALONE) return raw;
+  if (raw === MODES.NODE || raw === MODES.RELAY || raw === MODES.STANDALONE || raw === MODES.MESH) return raw;
   return MODES.STANDALONE;
 }
+
 
 function requireEnv(name) {
   var v = String(process.env[name] || '').trim();

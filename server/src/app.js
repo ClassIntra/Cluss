@@ -104,6 +104,8 @@ app.use('/api/usage', require('./routes/usage'));
 app.use('/api/writing', require('./routes/writing'));
 app.use('/api/notes', require('./routes/notes'));
 app.use('/api/memories', require('./routes/memories'));
+app.use('/api/affinity', require('./routes/affinity'));
+app.use('/api/private', require('./routes/private'));
 app.use('/api/campus-context', require('./routes/campus-context'));
 app.use('/api/wrong-book', require('./routes/wrong-book'));
 app.use('/api/admin', require('./routes/admin'));

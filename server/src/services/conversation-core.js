@@ -17,6 +17,28 @@ function getConversation(convId, userId) {
   ).get(String(convId), String(userId)) || null;
 }
 
+// 读取单个会话（含隐藏判定）。
+// 返回 null = 对调用方表现为"不存在"（未解锁时故意与真 404 同形）。
+function getConversationForRead(convId, userId, unlocked) {
+  var row = getConversation(convId, userId);
+  if (!row) return null;
+  if (Number(row.hidden) === 1 && !unlocked) return null;
+  return row;
+}
+
+// 隐藏 / 取消隐藏。返回 { ok, hidden, message }
+function setHidden(convId, userId, hidden) {
+  var row = getConversation(convId, userId);
+  if (!row) return { ok: false, message: '会话不存在' };
+  var next = hidden ? 1 : 0;
+  if (Number(row.hidden) === next) {
+    return { ok: true, hidden: !!next, message: next ? '已经是隐藏状态' : '本来就没隐藏' };
+  }
+  db.prepare('UPDATE ai_conversations SET hidden = ?, updated_at = ? WHERE id = ? AND user_id = ?')
+    .run(next, time.nowUtc(), String(convId), String(userId));
+  return { ok: true, hidden: !!next, message: next ? '已隐藏' : '已取消隐藏' };
+}
+
 // 标题自动取首条消息前 20 字
 function autoTitle(text) {
   var t = String(text || '').replace(/\s+/g, ' ').trim();
@@ -131,9 +153,16 @@ function updateConversationMode(convId, userId, mode, studyStyle, dailyStyle) {
   return getConversation(conv.id, userId);
 }
 
+// 来源清单的落库形态：没有就存空串（绝大多数消息都没有来源，别用 '[]' 撑大库）
+function sourcesJson(v) {
+  if (!v || !v.length) return '';
+  try { return JSON.stringify(v); } catch (e) { return ''; }
+}
+
 // 追加一条消息
 // opts: { attachments: [{hash,name,mime,size,kind}], source: 'chat'|'study'|'solve'|'grade',
-//         streaming: 1 表示"正在生成"（占位行，随后会被增量更新） }
+//         streaming: 1 表示"正在生成"（占位行，随后会被增量更新）,
+//         sources: 联网搜索的来源清单（见 027 迁移） }
 function appendMessage(convId, role, content, modelId, opts) {
   var o = opts || {};
   var attachmentsJson = '[]';
@@ -142,12 +171,12 @@ function appendMessage(convId, role, content, modelId, opts) {
   }
 
   var info = db.prepare([
-    'INSERT INTO ai_messages (conversation_id, role, content, model_id, attachments, source, streaming, created_at)',
-    'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO ai_messages (conversation_id, role, content, model_id, attachments, source, streaming, sources, created_at)',
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ].join('\n')).run(
     String(convId), String(role), String(content || ''),
     String(modelId || ''), attachmentsJson, String(o.source || 'chat'),
-    o.streaming ? 1 : 0, time.nowUtc()
+    o.streaming ? 1 : 0, sourcesJson(o.sources), time.nowUtc()
   );
 
   db.prepare('UPDATE ai_conversations SET updated_at = ? WHERE id = ?')
@@ -162,7 +191,7 @@ function appendMessage(convId, role, content, modelId, opts) {
 // 但"最后一笔"和"中途每一笔"必须是同一条 SQL，否则迟早出现两者写法漂移
 // （比如一处忘了清 streaming，那条消息就永远显示成"生成中"）。
 //
-// opts: { streaming: 0|1 } —— 不传表示不动这一列
+// opts: { streaming: 0|1, sources: [...] } —— 不传表示不动这一列
 function updateMessageContent(msgId, content, opts) {
   var o = opts || {};
   var sets = ['content = ?'];
@@ -170,6 +199,10 @@ function updateMessageContent(msgId, content, opts) {
   if (o.streaming !== undefined) {
     sets.push('streaming = ?');
     params.push(o.streaming ? 1 : 0);
+  }
+  if (o.sources !== undefined) {
+    sets.push('sources = ?');
+    params.push(sourcesJson(o.sources));
   }
   params.push(Number(msgId));
 
@@ -225,7 +258,7 @@ function loadContextMessages(convId, limit) {
 
 var LIST_COLS = [
   'c.id, c.title, c.model_id, c.mode, c.study_style, c.persona, c.daily_style,',
-  'c.created_at, c.updated_at,',
+  'c.created_at, c.updated_at, COALESCE(c.hidden, 0) AS hidden,',
   // 最后一条**有内容**的助手消息作为预览：比取最后一条消息更有信息量
   //（最后一条往往就是学生刚问的那句话，等于没预览）
   '(SELECT substr(m.content, 1, 200) FROM ai_messages m',
@@ -262,15 +295,25 @@ function listConversations(userId, opts) {
   var limit = Math.min(Math.max(Number(o.limit || 30), 1), 100);
   var cur = parseCursor(o.cursor);
 
+  // 隐藏会话：默认**不带出**。includeHidden 只有"已解锁"的调用方才会传 true
+  // （chat 路由按 private-lock 的解锁态决定），隐藏内容对没解锁的人
+  // 表现为"这条会话不存在"——而不是"有一条但你看不了"。
+  var includeHidden = !!o.includeHidden;
+
   // ⚠️ params 必须**严格按 SQL 里占位符出现的顺序**推进来：
   //    LIST_COLS 的两个（role / content<>）在最前，然后是 WHERE 的各条件，
-  //    最后是 LIMIT。之前把顺序写乱过一次，症状是列表莫名其妙少了几条 —— 
+  //    最后是 LIMIT。之前把顺序写乱过一次，症状是列表莫名其妙少了几条 ——
   //    这种错不会报 SQL 异常，只会静默返回错的结果集。
   var params = ['assistant', ''];
   var where = [];
 
   where.push('c.user_id = ?');
   params.push(String(userId));
+
+  if (!includeHidden) {
+    // COALESCE 兜底：迁移 029 之前建的会话没有 hidden 列值时当作未隐藏
+    where.push('COALESCE(c.hidden, 0) = 0');
+  }
 
   if (mode) {
     where.push('c.mode = ?');
@@ -334,6 +377,10 @@ function serializeConversation(r) {
     // 渲染出公式/代码块只会把布局撑坏，而且 30 条同时渲染公式会明显掉帧。
     preview: String(r.preview || '').replace(/\s+/g, ' ').trim(),
     msg_count: Number(r.msg_count || 0),
+    // 隐藏标记：只有 includeHidden 拉回来的列表才可能有 hidden=1 的项，
+    // 前端据此给隐藏会话打标识。默认列表永远不带它（服务端已过滤），
+    // 所以这个字段对没解锁的调用方恒为 0，不额外透露信息。
+    hidden: Number(r.hidden || 0) === 1 ? 1 : 0,
     created_at: time.toISO(r.created_at),
     updated_at: time.toISO(r.updated_at)
   };
@@ -343,12 +390,17 @@ function serializeConversation(r) {
 function serializeMessage(m) {
   var attachments = [];
   try { attachments = JSON.parse(m.attachments || '[]'); } catch (e) { attachments = []; }
+  var sources = [];
+  try { sources = JSON.parse(m.sources || '[]'); } catch (e) { sources = []; }
+  if (!Array.isArray(sources)) sources = [];
   return {
     id: m.id,
     role: m.role,
     content: m.content,
     model_id: m.model_id,
     attachments: attachments,
+    // 联网搜索的来源（[n] 对应回答里的引用编号），没有就是空数组
+    sources: sources,
     source: m.source || 'chat',
     // 1 = 这一轮还在生成（前端据此轮询，见 019 迁移的说明）
     streaming: m.streaming ? 1 : 0,
@@ -491,6 +543,8 @@ module.exports = {
   loadContextMessages: loadContextMessages,
   countMessages: countMessages,
   listConversations: listConversations,
+  getConversationForRead: getConversationForRead,
+  setHidden: setHidden,
   serializeConversation: serializeConversation,
   serializeMessage: serializeMessage,
   settleStreamingMessages: settleStreamingMessages,

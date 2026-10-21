@@ -91,6 +91,33 @@ function isEnabled() {
   return config.mode === config.MODES.NODE && !!(config.relay.url && config.relay.secret);
 }
 
+// 本机是不是「中枢」（mesh 组网中心 / relay 专职中继）
+function isHubInstance() {
+  return config.mode === config.MODES.MESH || config.mode === config.MODES.RELAY;
+}
+
+// 席位是不是握在自己手里（未设置时默认就是自己）
+function seatIsSelf() {
+  var seat = String(initDb.getMeta('seat_instance', '') || '').trim();
+  return !seat || seat === config.instanceId;
+}
+
+// ---- 谁能看全校名册 ----
+//
+// 两条路径，缺一条「18 班给 8 班充钱」就走不通：
+//   · 节点且持有席位 —— 它是从云端拉回的镜像（isEnabled + is_seat_admin）；
+//   · **中枢自己** —— 名册是各节点报给它的，表就在本机库里。
+//
+// 第二种以前被漏掉了：中枢不是 NODE 模式，isEnabled() 恒 false，而
+// status.is_seat_admin 只有节点轮询 /sync/version 才会被填上 —— 中枢从不轮询自己，
+// 于是它永远 false。结果就是「中枢看得见 8 班的心跳和名册条数，管理台列表里
+// 却一个 8 班学生都没有」，充值无从下手。
+// 席位移交给别班后中枢同样不该再看（一致性：没席位就没全校可见性）。
+function canSeeRoster() {
+  if (isHubInstance()) return seatIsSelf();
+  return isEnabled() && status.is_seat_admin;
+}
+
 // 身份头：所有同步请求都带，中继据此心跳 + 看配置到达情况。
 // 老中继不认识这些头也没关系（HTTP 头就是给服务器自由裁量的）。
 // X-Cluss-Org：Cloud 多租户的学校编号（留空 = 自托管单校，走全局共享密钥）
@@ -258,9 +285,16 @@ function doPoll(force) {
     // 各自兜底：老中继没有 /sync/model-config（404）时，额度分配照常落地，
     // 不能因为模型配置这一路失败就把启动同步整体标成失败
     var boot = [
-      fetchAssignments().catch(function(err) { markError(err); return null; }),
-      fetchModelConfig().catch(function(err) { markError(err); return null; })
+      fetchAssignments().catch(function(err) { markError(err); return null; })
     ];
+    // 「不跟随中枢模型选择」的班，重启后也不能被覆盖一次 ——
+    // status 是内存态，这里从 meta 读上一轮记下的开关。
+    var bootModelSync = parseInt(initDb.getMeta('model_sync', '1'), 10) !== 0;
+    if (bootModelSync) {
+      boot.push(fetchModelConfig().catch(function(err) { markError(err); return null; }));
+    } else {
+      console.log('[Sync] 本班已关闭模型同步，启动时保留本机模型配置');
+    }
     // 启动时还不知道本班是不是席位（那要等下面那次轮询告诉咱们），
     // 所以用「以前拉到过花名册」当旁证：拉到过 = 曾经是席位，先补一次。
     // 全新学校第一次启动会等一个轮询周期（≤60s），换来的是非席位班
@@ -277,8 +311,21 @@ function doPoll(force) {
     var remote = (resp.data && resp.data.data) || {};
     var remoteAssign = remote.assign_version || 0;
     var remoteModel = remote.model_config_version || 0;
+
+    // 中枢可以按节点关掉模型同步（迁移 031）。关掉后：
+    //   · 不拉模型配置（本班保留自己的渠道/Key/单价）
+    //   · 也不更新本机记的版本号 —— 中枢靠节点上报的 last_model_version 判断
+    //     「跟到第几版」，写成中枢版本会让管理台显示成「已跟上」，实际没跟。
+    var modelSync = (remote.model_sync === undefined)
+      ? 1 : (Number(remote.model_sync) === 0 ? 0 : 1);
+    if (status.model_sync !== modelSync) {
+      status.model_sync = modelSync;
+      try { initDb.setMeta('model_sync', String(modelSync)); } catch (e) { /* 读不到就下轮再写 */ }
+      console.log('[Sync] 模型同步: %s', modelSync ? '跟随中枢' : '已关闭，保留本机配置');
+    }
+
     status.assign_version = remoteAssign;
-    status.model_version = remoteModel;
+    if (modelSync === 1) status.model_version = remoteModel;
 
     // 云端也回自己的时间。用它校正本机时钟偏移——教室电脑常年不校时，
     // 而用量记账按时间戳跨月统计，时间偏了账就偏了。
@@ -304,7 +351,7 @@ function doPoll(force) {
 
     var jobs = [];
     if (remoteAssign !== localAssignVersion()) jobs.push(fetchAssignments());
-    if (remoteModel !== localModelVersion()) jobs.push(fetchModelConfig());
+    if (modelSync === 1 && remoteModel !== localModelVersion()) jobs.push(fetchModelConfig());
 
     // 全校花名册：只有席位班才拉（云端对非席位班一律 403）。
     // 两个触发条件缺一不可 —— 只看版本号会漏掉「本机刚推完、云端同轮又被
@@ -571,9 +618,21 @@ function pushRoster() {
 
   var rows;
   try {
-    rows = db.prepare(
-      'SELECT user_id, net_name, real_name, class_no, is_admin, status FROM users ORDER BY user_id'
-    ).all();
+    // 额度必须跟着名册一起上行。
+    //
+    // 学生的钱是**在他自己所在班花掉的**，权威值只可能在那台机器的
+    // cluss_credit 里。中枢若不知道这个数，给外班学生充值时就会拿 0 当基数
+    // 叠加，算出「从零充起」的错账（实测：8 班学生实际有 ¥6666，中枢看到 0，
+    // 充 ¥1 后中枢记成 ¥1）—— 而额度下发是整表覆盖语义，一旦下发就会把
+    // 节点上那 ¥6666 直接冲掉。所以这个字段不是可选项，是账本正确性的前提。
+    rows = db.prepare([
+      'SELECT u.user_id, u.net_name, u.real_name, u.class_no, u.is_admin, u.status,',
+      '  COALESCE(c.allocated_micro, 0) AS allocated_micro,',
+      '  COALESCE(c.weekly_quota_micro, 0) AS weekly_quota_micro',
+      'FROM users u',
+      'LEFT JOIN cluss_credit c ON c.user_id = u.user_id',
+      'ORDER BY u.user_id'
+    ].join('\n')).all();
   } catch (err) {
     // 读不到名册就不能拿空数组去覆盖云端（那会把本班学生从全校名册里抹掉）
     status.last_push_roster_error = '读取本班名册失败: ' + err.message;
@@ -587,7 +646,9 @@ function pushRoster() {
       net_name: String(r.net_name || ''),
       real_name: String(r.real_name || ''),
       is_admin: r.is_admin === 1 ? 1 : 0,
-      status: String(r.status || 'active')
+      status: String(r.status || 'active'),
+      allocated_micro: Math.max(0, Math.round(Number(r.allocated_micro) || 0)),
+      weekly_quota_micro: Math.max(0, Math.round(Number(r.weekly_quota_micro) || 0))
     };
   });
 
@@ -599,7 +660,11 @@ function pushRoster() {
   }
 
   return axios.post(config.relay.url + '/api/sync/roster', {
-    items: items
+    items: items,
+    // 带上本机已应用的额度版本：中枢据此判断「我还有没有没被你拉走的改动」。
+    // 落后就说明中枢刚被管理员改过、下发还在路上 —— 这时中枢必须拒绝用
+    // 我这边的旧值覆盖，否则那笔充值会在抵达节点前被节点自己的上报抹掉。
+    assign_version: localAssignVersion()
   }, { timeout: TIMEOUT_MS, headers: headers() }).then(function(resp) {
     var data = (resp.data && resp.data.data) || {};
     // 成功才记哈希：失败不记 → 下一轮仍然重试（本机名册一直是「没同步」状态）
@@ -679,7 +744,7 @@ function listRoster(opts) {
   opts = opts || {};
   // 没有席位就没有全校可见性，镜像也应该是空的（云端 403 拉不到）。
   // 兜这一句是因为「席位被解绑」后旧镜像还留在库里 —— 不能继续拿它显示。
-  if (!isEnabled() || !status.is_seat_admin) return [];
+  if (!canSeeRoster()) return [];
 
   var where = [];
   var params = [];
@@ -719,7 +784,7 @@ function listRoster(opts) {
 
 // 单个外班学生（充值前要先拿到他的云端余额，才能在云端值上叠加）
 function getRosterRow(userId) {
-  if (!isEnabled() || !status.is_seat_admin) return null;
+  if (!canSeeRoster()) return null;
   try {
     return db.prepare('SELECT * FROM sync_roster WHERE user_id = ?').get(String(userId)) || null;
   } catch (e) {
@@ -730,18 +795,38 @@ function getRosterRow(userId) {
 // 充值写进镜像的乐观值（管理员马上要看到新数字）。
 // 云端权威值由下一轮 fetchRoster 覆盖 —— 推送失败时这正是唯一的自愈路径，
 // 所以无论成功失败都要置 roster_refetch_pending。
-function applyRosterAllocation(userId, allocatedMicro, weeklyMicro) {
-  if (!status.is_seat_admin) return false;
+function applyRosterAllocation(userId, allocatedMicro, weeklyMicro, meta) {
+  if (!canSeeRoster()) return false;
   try {
-    var hit = db.prepare('SELECT 1 FROM sync_roster WHERE user_id = ?').get(String(userId));
-    if (!hit) return false;
+    // 先取旧值：下面要算 delta 记流水
+    var row = db.prepare('SELECT allocated_micro FROM sync_roster WHERE user_id = ?').get(String(userId));
+    if (!row) return false;
+    var next = Math.max(0, Math.round(Number(allocatedMicro) || 0));
+    var weekly = Math.max(0, Math.round(Number(weeklyMicro) || 0));
+    // hub_quota_set 记的是**中枢的意图**：「这次改动还没被节点确认」。
+    // 归零时额度是 0，下行列表若只看 allocated_micro > 0 就会把它漏掉，
+    // 节点永远停在旧值 —— 管理台显示收回成功、钱却没退（迁移 030 的由来）。
     db.prepare(
-      'UPDATE sync_roster SET allocated_micro = ?, weekly_quota_micro = ? WHERE user_id = ?'
-    ).run(
-      Math.max(0, Math.round(Number(allocatedMicro) || 0)),
-      Math.max(0, Math.round(Number(weeklyMicro) || 0)),
-      String(userId)
-    );
+      'UPDATE sync_roster SET allocated_micro = ?, weekly_quota_micro = ?, hub_quota_set = 1 WHERE user_id = ?'
+    ).run(next, weekly, String(userId));
+
+    // 跨班改动也要留流水。
+    //
+    // 外班学生的钱不在本机账本（cluss_credit）里，如果连流水都不记，中枢这边
+    // 一条记录都没有 —— 管理员事后没法回答「我给 8 班充过多少、什么时候充的」，
+    // 流水页也永远只显示本班。origin_instance 写本机，标明这笔是从哪发起的。
+    var delta = next - Number(row.allocated_micro || 0);
+    var m = meta || {};
+    if (delta !== 0) {
+      db.prepare([
+        'INSERT INTO cluss_credit_log (user_id, amount_micro, kind, reason, operator_id, origin_instance, idem_key, created_at)',
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      ].join('\n')).run(
+        String(userId), delta, String(m.kind || 'topup'), String(m.reason || ''),
+        String(m.operator_id || ''), config.instanceId, null, time.nowUtc()
+      );
+    }
+
     status.roster_refetch_pending = true;
     return true;
   } catch (e) {
@@ -832,6 +917,9 @@ function getStatus() {
     is_seat_admin: status.is_seat_admin,
     seat_instance: status.seat_instance,
     seat_admin_at: status.seat_admin_at,
+    // 是否跟随中枢的模型选择（迁移 031）。0 = 本班用自己的模型配置，
+    // 额度与名单照常同步。面板要能回答「我这个班为什么模型没变」。
+    model_sync: (status.model_sync === undefined) ? 1 : status.model_sync,
     self_pushed_model_version: status.self_pushed_model_version,
     self_pushed_assign_version: status.self_pushed_assign_version,
     pending_policy: status.pending_policy,

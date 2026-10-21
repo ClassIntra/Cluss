@@ -723,6 +723,24 @@ PREFS_META.replyStyles.forEach(function(s) {
   if (s && s.value && s.prompt) PREF_STYLE_TEXT[s.value] = s.prompt;
 });
 
+// 默契度段：告诉模型"你和这个学生相处到什么程度"。
+//
+// 措辞上的两条纪律：
+//   ① 不暴露分数、等级数字与加分规则 —— 学生没问机制时，谈分数很煞风景；
+//   ② 低等级不讨好、高等级不炫耀 —— 只是语气里的熟络程度差异。
+// 拿不到状态（服务异常）时返回 ''，整段跳过，绝不影响其它段落。
+function buildAffinitySection(a) {
+  if (!a || !a.title) return '';
+  var parts = ['[默契度] 你和这名学生已经相处到「' + a.title + '」级'];
+  if (Number(a.streakDays) >= 3) {
+    parts.push('（他连续 ' + Number(a.streakDays) + ' 天来找你）');
+  }
+  parts.push('。这不是要你炫耀或提机制，而是说话时可以多一点老朋友的默契：'
+    + '熟悉的称呼、不必每次从头解释、记得他提过的事。'
+    + '默契度低时也不要刻意讨好，正常、清楚、友好就够。');
+  return '\n' + parts.join('');
+}
+
 function buildPrefsSection(p) {
   if (!p) return '';
 
@@ -841,7 +859,7 @@ function buildCiSection(ci) {
   // 棋类
   var gm = ci.games || {};
   var gbits = [];
-  if (gm.chess) gbits.push('国际象棋 ' + gm.chess + ' 局');
+  if (gm.chess) gbits.push('象棋 ' + gm.chess + ' 局');
   if (gm.gomoku) gbits.push('五子棋 ' + gm.gomoku + ' 局');
   if (gbits.length) lines.push('- 棋类：' + gbits.join('、'));
 
@@ -1094,6 +1112,11 @@ function getSystemPromptParts(opts) {
   // 措辞里已声明"可能过时，以他现在说的为准"。
   var memorySection = memorySvc.buildMemorySection(o.memories);
   if (memorySection) dyn.push(memorySection);
+
+  // 默契度段：紧接记忆之后。同样是"关于这个学生"的背景。
+  // 只描述相处状态，不暴露分数与规则（学生没问就不必谈机制）。
+  var affinitySection = buildAffinitySection(o.affinity);
+  if (affinitySection) dyn.push(affinitySection);
 
   // 积分余额：只在学生主动问时用它回答，规则见 BASE 第 14 条。
   // 它每轮都在变（每轮扣费），所以必须落在变化段里。

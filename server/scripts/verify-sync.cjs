@@ -166,18 +166,28 @@ function main() {
     });
   }).then(function() {
     section('② 额度下发 + 幂等');
-    var now = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    relayDb.prepare([
-      'INSERT INTO cluss_credit (user_id, allocated_micro, weekly_quota_micro, updated_at, assigned_by)',
-      'VALUES (?, 5000000, 0, ?, ?)' // 5 元
-    ].join('\n')).run(STUDENT_ID, now, 'relay-verify');
-    relayDb.prepare("INSERT INTO cluss_meta (key, value) VALUES ('assign_version', '1') " +
-      'ON CONFLICT(key) DO UPDATE SET value = excluded.value').run();
+    // 中枢给**节点班**的学生充值，落地对象是 sync_roster —— 这就是管理台上
+    // 「给外班学生充值」走的 applyRosterAllocation 那条路（2026-10 mesh 改造）：
+    // GET /assignments 只按 instance_id 从 sync_roster 取数，直插 cluss_credit
+    // 的老路只对不带实例头的全局密钥节点生效，对有 instance 的节点永远发不出去。
+    return waitUntil('节点名册已上到中枢', function() {
+      var r = relayDb.prepare(
+        'SELECT allocated_micro FROM sync_roster WHERE user_id = ? AND instance_id = ?'
+      ).get(STUDENT_ID, NODE_INSTANCE);
+      return r || null;
+    }, 8000).then(function() {
+      relayDb.prepare([
+        'UPDATE sync_roster SET allocated_micro = 5000000, weekly_quota_micro = 0,',
+        ' hub_quota_set = 1 WHERE user_id = ? AND instance_id = ?'
+      ].join('\n')).run(STUDENT_ID, NODE_INSTANCE); // 5 元
+      relayDb.prepare("INSERT INTO cluss_meta (key, value) VALUES ('assign_version', '1') " +
+        'ON CONFLICT(key) DO UPDATE SET value = excluded.value').run();
 
-    return waitUntil('节点落地分配', function() {
-      var row = nodeDb.prepare('SELECT allocated_micro FROM cluss_credit WHERE user_id = ?').get(STUDENT_ID);
-      return row && row.allocated_micro === 5000000 ? row : null;
-    }, 8000);
+      return waitUntil('节点落地分配', function() {
+        var row = nodeDb.prepare('SELECT allocated_micro FROM cluss_credit WHERE user_id = ?').get(STUDENT_ID);
+        return row && row.allocated_micro === 5000000 ? row : null;
+      }, 8000);
+    });
   }).then(function() {
     // 轮询是每秒一次的，等 3 秒确认幂等键没有重复记流水
     return new Promise(function(r) { setTimeout(r, 3000); }).then(function() {

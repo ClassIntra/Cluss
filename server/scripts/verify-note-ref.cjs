@@ -11,8 +11,16 @@
  * 用回显 mock：它把收到的完整 prompt 原样回吐成回复，
  * 断言「模型实际看到什么」而不是猜。
  *
+ * ⚠️ 为什么不用管理员账号跑对话：
+ *    user-profile.buildProfile 对 is_admin=1 的账号**直接返回 null**（管理员不刷题，
+ *    给他算画像没有意义）。用管理员登录时画像段整段缺席，第 2 组措辞断言必然失败，
+ *    而且失败信息会指向"措辞没改口"，完全误导。
+ *    所以本脚本自建一个探针学生（register + 复用），由管理员给它充值，
+ *    再用学生身份发问 —— 这样断言的才是真实学生的链路。
+ *
  * 跑法：node server/scripts/verify-note-ref.cjs [baseUrl]
- * 前置：mock-echo-server(MOCK_ECHO_PORT=9217) + 实例(9060, 模型指向 mock)
+ * 前置：mock-echo-server(MOCK_ECHO_PORT=9217) + 实例(9050, 模型指向 mock)，
+ *       且实例的管理员账号为 uitester/Test1234（用于给探针学生充值）
  */
 const http = require('http');
 
@@ -25,13 +33,18 @@ function check(name, ok, detail) {
 }
 
 function post(path, body, token) {
+  return request('POST', path, body, token);
+}
+
+function request(method, path, body, token) {
   return new Promise(function (resolve, reject) {
-    const data = JSON.stringify(body);
+    const data = body ? JSON.stringify(body) : '';
     const u = new URL(BASE + path);
-    const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) };
+    const headers = { 'Content-Type': 'application/json' };
+    if (data) headers['Content-Length'] = Buffer.byteLength(data);
     if (token) headers.Authorization = 'Bearer ' + token;
     const req = http.request({
-      hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: 'POST',
+      hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: method,
       headers: headers
     }, function (res) {
       let d = '';
@@ -39,9 +52,57 @@ function post(path, body, token) {
       res.on('end', function () { resolve({ status: res.statusCode, body: d }); });
     });
     req.on('error', reject);
-    req.write(data);
+    if (data) req.write(data);
     req.end();
   });
+}
+
+function dataOf(res) {
+  try { return (JSON.parse(res.body) || {}).data || {}; } catch (e) { return {}; }
+}
+
+// 探针学生：固定网名/姓名，重复跑不重复建号（register 冲突则直接登录）。
+const STU_NET = 'nr_probe_student';
+const STU_NAME = '笔记引用探针';
+const STU_PWD = 'Test1234';
+
+// 拿到一个**学生**身份（不是管理员）。返回 { token, userId }。
+async function ensureStudent(adminToken) {
+  const lg = await post('/api/auth/login', { account: STU_NET, password: STU_PWD });
+  const lgData = dataOf(lg);
+  if (lgData.token) {
+    return { token: lgData.token, userId: (lgData.user_info || {}).user_id, created: false };
+  }
+
+  const reg = await post('/api/auth/register', {
+    net_name: STU_NET, real_name: STU_NAME, password: STU_PWD, confirm_password: STU_PWD,
+    enrollment_year: new Date().getFullYear(), class_no: 9
+  });
+  const regData = dataOf(reg);
+  if (!regData.token) {
+    throw new Error('探针学生注册失败：' + (JSON.parse(reg.body) || {}).message);
+  }
+  const userId = (regData.user_info || {}).user_id;
+
+  // 充值：对话要扣费，余额为 0 会直接 402。
+  // 只在余额确实不够时充，避免反复跑把额度越堆越高。
+  const put = await request('PUT', '/api/admin/users/' + encodeURIComponent(userId) + '/quota',
+    { quota_yuan: 100, reason: 'verify-note-ref 探针学生' }, adminToken);
+  if (put.status !== 200) {
+    throw new Error('探针学生充值失败：HTTP ' + put.status + ' ' + put.body.substring(0, 120));
+  }
+  return { token: regData.token, userId: userId, created: true };
+}
+
+// 老账号复跑时余额可能已被上一轮用掉，补一次（够用就不补）。
+async function ensureBalance(adminToken, userId) {
+  const q = await request('GET', '/api/admin/users?keyword=' + encodeURIComponent(userId), null, adminToken);
+  const list = (dataOf(q).users || []);
+  const row = list.filter(function (u) { return u.user_id === userId; })[0];
+  if (row && (row.allocated_micro - row.used_micro) >= 5000000) return 0;
+  const put = await request('PUT', '/api/admin/users/' + encodeURIComponent(userId) + '/quota',
+    { quota_yuan: 100, reason: 'verify-note-ref 探针学生补额' }, adminToken);
+  return put.status === 200 ? 100 : -1;
 }
 
 // SSE 流式收完，把 delta 拼成整段回复
@@ -82,10 +143,17 @@ function sendStream(body, token) {
 (async function () {
   console.log('引用笔记端到端验证\n');
 
-  // 登录
-  const login = await post('/api/auth/login', { account: 'uitester', password: 'Test1234' });
-  const token = (JSON.parse(login.body).data || {}).token;
-  if (!token) { console.error('登录失败'); process.exit(2); }
+  // 管理员只用来给探针学生充值；对话一律用学生身份（管理员没有画像）
+  const adminLogin = await post('/api/auth/login', { account: 'uitester', password: 'Test1234' });
+  const adminToken = dataOf(adminLogin).token;
+  if (!adminToken) { console.error('管理员登录失败（需要 uitester/Test1234 给探针学生充值）'); process.exit(2); }
+
+  const stu = await ensureStudent(adminToken);
+  console.log('探针学生：' + stu.userId + (stu.created ? '（本轮新建）' : '（复用）'));
+  const topped = await ensureBalance(adminToken, stu.userId);
+  if (topped < 0) { console.error('探针学生余额不足且充值失败'); process.exit(2); }
+  console.log('余额：' + (topped > 0 ? '已充值 ¥' + topped : '充足') + '\n');
+  const token = stu.token;
 
   // 造一篇云笔记（与前端同口径：客户端生成字符串 id）
   const noteId = 'note_e2e_nr_' + Date.now();
@@ -108,6 +176,10 @@ function sendStream(body, token) {
 
   // ---- 2. 措辞分流：引用时说"看得到"，未引用说"并不知道正文" ----
   console.log('\n【2】画像措辞随是否引用而分流');
+  // 前置断言：画像段真的进了 prompt。缺席时下面的措辞断言会以"仍是旧措辞"报错，
+  // 把根因（账号没有画像 / 开关关了 / 学生偏好关掉了学习记录）掩盖成措辞问题。
+  check('前置：画像段已进 prompt', r1.reply.indexOf('【关于这个学生】') >= 0,
+    r1.reply.indexOf('【关于这个学生】') >= 0 ? '在场' : '缺席（查 is_admin / useRecords 开关）');
   check('引用时：画像改口「你**看得到**」', r1.reply.indexOf('看得到') >= 0 &&
     r1.reply.indexOf('并不知道正文') < 0,
     r1.reply.indexOf('看得到') >= 0 ? '已改口' : '仍是旧措辞');

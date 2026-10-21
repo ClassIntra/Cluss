@@ -3,6 +3,7 @@ import Vuex from 'vuex';
 import authStore from './auth';
 import themeStore from './theme';
 import wrongBookStore from './wrong-book';
+import lockStore from './lock';
 
 Vue.use(Vuex);
 
@@ -10,7 +11,8 @@ var store = new Vuex.Store({
   modules: {
     auth: authStore,
     theme: themeStore,
-    wrongBook: wrongBookStore
+    wrongBook: wrongBookStore,
+    lock: lockStore
   },
   state: {
     toast: null,

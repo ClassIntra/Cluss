@@ -9,23 +9,19 @@
     </div>
 
     <!-- 总开关 -->
-    <label class="master-row" :class="{ 'is-off': !enabled }">
+    <label class="master-row" :class="{ 'is-on': enabled, 'is-off': !enabled }">
       <div class="master-text">
         <div class="master-name">让 AI 参考我的校园信息</div>
         <div class="master-desc tiny muted">
           {{ enabled ? '已开启' : '已关闭，AI 完全不使用这些信息' }}
         </div>
       </div>
-      <span class="switch" :class="{ 'is-on': enabled }">
-        <input
-          type="checkbox"
-          :checked="enabled"
-          :disabled="busy"
-          aria-label="让 AI 参考我的校园信息"
-          @change="toggleMaster"
-        />
-        <span class="switch-track"><span class="switch-knob"></span></span>
-      </span>
+      <ToggleSwitch
+        :checked="enabled"
+        :disabled="busy"
+        label="让 AI 参考我的校园信息"
+        @change="toggleMaster"
+      />
     </label>
 
     <!-- 取不到素材：说清是"暂时"，并给一个可以自己点的刷新 -->
@@ -61,16 +57,12 @@
             <div v-else class="row-desc tiny muted">{{ it.text }}</div>
           </div>
 
-          <span class="switch" :class="{ 'is-on': enabled && it.on }">
-            <input
-              type="checkbox"
-              :checked="enabled && it.on"
-              :disabled="busy || !enabled"
-              :aria-label="'让 AI 参考' + it.label"
-              @change="toggleItem(it)"
-            />
-            <span class="switch-track"><span class="switch-knob"></span></span>
-          </span>
+          <ToggleSwitch
+            :checked="enabled && it.on"
+            :disabled="busy || !enabled"
+            :label="'让 AI 参考' + it.label"
+            @change="toggleItem(it, $event)"
+          />
         </div>
       </div>
 
@@ -101,8 +93,12 @@
 // 独立性：CI 未联动时父组件根本不会渲染本组件，
 // 且本组件拿到的 linked=false 也不渲染任何内容 —— 独立部署下它不存在。
 
+// 开关外观走全站唯一的那个组件（此前本文件自带一套，与设置弹窗尺寸/配色都不同）
+import ToggleSwitch from './ToggleSwitch.vue';
+
 export default {
   name: 'CampusContext',
+  components: { ToggleSwitch },
   data: function() {
     return {
       linked: false,
@@ -164,9 +160,11 @@ export default {
       });
     },
 
-    toggleMaster: function() {
+    // next 由开关组件给出（DOM 已经点过了）：这里不自己取反 ——
+    // 自取反会和组件的受控回写打架，快速连点时状态会来回跳
+    toggleMaster: function(next) {
       var self = this;
-      var next = !this.enabled;
+      next = !!next;
       this.busy = true;
       // 乐观更新：开关要跟手，不能等网络回来才动（触屏上尤其明显）
       this.enabled = next;
@@ -182,9 +180,9 @@ export default {
       });
     },
 
-    toggleItem: function(it) {
+    toggleItem: function(it, next) {
       var self = this;
-      var next = !it.on;
+      next = !!next;
       this.busy = true;
       it.on = next;
 
@@ -226,18 +224,40 @@ export default {
 }
 
 /* ---------- 总开关 ---------- */
+/* 与设置弹窗里的「参考我的历史数据」同款：都是"整行可点的开关卡片"，
+   所以边框、底色、开启态的强调色必须一样，否则两个面板像两个产品。 */
 .master-row {
   display: flex;
   align-items: center;
   padding: 11px 12px;
+  border: 1px solid var(--ink-3);
   border-radius: var(--radius-md);
   background: var(--ink-1);
   cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.master-row.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+@media (hover: hover) {
+  /* 只放 hover 规则本身 —— 顺手写进来的常规样式会变成"只在有鼠标的设备生效" */
+  .master-row:hover {
+    border-color: var(--accent);
+  }
 }
 
 .master-text {
   flex: 1;
   min-width: 0;
+}
+
+/* 开关不再自带外边距（原先写在校内那套 .switch 上），由使用处决定呼吸距离 */
+.master-row > .tgl,
+.row > .tgl {
+  margin-left: 10px;
 }
 
 .master-name {
@@ -253,97 +273,6 @@ export default {
 /* 总开关关掉时整块压暗一档：一眼看出"这一片都不生效了" */
 .master-row.is-off .master-name {
   color: var(--text-secondary);
-}
-
-/* ---------- 滑块开关 ---------- */
-/*
- * 为什么不用原生 checkbox：它在 Chrome 里只有 13px 见方，
- * 触屏上既看不清也点不准（项目红线：常显控件命中区至少 40px）。
- * 这里做成 46×28 的滑块，再用 ::after 把命中区撑到 44px 高。
- * input 视觉上隐藏但**保留在文档流里**（不用 display:none）——
- * 键盘 focus 与读屏都还能工作。
- */
-.switch {
-  position: relative;
-  flex-shrink: 0;
-  margin-left: 10px;
-}
-
-.switch input {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 46px;
-  height: 28px;
-  margin: 0;
-  opacity: 0;
-  cursor: pointer;
-  z-index: 2;
-}
-
-/* 命中区向四周撑开（视觉不变） */
-.switch::after {
-  content: '';
-  position: absolute;
-  left: -4px;
-  right: -4px;
-  top: 50%;
-  height: 44px;
-  transform: translateY(-50%);
-  background: transparent;
-  z-index: 1;
-}
-
-.switch-track {
-  display: block;
-  width: 46px;
-  height: 28px;
-  border-radius: 14px;
-  background: var(--ink-3);
-  transition: background var(--transition);
-}
-
-.switch-knob {
-  display: block;
-  width: 24px;
-  height: 24px;
-  margin: 2px;
-  border-radius: 50%;
-  background: var(--text-primary);
-  /* 位移用 transform（合成层），不用 margin/left（会触发重排） */
-  transform: translateX(0);
-  transition: transform var(--transition);
-}
-
-.switch.is-on .switch-track {
-  background: var(--accent);
-}
-
-.switch.is-on .switch-knob {
-  transform: translateX(18px);
-}
-
-/* 禁用态（总开关关着时，逐项不可操作） */
-.switch input:disabled {
-  cursor: not-allowed;
-}
-
-.switch input:disabled + .switch-track {
-  opacity: 0.5;
-}
-
-@media (hover: hover) {
-.switch:hover .switch-track {
-  background: var(--ink-4, var(--ink-3));
-}
-.switch.is-on:hover .switch-track {
-  background: var(--accent);
-}
-}
-
-/* 键盘可见焦点（触屏不显示，靠 :focus-visible 区分） */
-.switch input:focus-visible + .switch-track {
-  box-shadow: 0 0 0 2px var(--accent);
 }
 
 /* ---------- 列表 ---------- */

@@ -1563,9 +1563,12 @@ html.no-flex-gap .dc-anno-tools > * + * {
   border: 2px solid var(--border-color);
   border-radius: var(--radius-sm);
   overflow: hidden;
-  /* 缩略图底色跟随主题：它映射的是画布区域，画布底色变了它也该变。
-     写死 #fff 的话深色模式下会出现「深色画布上浮一块纯白缩略图」。 */
-  background: var(--surface-1);
+  /* 缩略图底色跟随主题：它映射的是画布空白区，workspace 用什么色它就用什么色
+     （--code-fg 浅灰，深浅主题下都能看清画布边界）。
+     以前用 --surface-1（深色下 5% 白）看起来"差不多"，实测是坑：小地图浮在
+     有图形的画布区域上，半透明层会把背后的真实笔迹透出来，跟缩略图里的
+     同一批笔迹叠在一起，越花的地方越糊。实底 + 2px 描边才分得清"图"与"实物"。 */
+  background: var(--code-fg);
   box-shadow: var(--shadow-md);
   cursor: pointer;
 }

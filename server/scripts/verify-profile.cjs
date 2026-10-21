@@ -1,6 +1,7 @@
 // 验证学生画像：学号解析、画像构建、提示词段落渲染
 //
-// 错题与会话用事务插入后回滚，不污染真实数据。
+// 演示学生、错题与会话全部在**同一个事务**里播种 / 插入，结束抛错回滚，
+// 不污染真实数据（演示学生本就存在的机器上则原样不动）。
 // 用法：cd server && node scripts/verify-profile.cjs
 require('dotenv').config();
 
@@ -23,20 +24,34 @@ ok(profile.parseStudentNo('800001') === null, '保留段 800001 不反推年级'
 ok(profile.parseStudentNo('abc') === null, '非数字学号返回 null');
 ok(profile.parseStudentNo('') === null, '空学号返回 null');
 
-console.log('\n[2] 真实账号的画像');
-var adminProfile = profile.buildProfile('999999');
-ok(adminProfile === null, '管理员不生成画像');
-
-var demoProfile = profile.buildProfile('250301', { force: true });
-ok(!!demoProfile, '演示学生有画像');
-ok(demoProfile && demoProfile.enrollYear === 2025, '入学年份 = 2025');
-ok(demoProfile && demoProfile.classNo === 3, '班级 = 3');
-
-console.log('\n[3] 用假数据验证完整段落（事务内，随后回滚）');
+console.log('\n[2] 演示学生 + 真实账号的画像（事务内播种，回滚不留痕）');
 var rendered = '';
+var insertedDemo = false;
 try {
   db.transaction(function() {
     var now = require('../src/utils/time').nowUtc();
+    // 自给自足：不依赖生产库里预置的演示学生 —— 演示数据被重置过的机器上，
+    // 旧版这个脚本会从「演示学生有画像」开始全红。缺了就自己在事务里种一个，
+    // 回滚时连人带数据一起消失（[5] 会验）。
+    var demoExists = db.prepare('SELECT 1 AS x FROM users WHERE user_id = ?').get('250301');
+    if (!demoExists) {
+      db.prepare([
+        'INSERT INTO users (user_id, net_name, real_name, password_hash, status, is_admin,',
+        " info_json, source, class_no, created_at) VALUES ('250301', 'demo-student', '演示学生',",
+        " 'x', 'active', 0, '{}', 'local', '', ?)"
+      ].join('\n')).run(now);
+      insertedDemo = true;
+    }
+
+    var adminProfile = profile.buildProfile('999999');
+    ok(adminProfile === null, '管理员不生成画像');
+
+    var demoProfile = profile.buildProfile('250301', { force: true });
+    ok(!!demoProfile, '演示学生有画像');
+    ok(demoProfile && demoProfile.enrollYear === 2025, '入学年份 = 2025');
+    ok(demoProfile && demoProfile.classNo === 3, '班级 = 3');
+
+    console.log('\n[3] 用假数据验证完整段落（同一事务内，随后回滚）');
     var ins = db.prepare([
       'INSERT INTO wrong_questions (user_id, conversation_id, image_hash, source, subject,',
       ' question, student_answer, correct_answer, reason, tag, mastered, note, created_at, updated_at)',
@@ -85,10 +100,21 @@ ok(rendered.indexOf('不要复述') > 0, '段落含使用约束');
 ok(rendered.length < 400, '画像段落控制在 400 字内，实际 ' + rendered.length);
 
 console.log('\n[5] 回滚是否干净');
-var left = db.prepare('SELECT COUNT(*) c FROM wrong_questions').get().c;
+// 只数自己插的那五条：库里本来有真实错题（用过一阵的机器上都有一条），
+// 旧版断言「整表为 0」是把环境当时的状态当成了不变量。
+var left = db.prepare([
+  "SELECT COUNT(*) c FROM wrong_questions WHERE user_id = '250301' AND question IN",
+  " ('求二次函数最值','二次函数与 x 轴交点','斜面受力分析','时态填空','方程式配平')"
+].join('\n')).get().c;
 var leftConv = db.prepare("SELECT COUNT(*) c FROM ai_conversations WHERE id = 'conv-test-1'").get().c;
-ok(left === 0, '假错题已回滚，剩余 ' + left);
+ok(left === 0, '播种的假错题已回滚，剩余 ' + left);
 ok(leftConv === 0, '假会话已回滚');
+if (insertedDemo) {
+  var leftUser = db.prepare("SELECT COUNT(*) c FROM users WHERE user_id = '250301'").get().c;
+  ok(leftUser === 0, '事务里播种的演示学生也回滚了，剩余 ' + leftUser);
+} else {
+  ok(true, '演示学生本就存在（未播种），原样不动');
+}
 
 console.log('\n[6] 上下文截断说明');
 ok(prompts.buildContextNote({ history_available: 10, history_included: 4 }).indexOf('6 条') > 0,

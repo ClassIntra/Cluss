@@ -268,6 +268,15 @@ html.no-flex-gap .msel-trigger > * + * {
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
+/* Chrome 80 WebView 不认识 :focus-visible，上面那条整条失效。
+   兜底轨道：main.js 探测到旧内核会给 <html> 打 no-focus-visible，
+   真正按 Tab 时再挂 kbd-focus —— 两条都满足才画环，触屏点击不画。
+   少了这一段，键盘导航到模型选择器时只有全局 outline、没有本组件的强调环。 */
+html.no-focus-visible.kbd-focus .msel-trigger:focus {
+  border-color: var(--accent-border-strong);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
 .msel-open .msel-trigger {
   border-color: var(--accent-border-strong);
 }

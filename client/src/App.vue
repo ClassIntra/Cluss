@@ -12,6 +12,9 @@
     <!-- 全局确认弹窗（替代 window.confirm，见 store 的 confirm action） -->
     <ConfirmDialog />
 
+    <!-- 全局密码弹窗：隐藏会话与私密笔记共用的解锁入口（见 store/lock） -->
+    <LockPrompt />
+
     <!-- 全局轻提示 -->
     <transition name="toast">
       <div v-if="toast" :key="toast.id" class="toast" :class="'toast-' + toast.type" role="status">
@@ -24,6 +27,7 @@
 <script>
 import TabBar from './components/TabBar.vue';
 import ConfirmDialog from './components/ConfirmDialog.vue';
+import LockPrompt from './components/LockPrompt.vue';
 import navItems from './utils/nav-items';
 
 // 学生主导航页的先后次序：决定切页动画往左还是往右。
@@ -35,7 +39,7 @@ navItems.forEach(function(item, index) {
 
 export default {
   name: 'App',
-  components: { TabBar, ConfirmDialog },
+  components: { TabBar, ConfirmDialog, LockPrompt },
   data: function() {
     return {
       pageAnim: 'page-fade'

@@ -15,6 +15,7 @@ var prompts = require('../services/prompt-registry');
 var personaStore = require('../services/persona-store');
 var constants = require('../utils/constants');
 var conv = require('../services/conversation-core');
+var privateLock = require('../services/private-lock');
 var turnRunner = require('../services/turn-runner');
 
 // ============================================================
@@ -59,11 +60,16 @@ router.get('/models', auth.requireAuth, function(req, res) {
 // 前端拿到 has_more=false 就停止请求 —— 之前这里没有分页，服务端硬砍到 300 条，
 // 第 301 个会话永远看不见且前端无从察觉。
 router.get('/conversations', auth.requireAuth, function(req, res) {
+  // 隐藏会话只在"已解锁"时才带出：没解锁时列表里根本不出现，
+  // 与"从来没有过这条会话"无法区分——不透露存在性。
+  var unlocked = false;
+  try { unlocked = privateLock.isUnlocked(req.user.user_id); } catch (e) {}
   var out = conv.listConversations(req.user.user_id, {
     mode: String(req.query.mode || '').trim(),
     q: String(req.query.q || '').trim(),
     limit: req.query.limit,
-    cursor: req.query.cursor
+    cursor: req.query.cursor,
+    includeHidden: unlocked && String(req.query.include_hidden || '') === '1'
   });
   res.json({
     code: 200,
@@ -94,11 +100,15 @@ router.post('/conversations', auth.requireAuth, function(req, res) {
 });
 
 router.get('/conversations/:id', auth.requireAuth, function(req, res) {
-  var row = conv.getConversation(req.params.id, req.user.user_id);
+  // 未解锁时打开隐藏会话返回与"会话不存在"完全相同的 404：
+  // 不告诉别人"这条是存在的，只是锁着"。
+  var unlocked = false;
+  try { unlocked = privateLock.isUnlocked(req.user.user_id); } catch (e) {}
+  var row = conv.getConversationForRead(req.params.id, req.user.user_id, unlocked);
   if (!row) return res.status(404).json({ code: 404, message: '会话不存在' });
 
   var msgs = db.prepare(
-    'SELECT id, role, content, model_id, attachments, source, streaming, created_at FROM ai_messages WHERE conversation_id = ? ORDER BY id ASC'
+    'SELECT id, role, content, model_id, attachments, source, streaming, sources, created_at FROM ai_messages WHERE conversation_id = ? ORDER BY id ASC'
   ).all(row.id);
 
   res.json({
@@ -112,7 +122,9 @@ router.get('/conversations/:id', auth.requireAuth, function(req, res) {
 });
 
 router.patch('/conversations/:id', auth.requireAuth, function(req, res) {
-  var row = conv.getConversation(req.params.id, req.user.user_id);
+  var unlocked0 = false;
+  try { unlocked0 = privateLock.isUnlocked(req.user.user_id); } catch (e) {}
+  var row = conv.getConversationForRead(req.params.id, req.user.user_id, unlocked0);
   if (!row) return res.status(404).json({ code: 404, message: '会话不存在' });
 
   var title = String(req.body.title || '').trim();
@@ -154,6 +166,11 @@ router.put('/conversations/:id/mode', auth.requireAuth, function(req, res) {
     dailyStyle = prompts.normalizeDailyStyle(raw);
   }
 
+  var unlocked1 = false;
+  try { unlocked1 = privateLock.isUnlocked(req.user.user_id); } catch (e) {}
+  var cur = conv.getConversationForRead(req.params.id, req.user.user_id, unlocked1);
+  if (!cur) return res.status(404).json({ code: 404, message: '会话不存在' });
+
   var row = conv.updateConversationMode(req.params.id, req.user.user_id, mode, studyStyle, dailyStyle);
   if (!row) return res.status(404).json({ code: 404, message: '会话不存在' });
 
@@ -161,10 +178,37 @@ router.put('/conversations/:id/mode', auth.requireAuth, function(req, res) {
 });
 
 router.delete('/conversations/:id', auth.requireAuth, function(req, res) {
+  // 删除同样要先过 hidden 门：没解锁时连"删得掉"都不该发生，
+  // 否则可以靠"试删"来探测某条会话是否存在。
+  var unlocked2 = false;
+  try { unlocked2 = privateLock.isUnlocked(req.user.user_id); } catch (e) {}
+  if (!conv.getConversationForRead(req.params.id, req.user.user_id, unlocked2)) {
+    return res.status(404).json({ code: 404, message: '会话不存在' });
+  }
   if (!conv.deleteConversation(req.params.id, req.user.user_id)) {
     return res.status(404).json({ code: 404, message: '会话不存在' });
   }
   res.json({ code: 200, message: '已删除', data: null });
+});
+
+// 隐藏 / 取消隐藏一条会话。
+// 设计取舍：**隐藏不需要密码，取消隐藏必须已解锁**。
+// 理由与笔记一致——"不想让人看见"是即兴动作（旁边有人、临时借设备），
+// 要求先输密码会让这个动作慢到不可用；而"重新放出"是有意的主动行为，
+// 此时要密码正合适。改成两边都要密码的方案看起来更严，实际会把主功能废掉。
+router.post('/conversations/:id/hide', auth.requireAuth, function(req, res) {
+  var wantHidden = !!req.body.hidden;
+  var unlocked = false;
+  try { unlocked = privateLock.isUnlocked(req.user.user_id); } catch (e) {}
+
+  if (!wantHidden && !unlocked) {
+    // 不透露"存在但锁着"，与真 404 同形
+    return res.status(404).json({ code: 404, message: '会话不存在' });
+  }
+
+  var out = conv.setHidden(req.params.id, req.user.user_id, wantHidden);
+  if (!out.ok) return res.status(404).json({ code: 404, message: '会话不存在' });
+  res.json({ code: 200, message: out.message, data: { hidden: out.hidden } });
 });
 
 // ============================================================
@@ -186,6 +230,17 @@ router.post('/chat/stream', auth.requireAuth, function(req, res) {
   // 两者都是有效值，所以判据是"非空"而不是"不等于默认值"。
   if (persona) conversation.persona = persona;
   if (dailyStyle) conversation.daily_style = dailyStyle;
+
+  if (conversation.id) {
+    // 隐藏会话未解锁时**不能继续往里发消息**。
+    // 少了这道门的话：列表看不见 → 但知道 id 的人仍然能对话，
+    // "隐藏"就退化成了"列表里不显示"，锁毫无意义。
+    var streamUnlocked = false;
+    try { streamUnlocked = privateLock.isUnlocked(req.user.user_id); } catch (e) {}
+    if (!conv.getConversationForRead(conversation.id, req.user.user_id, streamUnlocked)) {
+      return res.status(404).json({ code: 404, message: '会话不存在' });
+    }
+  }
 
   turnRunner.runStreamTurn({
     req: req,

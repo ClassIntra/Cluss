@@ -3,7 +3,11 @@
 //
 // 场景就是这次要解决的那件事：
 //   18 班持有管理员席位（写入权），8 班没有。18 班班管要在自己页面上
-//   看到 8 班学生并给他们充钱；8 班自己则只能看，改不动。
+//   看到 8 班学生并给他们充钱；8 班自己则只能看外班、改本班。
+//
+//   ⚠️ 2026-10-21 修正（用户实测反馈）：旧门禁是「非席位班一律 403」，
+//   连 8 班班管给自己班学生充值都挡 —— 那是自己班的账，本来就该能改。
+//   现在粒度按学生：本班放行、外班看席位。
 //
 // 这里起两个**真实**节点子进程 + 一个假云端（云端真身由 Cluss-Cloud 仓库的
 // scripts/verify.cjs 覆盖，两边各自验证「自己那半」，合起来才是整条链路）：
@@ -13,7 +17,7 @@
 //   ③ 合并：席位班 GET /admin/users 多出带「外班」标的行（source=roster）
 //   ④ 充值：给外班学生充值 → 镜像乐观值 + 走云端账本 → **他那个班的节点
 //      真的收到额度**（这是整件事的验收点）
-//   ⑤ 边界：外班的钱不进本机台账；非席位班改额度被 403 挡住
+//   ⑤ 边界：外班的钱不进本机台账；非席位班改外班额度被 403 挡住、改本班放行
 //
 // 跑法：node server/scripts/verify-roster.cjs
 // 不碰 server/database/cluss.db（两个子进程都用临时库）。
@@ -454,7 +458,7 @@ function login(url, account, password) {
   });
   ok('归零也下发到了 8 班（停用学生的额度停得掉）', true);
 
-  section('⑥ 非席位班（8 班自己）：看得见本班，改不动');
+  section('⑥ 非席位班（8 班自己）：外班只能看，本班账自己管');
   var otherToken = await login(otherUrl, OTHER_ADMIN_ID, OTHER_ADMIN_PW);
   var otherList = await axios.get(otherUrl + '/api/admin/users', {
     timeout: 5000, headers: { Authorization: 'Bearer ' + otherToken }
@@ -465,24 +469,42 @@ function login(url, account, password) {
     otherUsers.every(function(u) { return !u.remote && u.source !== 'roster'; }),
     JSON.stringify(otherUsers.map(function(u) { return u.user_id; })));
 
+  // 本班学生：自己班的账，天然有权（旧门禁在这里误挡，2026-10-21 修）
   var otherPut, otherPutErr = null;
   try {
     otherPut = await axios.put(otherUrl + '/api/admin/users/080101/quota', { quota_yuan: 1 },
       { timeout: 5000, headers: { Authorization: 'Bearer ' + otherToken } });
   } catch (e) { otherPut = e.response || { status: 0 }; otherPutErr = e; }
-  ok('8 班给自己学生充值也被拒（403，席位不在本班）', otherPut.status === 403,
+  ok('8 班给自己学生充值放行（本班账自己管，不需要全校席位）', otherPut.status === 200,
     'HTTP ' + otherPut.status + ' ' + JSON.stringify(otherPut.data));
+  ok('响应不带 remote 标记（这是本班学生，不是云端账本）',
+    otherPut.data && otherPut.data.data && otherPut.data.data.remote === false,
+    JSON.stringify(otherPut.data));
+  // 看钱不看状态码：钱必须真的落在 8 班自己的账本上（§④⑤ 之后 080101 已归零）
+  await waitUntil('8 班本机账本真的加了钱', function() {
+    var r = otherDb.prepare('SELECT allocated_micro FROM cluss_credit WHERE user_id = ?').get('080101');
+    return r && r.allocated_micro === 1000000 ? r : null;
+  });
+  ok('¥1 落在 8 班自己的账本上（不是只返回 200）', true);
 
   var otherForeign, otherForeignErr = null;
   try {
     otherForeign = await axios.put(otherUrl + '/api/admin/users/180101/quota', { quota_yuan: 1 },
       { timeout: 5000, headers: { Authorization: 'Bearer ' + otherToken } });
   } catch (e) { otherForeign = e.response || { status: 0 }; otherForeignErr = e; }
-  ok('8 班给 18 班学生充值同样被拒（先过闸门，不存在绕路）',
+  ok('8 班给 18 班学生充值被拒（403，外班的账要席位）',
     otherForeign.status === 403, 'HTTP ' + otherForeign.status);
   // 本地闸门先挡：压根没有请求发到云端，谈不上「推上去又被拒」
-  ok('8 班的改动一次都没发到云端（本地就挡住了）', cloud.nonSeatAllocPushes === 0,
+  // 本班那笔也不会走 /allocations：非席位班在 pushAllocations 提前返回，
+  // 它的自有账本经名册上行（含额度列）让中枢看见 —— 两条路不混。
+  ok('任何非席位额度上行都没发到云端（本班改本班也不推）', cloud.nonSeatAllocPushes === 0,
     '云端收到非席位上行 ' + cloud.nonSeatAllocPushes + ' 次');
+  // 180101 在云端账本里的值必须还是 §⑤ 席位班给自己学生充的 ¥2 ——
+  // 8 班那笔被 403 挡掉的尝试没有碰它（否则会变成 ¥3）
+  var cloudForeign = cloud.allocations.filter(function(a) { return a.user_id === '180101'; })[0];
+  ok('8 班被拒的那笔没有改动云端账本（180101 还是席位班充的 ¥2）',
+    !!cloudForeign && cloudForeign.allocated_micro === 2000000,
+    JSON.stringify(cloudForeign));
 
   section('⑦ 外班学生不会混进本班名册的世界边界');
   var localOnly = seatDb.prepare('SELECT COUNT(*) AS c FROM users WHERE user_id = ?').get('080101');

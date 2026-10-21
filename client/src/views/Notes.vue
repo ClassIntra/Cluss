@@ -147,6 +147,40 @@
                 class="sidebar-search-input"
               />
             </div>
+            <!-- 排序按钮从「文件夹」那一行挪到这里。
+                 原来一行 204px 要塞「文件夹下拉 + 新建文件夹 + 排序下拉」，
+                 两个下拉各分到 85px，而全局 select 的箭头内缩就吃掉 34px ——
+                 只剩 43px 显示文字，实测截成「全部…」「按时…」，
+                 连「我在哪个文件夹」「按什么排序」都看不全。
+                 现在排序变成 44px 图标按钮 + 菜单，文件夹那行把宽度全让出来。 -->
+            <div class="sort-wrap">
+              <button
+                class="sort-btn"
+                :class="{ 'is-active': sortMenuOpen || sortBy !== 'updatedAt' }"
+                :aria-label="'排序：' + sortLabel"
+                aria-haspopup="true"
+                :aria-expanded="sortMenuOpen ? 'true' : 'false'"
+                @click="toggleSortMenu"
+              >
+                <i class="fa-solid fa-arrow-down-wide-short"></i>
+              </button>
+              <transition name="dropdown-fade">
+                <div v-if="sortMenuOpen" class="sort-menu" role="menu">
+                  <button
+                    v-for="opt in sortOptions"
+                    :key="opt.value"
+                    class="sort-menu-item"
+                    :class="{ 'is-active': sortBy === opt.value }"
+                    role="menuitemradio"
+                    :aria-checked="sortBy === opt.value ? 'true' : 'false'"
+                    @click="pickSort(opt.value)"
+                  >
+                    <span>{{ opt.label }}</span>
+                    <i v-if="sortBy === opt.value" class="fa-solid fa-check"></i>
+                  </button>
+                </div>
+              </transition>
+            </div>
           </div>
 
           <!-- 文件夹下拉带篇数：不然新建一个文件夹切进去是空的，
@@ -156,11 +190,6 @@
               <option v-for="f in folders" :key="f" :value="f">{{ f }}（{{ folderCounts[f] || 0 }}）</option>
             </select>
             <button class="folder-add-btn" @click="addFolder" title="新建文件夹"><i class="fa-solid fa-folder-plus"></i></button>
-            <select v-model="sortBy" class="sort-select">
-              <option value="updatedAt">按时间</option>
-              <option value="title">按标题</option>
-              <option value="charCount">按字数</option>
-            </select>
           </div>
 
           <div v-if="tagFilter" class="tag-filter-bar">
@@ -268,6 +297,11 @@
                现在：常驻只留每天真用得上的 13 个，公式 / 图表 / 命令面板收进「更多」，
                并且允许换行 —— 宁可多占一行，也不能再有够不到的按钮。 -->
           <div v-if="viewMode !== 'preview'" class="editor-toolbar">
+            <!-- 按语义分组：字形 / 标题 / 列表 / 插入 / 更多。
+                 以前用一个 1px 的竖线当分隔符，而工具栏是 flex-wrap 的 ——
+                 折行时最后那条竖线会被单独留在行尾，看起来像一条凭空的刻度；
+                 分组之后折行只会发生在组之间，竖线也就没必要存在了。 -->
+            <div class="toolbar-group">
             <button class="toolbar-btn" @click="insertMarkdown('bold')" title="加粗 (Ctrl+B)">
               <i class="fa-solid fa-bold"></i>
             </button>
@@ -277,7 +311,8 @@
             <button class="toolbar-btn" @click="insertMarkdown('strikethrough')" title="删除线">
               <i class="fa-solid fa-strikethrough"></i>
             </button>
-            <div class="toolbar-sep"></div>
+            </div>
+            <div class="toolbar-group">
             <button class="toolbar-btn" @click="insertMarkdown('h1')" title="一级标题">
               <i class="fa-solid fa-heading"></i><span class="toolbar-sub">1</span>
             </button>
@@ -287,7 +322,8 @@
             <button class="toolbar-btn" @click="insertMarkdown('h3')" title="三级标题">
               <i class="fa-solid fa-heading"></i><span class="toolbar-sub">3</span>
             </button>
-            <div class="toolbar-sep"></div>
+            </div>
+            <div class="toolbar-group">
             <button class="toolbar-btn" @click="insertMarkdown('ul')" title="无序列表">
               <i class="fa-solid fa-list-ul"></i>
             </button>
@@ -297,7 +333,8 @@
             <button class="toolbar-btn" @click="insertMarkdown('todo')" title="待办事项">
               <i class="fa-solid fa-square-check"></i>
             </button>
-            <div class="toolbar-sep"></div>
+            </div>
+            <div class="toolbar-group">
             <button class="toolbar-btn" @click="insertMarkdown('code')" title="行内代码">
               <i class="fa-solid fa-code"></i>
             </button>
@@ -310,7 +347,8 @@
             <button class="toolbar-btn" @click="openCloudImagePicker" title="从云盘插入图片/音视频">
               <i class="fa-solid fa-image"></i>
             </button>
-            <div class="toolbar-sep"></div>
+            </div>
+            <div class="toolbar-group">
 
             <!-- 低频能力：一次多点一下，但一个都不丢 -->
             <div class="more-menu-wrap">
@@ -364,6 +402,7 @@
                   </button>
                 </div>
               </transition>
+            </div>
             </div>
           </div>
 
@@ -1187,6 +1226,7 @@ import orientation from '@/mixins/orientation';
 import LatexRenderer, { ensureKatexIdle, onKatexReady } from '@/utils/latex-renderer';
 // AI 辅助的流式接口（Cluss 特有）：SSE 读流工具
 import { postStream, readSseStream } from '@/utils/sse';
+import { readStudentPrefs } from '@/utils/student-prefs';
 
 var NOTES_STORAGE_KEY = 'notes_data';
 
@@ -1267,14 +1307,11 @@ function base64ToUtf8(b64) {
   return result;
 }
 
-function encrypt(text, key) {
-  var result = '';
-  for (var i = 0; i < text.length; i++) {
-    result += String.fromCharCode(text.charCodeAt(i) ^ key.charCodeAt(i % key.length));
-  }
-  return utf8ToBase64(result);
-}
-
+// 旧版本地"加密"（XOR + 写死的 key）的**解密半边**仍保留：
+// 老学生的 privacyPassword 还以这种混淆串存在 notes_data 里，
+// 要在解锁时读出来搬到服务端（见 verifyPrivacyPassword 的 ② 分支）。
+// 加密半边（encrypt）已删除 —— 新密码一律走服务端 scrypt，
+// 再造新的本地混淆串只会让"搬一次"这件事再发生一遍。
 function decrypt(encoded, key) {
   var text = base64ToUtf8(encoded);
   var result = '';
@@ -1359,6 +1396,7 @@ export default {
       // 50/50 时编辑区在 1440 宽下只有 564px，一行放不下工具栏、正文也窄。
       editorWidthPercent: 62,
       moreMenuOpen: false,
+      sortMenuOpen: false,
       viewMode: 'split',
       isResizing: false,
       searchInput: '',
@@ -1577,8 +1615,20 @@ showFileMenuModal: false,
       var self = this;
       return self.folders.filter(function(f) { return f !== ALL_FOLDERS && f !== DEFAULT_FOLDER; });
     },
+    // 「有没有密码」= 服务端设过 **或** 本地还留着旧格式的。
+    // 两个都认是因为老学生的密码还以 XOR 混淆串存在 notes_data 里
+    // （见 verifyPrivacyPassword 的迁移注释）；只认服务端会让
+    // "我明明设过"直接退回设置流程，之前的私密笔记谁都打不开。
     hasPrivacyPassword: function() {
-      return !!this.privacyPassword;
+      return this.lockHasPassword || !!this.privacyPassword;
+    },
+    // 统一密码（服务端）的两个镜像态。放 computed 而不是 data：
+    // 对话侧解锁 / 设置里改了密码，这里要立刻跟着变。
+    lockHasPassword: function() {
+      return this.$store.state.lock.hasPassword;
+    },
+    lockUnlocked: function() {
+      return this.$store.state.lock.unlocked;
     },
     charCount: function() {
       if (!this.activeFile || !this.activeFile.content) return 0;
@@ -1641,6 +1691,21 @@ showFileMenuModal: false,
       return self.commandItems.filter(function(cmd) {
         return cmd.label.toLowerCase().indexOf(q) > -1;
       });
+    },
+    // 排序：三档，与原来那个 select 的选项一一对应（值不变，历史数据照读）
+    sortOptions: function() {
+      return [
+        { value: 'updatedAt', label: '按更新时间' },
+        { value: 'title', label: '按标题' },
+        { value: 'charCount', label: '按字数' }
+      ];
+    },
+    sortLabel: function() {
+      var self = this;
+      for (var i = 0; i < self.sortOptions.length; i++) {
+        if (self.sortOptions[i].value === self.sortBy) return self.sortOptions[i].label;
+      }
+      return '按更新时间';
     },
     // 视图模式：用全站统一的分段控件（编辑 / 分栏 / 预览），
     // 替代 ClassIntra 顶栏里那组图标按钮
@@ -1744,6 +1809,10 @@ showFileMenuModal: false,
     this.loadCloudNotes();
     this.loadCloudFolders();
     this.loadWallet();
+    // 统一密码状态：不预拉的话，学生明明在对话侧解锁过，
+    // 进隐私空间还要再输一遍（"合为一个"就名不副实）。
+    // refresh 内部失败按"没密码"兜底，不影响本页其它加载。
+    this.$store.dispatch('lock/refresh');
     // katex 按需加载 + 就绪重绘（机制见 utils/markdown.js 的说明）。
     // 本页通过 latex-renderer 渲染公式；引擎到货前是 <code> 原文占位，
     // 到货后重算当前预览 —— 仅当前笔记一篇，成本可忽略。
@@ -1778,6 +1847,11 @@ showFileMenuModal: false,
     if (this._activeFileMenuHandler) {
       document.removeEventListener('click', this._activeFileMenuHandler);
       this._activeFileMenuHandler = null;
+    }
+    // 排序菜单的 click-away：不摘掉的话它握着整个 vm，页面销毁后回收不了
+    if (this._sortMenuHandler) {
+      document.removeEventListener('click', this._sortMenuHandler);
+      this._sortMenuHandler = null;
     }
     if (this._moreMenuHandler) {
       document.removeEventListener('click', this._moreMenuHandler);
@@ -2267,35 +2341,95 @@ showFileMenuModal: false,
       self.showPrivacyModal = true;
       self.privacyPasswordInput = '';
       self.privacyPasswordConfirm = '';
+      // 已经全局解锁过（比如刚在对话侧输过密码）就直接进 ——
+      // 再摆一个密码框会让人以为"密码没记住/失效了"。
+      // 这正是"合为一个密码"要消除的体感。
+      if (self.lockUnlocked) self.privacyUnlocked = true;
       self.$nextTick(function() {
         if (self.$refs.privacyInput) self.$refs.privacyInput.focus();
       });
     },
     verifyPrivacyPassword: function() {
       var self = this;
+      // 统一密码：笔记的私密与「隐藏的对话」共用服务端那一份
+      // （cluss_private_lock，scrypt hash + salt）。这里保留两条旧路径
+      // 只是为了**迁移**，不解释的话没人敢删：
+      //   ① 服务端已设过 → 直接校验；
+      //   ② 服务端没有、本地有旧串 → 本地校验通过后立刻搬上服务端并清掉本地。
+      //      本地那份是 XOR + 写死在源码里的 key，只是混淆不是加密，
+      //      且清一次浏览器数据就"锁丢了人还能进"——搬走才是修好。
       if (!self.hasPrivacyPassword) {
         if (!self.privacyPasswordInput) return;
         if (self.privacyPasswordInput !== self.privacyPasswordConfirm) {
           self.$store.commit('SHOW_TOAST', { message: '两次密码不一致', type: 'error' });
           return;
         }
-        self.privacyPassword = encrypt(self.privacyPasswordInput, 'classintra_notes_key');
-        self.privacyUnlocked = true;
-        self.saveData();
-        self.$store.commit('SHOW_TOAST', { message: '密码设置成功', type: 'success' });
+        self.$store.dispatch('lock/setup', self.privacyPasswordInput).then(function(r) {
+          if (!r.ok) {
+            self.$store.commit('SHOW_TOAST', { message: r.message || '设置失败', type: 'error' });
+            return;
+          }
+          self.privacyUnlocked = true;
+          self.saveData();
+          self.$store.commit('SHOW_TOAST', { message: '密码设置成功', type: 'success' });
+        });
         return;
       }
-      var decrypted = decrypt(self.privacyPassword, 'classintra_notes_key');
-      if (decrypted === self.privacyPasswordInput) {
+
+      // 已解锁过（刚在对话侧输过）：不必再问一次。
+      // 这正是"合为一个密码"要解决的事——同一个人没必要记两遍。
+      if (self.lockUnlocked) {
         self.privacyUnlocked = true;
-        self.$store.commit('SHOW_TOAST', { message: '解锁成功', type: 'success' });
-      } else {
-        self.$store.commit('SHOW_TOAST', { message: '密码错误', type: 'error' });
+        return;
       }
+
+      // ① 服务端有密码 → 走服务端校验（顺带拿到 30 分钟解锁态）
+      if (self.lockHasPassword) {
+        self.$http.post('/private/verify', { password: self.privacyPasswordInput }).then(function(r) {
+          var d = (r && r.data && r.data.data) || {};
+          if (d.unlocked === false) {
+            self.$store.commit('SHOW_TOAST', { message: '密码错误', type: 'error' });
+            return;
+          }
+          self.$store.commit('lock/SET_STATUS', { hasPassword: true, unlocked: true });
+          self.privacyUnlocked = true;
+          self.$store.commit('SHOW_TOAST', { message: '解锁成功', type: 'success' });
+        }).catch(function(e) {
+          var msg = (e && e.response && e.response.data && e.response.data.message) || '密码错误';
+          self.$store.commit('SHOW_TOAST', { message: msg, type: 'error' });
+        });
+        return;
+      }
+
+      // ② 本地旧串：先按老办法验，通过就搬上服务端
+      var decrypted = decrypt(self.privacyPassword, 'classintra_notes_key');
+      if (decrypted !== self.privacyPasswordInput) {
+        self.$store.commit('SHOW_TOAST', { message: '密码错误', type: 'error' });
+        return;
+      }
+      self.$store.dispatch('lock/setup', self.privacyPasswordInput).then(function(r) {
+        if (!r.ok) {
+          // 搬不上去也先让进：本地校验已经通过了，功能不该被网络挡住
+          self.privacyUnlocked = true;
+          self.$store.commit('SHOW_TOAST', { message: '解锁成功', type: 'success' });
+          return;
+        }
+        // 搬成功 → 清掉本地旧串。留着它意味着"源码里的 key 还能解开"，
+        // 与把密码写成明文只隔一层 base64。
+        // 用 forceSave 而不是 saveData：saveData 有 300ms 防抖，
+        // 这期间关掉页面（本地串还在）等于迁移只做了一半。
+        self.privacyPassword = '';
+        self.privacyUnlocked = true;
+        self.forceSave();
+        self.$store.commit('SHOW_TOAST', { message: '解锁成功', type: 'success' });
+      });
     },
     lockPrivacySpace: function() {
       this.privacyUnlocked = false;
       this.showPrivacyModal = false;
+      // 一并清服务端解锁态：只收本地的话，对话侧的隐藏会话还开着，
+      // "合为一个密码"就出现了两条寿命不同的锁。
+      this.$store.dispatch('lock/lock');
       this.$store.commit('SHOW_TOAST', { message: '隐私空间已锁定', type: 'info' });
     },
     addTag: function() {
@@ -2879,7 +3013,11 @@ showFileMenuModal: false,
         note_id: (self.activeFile && self.activeFile.id) || '',
         title: self.activeFile.title || '',
         content: content,
-        tags: self.activeFile.tags || []
+        tags: self.activeFile.tags || [],
+        // 学习偏好：服务端 turn-runner 从 body 读它来注入「讲解风格/常学科目/
+        // 是否参考学习记录」。这里漏带过一整子 —— AI 辅助是笔记页唯一的模型入口，
+        // 不带就等于学生在设置里改的东西在笔记页完全不打折。
+        student_prefs: readStudentPrefs()
       }, controller.signal).then(function(resp) {
         return readSseStream(resp, {
           onDelta: function(text) {
@@ -2982,6 +3120,35 @@ showFileMenuModal: false,
     },
     onResize: function() {
       this.isMobile = window.innerWidth <= 768;
+    },
+    // 排序菜单：与「更多」同一套 click-away，避免菜单点不开也关不掉
+    toggleSortMenu: function() {
+      var self = this;
+      if (self.sortMenuOpen) {
+        self.closeSortMenu();
+        return;
+      }
+      self.sortMenuOpen = true;
+      var handler = function() {
+        self.closeSortMenu();
+        document.removeEventListener('click', handler);
+      };
+      self._sortMenuHandler = handler;
+      setTimeout(function() {
+        document.addEventListener('click', handler);
+      }, 0);
+    },
+    closeSortMenu: function() {
+      this.sortMenuOpen = false;
+      if (this._sortMenuHandler) {
+        document.removeEventListener('click', this._sortMenuHandler);
+        this._sortMenuHandler = null;
+      }
+    },
+    pickSort: function(value) {
+      this.sortBy = value;
+      this.closeSortMenu();
+      this.saveData();
     },
     // 「更多」菜单：点开后在 document 上挂一次性 click-away（沿用 showFileMenu 的写法），
     // 不这么做的话点别处菜单不消失，学生会以为页面卡住了
@@ -4124,7 +4291,9 @@ html.no-flex-gap .file-actions > * + * {
   top: 100%;
   left: 0;
   margin-top: 6px;
-  background: var(--surface-2);
+  /* 浮层底色统一用 --menu-bg（近不透明）：--surface-2 在深色下只有 8% 白，
+     盖在正文上能把下面的字读出来，等于菜单透明 */
+  background: var(--menu-bg);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   border: 0.5px solid var(--menu-border);
@@ -4204,8 +4373,10 @@ html.no-flex-gap .create-menu-item > * + * {
   flex-shrink: 0;
   box-shadow: var(--shadow-sm);
   z-index: 20;
-  /* 收起 / 展开文件栏时宽度做过渡，编辑区随之铺满 */
-  transition: width var(--duration-normal) var(--ease-standard);
+  /* 收起 / 展开文件栏时宽度做过渡，编辑区随之铺满。
+     padding 也要一起过渡，否则收起的最后一帧会「啪」地跳掉 16px。 */
+  transition: width var(--duration-normal) var(--ease-standard),
+              padding var(--duration-normal) var(--ease-standard);
 }
 html.no-flex-gap .notes-sidebar > * + * {
   margin-top: var(--gap-md);
@@ -4232,9 +4403,13 @@ html.no-flex-gap .notes-sidebar > * + * {
   border-radius: var(--radius-lg);
 }
 
-/* 手动收起文件栏：宽度归零并裁剪内容，把横向空间让给编辑区 */
+/* 手动收起文件栏：宽度归零并裁剪内容，把横向空间让给编辑区。
+   ⚠️ 必须把 padding 一起归零：全局是 border-box，width:0 + 左右各 8px padding
+   的最终宽度是 **16px**，实测收起后左边仍留一条玻璃边，还能看见卡片圆角。 */
 .notes-body.sidebar-hidden .notes-sidebar {
   width: 0;
+  padding-left: 0;
+  padding-right: 0;
   border-right: none;
   overflow: hidden;
   box-shadow: none;
@@ -4253,6 +4428,12 @@ html.no-flex-gap .notes-sidebar > * + * {
   gap: 8px;
   padding: 12px 12px 8px;
   flex-shrink: 0;
+  /* 排序菜单从这里弹出，会盖住下面的「文件夹」卡片。
+     .glass 的 backdrop-filter 会给这张卡单独一个层叠上下文，
+     不显式抬高层级的话菜单会被后面的兄弟卡片盖住（点不着、也看不见）。
+     z-index 只在本页文件栏内部比较，30 足够高于列表与底部卡片。 */
+  position: relative;
+  z-index: 30;
 }
 html.no-flex-gap .sidebar-top > * + * {
   margin-left: 8px;
@@ -4261,6 +4442,10 @@ html.no-flex-gap .sidebar-top > * + * {
 
 .sidebar-search {
   flex: 1;
+  /* input 的默认宽度（约 180px）就是它的 min-content：不写 min-width:0 的话
+     `flex:1` 也压不下去，会把同一行的排序按钮挤出卡片外（实测按钮落到 x=225~269，
+     而卡片右边界只有 227） */
+  min-width: 0;
   display: flex;
   align-items: center;
   background: var(--bg-base);
@@ -4286,6 +4471,7 @@ html.no-flex-gap .sidebar-top > * + * {
 
 .sidebar-search-input {
   flex: 1;
+  min-width: 0;
   border: none;
   background: none;
   font-size: var(--font-size-sm);
@@ -4296,6 +4482,92 @@ html.no-flex-gap .sidebar-top > * + * {
 
 .sidebar-search-input::placeholder {
   color: var(--text-tertiary);
+}
+
+/* ---- 排序按钮（搜索行右侧，与文件夹行同一种材质 44×44）----
+   为什么不做成下拉：这一行只有 204px，再塞一个 select 就是「两个都看不全」。
+   图标按钮 + 弹出菜单，把宽度全留给文件夹名。 */
+.sort-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.sort-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--menu-border);
+  background-color: var(--bg-base);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-standard),
+              border-color var(--duration-fast) var(--ease-standard),
+              background-color var(--duration-fast) var(--ease-standard);
+}
+
+/* 非默认排序时按钮亮起来：否则换了排序方式在收起状态毫无提示 */
+.sort-btn.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background-color: var(--accent-soft);
+}
+
+@media (hover: hover) {
+  .sort-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+}
+
+.sort-btn:active {
+  transform: scale(0.94);
+  opacity: 0.7;
+}
+
+.sort-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 168px;
+  /* 浮层底色只能用 --menu-bg：--surface-* 是「层叠表面」，深色下只有 12% 白，
+     盖在正文上会把下面的字透出来（实测深色下能读到笔记正文） */
+  background: var(--menu-bg);
+  border: 0.5px solid var(--menu-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+  padding: 6px;
+  z-index: 60;
+}
+
+.sort-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.sort-menu-item.is-active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.sort-menu-item .fa-check {
+  font-size: var(--font-size-caption);
 }
 
 .sidebar-new-btn {
@@ -4684,7 +4956,9 @@ html.no-flex-gap .privacy-entry > * + * {
 .editor-toolbar {
   display: flex;
   align-items: center;
-  gap: 1px;
+  /* 组间 10px、组内 1px：分组本身就是分隔，不再画竖线
+     （竖线在 flex-wrap 折行时会孤零零留在行尾，见模板注释） */
+  gap: 10px;
   padding: 4px 12px;
   border-bottom: 0.5px solid var(--menu-border);
   flex-shrink: 0;
@@ -4694,6 +4968,14 @@ html.no-flex-gap .privacy-entry > * + * {
      44px 的触屏目标不能缩（项目基线），所以只能让行数变多，不能让按钮消失。 */
   flex-wrap: wrap;
   background: var(--bg-base);
+}
+
+/* 一个语义组（字形 / 标题 / 列表 / 插入）作为一个整体参与折行：
+   组不会被拆到两行上，H1 也不会和 H2 H3 分开。 */
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 1px;
 }
 
 .toolbar-btn {
@@ -4741,15 +5023,6 @@ html.no-flex-gap .privacy-entry > * + * {
   right: 4px;
 }
 
-.toolbar-sep {
-  width: 1px;
-  height: 24px;
-  background: var(--menu-border);
-  /* 左右各 3px 而不是 4px：四个分隔线就是 8px。14 个 44px 按钮 + 分隔线
-     在 1440 宽的笔记本上刚好差 12px 放不下，就会多折一行、白吃掉 45px 编辑高度 */
-  margin: 0 3px;
-}
-
 .toolbar-latex {
   font-family: 'Times New Roman', serif;
   font-style: italic;
@@ -4776,7 +5049,8 @@ html.no-flex-gap .privacy-entry > * + * {
   max-height: min(70vh, 560px);
   overflow-y: auto;
   overscroll-behavior: contain;
-  background: var(--surface-3, var(--surface-2));
+  /* 近不透明的浮层底色：--surface-3 在深色下只有 12% 白，实测能透出笔记正文 */
+  background: var(--menu-bg);
   border: 0.5px solid var(--menu-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-float);
@@ -4896,7 +5170,7 @@ html.no-flex-gap .editor-footer > * + * {
   top: calc(100% + 6px);
   right: 0;
   min-width: 180px;
-  background: var(--surface-3, var(--surface-2));
+  background: var(--menu-bg);
   border: 0.5px solid var(--menu-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-float);
@@ -5421,7 +5695,8 @@ html.no-flex-gap .current-tags > * + * {
 
 .context-menu {
   position: fixed;
-  background: var(--surface-2);
+  /* 右键菜单盖在文件列表/正文上，必须不透明 */
+  background: var(--menu-bg);
   border: 1px solid var(--menu-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
@@ -5493,7 +5768,9 @@ html.no-flex-gap .context-menu-item > * + * {
   left: calc(100% - 4px);
   top: -4px;
   min-width: 168px;
-  background: var(--surface-2);
+  /* 子菜单也是浮层：--menu-bg 近不透明。用 --surface-2（深色下 8% 白）
+     会直接透出背后的笔记正文，子菜单浮在编辑器上时字都读不稳。 */
+  background: var(--menu-bg);
   border: 1px solid var(--menu-border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
@@ -6332,7 +6609,7 @@ html.no-flex-gap .chart-preview-empty > * + * {
 .command-palette {
   width: 520px;
   max-width: 90vw;
-  background: var(--surface-2);
+  background: var(--menu-bg);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
@@ -6402,7 +6679,10 @@ html.no-flex-gap .chart-preview-empty > * + * {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0;
+  /* 原来这里是 0：卡片本身有 20px 圆角与玻璃底，但内容贴着边，
+     上面「搜索」那张卡内缩 12px，到这里突然贴边 —— 一眼看过去像没做完。
+     现在与 .sidebar-top 同一档内缩（12px）。 */
+  padding: 12px;
   flex-shrink: 0;
 }
 html.no-flex-gap .folder-bar > * + * {
@@ -6414,8 +6694,7 @@ html.no-flex-gap .folder-bar > * + * {
    global.css 已经给所有 select 收掉了原生外观（appearance:none + 自绘箭头），
    这里只管尺寸与配色，不去覆盖那条；背景写 background-color 而不是
    background 简写 —— 简写会把 global 那张箭头背景图一起抹掉。 */
-.folder-select,
-.sort-select {
+.folder-select {
   flex: 1;
   min-width: 0;
   height: 44px;
@@ -6429,8 +6708,7 @@ html.no-flex-gap .folder-bar > * + * {
   cursor: pointer;
 }
 
-.folder-select:focus,
-.sort-select:focus {
+.folder-select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }

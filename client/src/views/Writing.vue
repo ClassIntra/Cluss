@@ -226,6 +226,7 @@ import { renderMarkdown, renderStream, ensureKatexIdle, onKatexReady } from '@/u
 import { createStreamPainter } from '@/utils/stream-paint';
 import { appendStreamCaret } from '@/utils/stream-caret';
 import { readSseStream, postStream } from '@/utils/sse';
+import { readStudentPrefs } from '@/utils/student-prefs';
 import streamSession from '@/utils/stream-session';
 import waiting from '@/mixins/waiting';
 import streamFrame from '@/mixins/streamFrame';
@@ -632,7 +633,11 @@ export default {
         topic: this.mode === 'grade' ? '' : this.draft.trim(),
         content: this.mode === 'grade' ? this.draft.trim() : '',
         image_hashes: this.attachmentHashes,
-        note_ids: this.noteIds
+        note_ids: this.noteIds,
+        // 学习偏好：每次发送时现读（学生在设置里改完立刻生效）。
+        // 以前这里漏带 → 服务端 turn-runner 拿默认档，作文页成了唯一
+        // 「设置了讲解风格/科目却完全不生效」的页面（对话/学习都带）。
+        student_prefs: readStudentPrefs()
       };
 
       postStream(url, this.$store.state.auth.token, body, controller.signal).then(function(resp) {
@@ -910,12 +915,37 @@ html.no-flex-gap .hist-item > * + * {
   cursor: pointer;
   opacity: 0;
   flex-shrink: 0;
+  /* ::after 撑命中区需要定位上下文 */
+  position: relative;
 }
 
 @media (hover: hover) {
 .hist-item:hover .hist-del {
   opacity: 1;
 }
+}
+
+/* 触屏没有 hover：「悬停才出现」在平板上等于「永远不出现」。
+   判据用 @media (hover: none)，与 Chat.vue 的 .conv-del 同一套做法。 */
+@media (hover: none) {
+  .hist-del {
+    opacity: 0.7;
+  }
+  .hist-del:active {
+    opacity: 1;
+    background: var(--danger-tint);
+    color: var(--danger);
+  }
+  .hist-del::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 40px;
+    transform: translateY(-50%);
+    background: transparent;
+  }
 }
 
 @media (hover: hover) {

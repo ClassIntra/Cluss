@@ -91,10 +91,8 @@
 <script>
 import ClussLogo from '@/components/ClussLogo.vue';
 import { isEmbedded, backToClassIntra } from '@/utils/embedded';
-
-// 「默认打开页」允许的取值（与 AiPrefs 弹窗里那份保持一致）。
-// 按项目约定不新建 utils 文件，读取就近加 try/catch。
-var HOME_PAGES = ['/', '/study', '/wrong-book', '/notes'];
+// 「默认打开页」的唯一实现（另一个生效点在 router 的首次导航，见 utils/home-page）
+import { resolveLanding } from '@/utils/home-page';
 
 export default {
   name: 'LoginView',
@@ -127,16 +125,6 @@ export default {
     // 回到 ClassIntra 桌面（宿主未监听时静默，此时学生本就没别的路可走）
     backToClassIntra: backToClassIntra,
 
-    // 读取「默认打开页」偏好：与 AiPrefs 弹窗里同一套键与校验，
-    // 非法值 / 未设置一律兜底到对话页（即保持现状）。
-    homePage: function() {
-      try {
-        var v = localStorage.getItem('cluss_home_page');
-        if (HOME_PAGES.indexOf(v) !== -1) return v;
-      } catch (e) { /* 隐私模式拿不到 localStorage，忽略 */ }
-      return '/';
-    },
-
     handleLogin: function() {
       var self = this;
       this.errorMsg = '';
@@ -153,9 +141,9 @@ export default {
         account: this.account.trim(),
         password: this.password
       }).then(function() {
-        // 优先尊重来源跳转：被守卫弹回登录时会带 redirect，那是学生本来想去的页；
-        // 没有来源跳转时，才落到「设置」里选的默认打开页（未设置 = 对话页，原行为）。
-        var redirect = self.$route.query.redirect || self.homePage();
+        // 明确的来源跳转优先；`?redirect=/` 只是根路径的默认值，不算明确意图
+        //（早先按 truthy 判断，于是它会盖掉「默认打开页」，设置等于没生效）
+        var redirect = resolveLanding(self.$route.query.redirect);
         self.$router.replace(redirect);
       }).catch(function(err) {
         self.errorMsg = err.message || '登录失败，请重试';

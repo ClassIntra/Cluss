@@ -323,6 +323,19 @@ function buildRequestOptions(model, messages, options) {
     // 让上游在流末尾回 usage（OpenAI 兼容端点默认不带）
     body.stream_options = { include_usage: true };
   }
+
+  // 工具（function calling）。只在下发侧显式给出时才带上。
+  //
+  // 为什么要做成「可选」而不是默认常开：tools 会占用提示词预算，
+  // 而且部分上游（尤其是反代类）见到不认识的字段会直接 400。
+  // 由 turn-runner 按「搜索是否可用」决定要不要带，ai 层只负责透传。
+  //
+  // tool_choice 默认 auto：让模型自己判断该不该查。强制 required 会让
+  // 每句话都先搜一遍（连"1+1 等于几"都搜），既慢又烧钱。
+  if (options && options.tools && options.tools.length) {
+    body.tools = options.tools;
+    body.tool_choice = options.toolChoice || 'auto';
+  }
   return { headers: headers, body: body };
 }
 
@@ -400,13 +413,19 @@ function chatStream(model, messages, handlers) {
     // ⚠️ 输出上界必须在这里**显式转发**。这里是白名单式构造 options，
     //    调用方传了但没在此列出的键会被静默丢弃 —— 那种坑的表现是
     //    "代码里写了 max_tokens，线上却一点没生效"，排查代价极高。
-    maxTokens: handlers && handlers.maxTokens
+    maxTokens: handlers && handlers.maxTokens,
+    // 工具同理：不在白名单里就会被静默丢弃，模型永远看不到 web_search
+    tools: handlers && handlers.tools,
+    toolChoice: handlers && handlers.toolChoice
   });
   var controller = new AbortController();
   var buffer = '';
   var usage = null;
   var fullText = '';
   var fullReasoning = '';
+  // 流式工具调用：上游会把一次调用拆成若干 delta（先给 id+name，再一段段给 arguments），
+  // 必须按 index 聚合，否则拿到的是半截 JSON，parse 必然失败。
+  var toolCalls = [];
 
   // 首令牌看门狗：默认 45 秒。取值理由 —— 正常模型首字在 1~5 秒，
   // 推理模型预热也就 10 秒上下；45 秒还一字未出基本可以判定上游废了，
@@ -468,13 +487,41 @@ function chatStream(model, messages, handlers) {
               fullText += delta.content;
               if (handlers && handlers.onDelta) handlers.onDelta(delta.content);
             }
+
+            // 工具调用：**同样是"模型在动"的证据**。
+            // 不把 gotAnyToken 置位的话，一个决定先查资料再回答的模型会
+            // 在首令牌看门狗眼里成了"45 秒没出字"，被误判成卡死而中断
+            //（实测：只发工具调用、不发正文时，确实一个 content delta 都没有）。
+            if (delta.tool_calls) {
+              gotAnyToken = true;
+              for (var ti = 0; ti < delta.tool_calls.length; ti++) {
+                var tc = delta.tool_calls[ti] || {};
+                var idx = typeof tc.index === 'number' ? tc.index : (toolCalls.length ? toolCalls.length - 1 : 0);
+                if (!toolCalls[idx]) {
+                  toolCalls[idx] = { id: '', type: 'function', function: { name: '', arguments: '' } };
+                }
+                var slot = toolCalls[idx];
+                if (tc.id) slot.id = tc.id;
+                if (tc.function) {
+                  if (tc.function.name) slot.function.name += tc.function.name;
+                  if (tc.function.arguments) slot.function.arguments += tc.function.arguments;
+                }
+              }
+            }
           }
         }
       });
 
       resp.data.on('end', function() {
         clearTimeout(watchdog);
-        resolve({ text: fullText, reasoning: fullReasoning, usage: usage });
+        resolve({
+          text: fullText,
+          reasoning: fullReasoning,
+          usage: usage,
+          // 空数组而不是 undefined：调用方可以无脑 .length，
+          // 不用到处写 `&& result.toolCalls` 这种防御式判断
+          toolCalls: toolCalls.filter(function(x) { return x && x.function && x.function.name; })
+        });
       });
       resp.data.on('error', function(err) {
         clearTimeout(watchdog);

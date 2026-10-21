@@ -124,6 +124,21 @@
             </div>
 
             <div class="conv-list">
+              <!-- 隐藏会话入口：放在列表**顶部**而不是底部。
+                   底部方案在会话多时要滚到底才看得见（实测 24 条时入口完全在屏外），
+                   "这里有一件你不知道的事"就成了不存在的事。
+                   参考微信「折叠的群聊」：入口钉在第一项之前，不随滚动漂移。 -->
+              <button
+                v-if="lockHasPassword && !showHidden"
+                class="conv-hidden-entry tiny"
+                @click="showHiddenConversations"
+              >显示已隐藏的会话</button>
+              <button
+                v-else-if="lockHasPassword && showHidden"
+                class="conv-hidden-entry tiny"
+                @click="stopShowingHidden"
+              >收起隐藏的会话</button>
+
               <div v-if="convLoading && !conversations.length" class="conv-empty tiny muted">加载中…</div>
               <div v-else-if="!conversations.length" class="conv-empty tiny muted">
                 {{ convQuery ? '没有匹配的对话' : '还没有对话' }}
@@ -153,10 +168,38 @@
                      预览取的是最后一条**有内容**的助手回复（服务端算好带下来），
                      比"最后一条消息"有用得多 —— 最后一条往往就是学生刚问的那句话。 -->
                 <span v-else class="conv-main">
-                  <span class="conv-title">{{ c.title }}</span>
+                  <span class="conv-title">
+                    <!-- 隐藏会话在"显示已隐藏"模式下的标识。
+                         不用 tooltip：触屏上 title 永不出现，
+                         图标本身的形状（锁）已经够说事。 -->
+                    <svg v-if="Number(c.hidden) === 1" class="conv-hidden-mark" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M12 3a4 4 0 0 0-4 4v2H6.5A1.5 1.5 0 0 0 5 10.5v8A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-8A1.5 1.5 0 0 0 17.5 9H16V7a4 4 0 0 0-4-4zm0 2a2 2 0 0 1 2 2v2h-4V7a2 2 0 0 1 2-2z" />
+                    </svg>
+                    {{ c.title }}
+                  </span>
                   <span v-if="c.preview" class="conv-preview">{{ c.preview }}</span>
                 </span>
 
+                <button
+                  v-if="renamingId !== c.id && Number(c.hidden) === 1"
+                  class="conv-del"
+                  title="取消隐藏"
+                  @click.stop="unhideConversation(c)"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 3a4 4 0 0 0-4 4v2H6.5A1.5 1.5 0 0 0 5 10.5v8A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-8A1.5 1.5 0 0 0 17.5 9H16V7a4 4 0 0 1 4 4h-6v2h6v6H6.5v-8H5z" />
+                  </svg>
+                </button>
+                <button
+                  v-else-if="renamingId !== c.id"
+                  class="conv-del"
+                  title="隐藏这条对话"
+                  @click.stop="hideConversation(c)"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 3a4 4 0 0 0-4 4v2H6.5A1.5 1.5 0 0 0 5 10.5v8A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-8A1.5 1.5 0 0 0 17.5 9H16V7a4 4 0 0 0-4-4zm0 2a2 2 0 0 1 2 2v2h-4V7a2 2 0 0 1 2-2z" />
+                  </svg>
+                </button>
                 <button v-if="renamingId !== c.id" class="conv-del" title="重命名" @click.stop="startRename(c)">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M4.5 19.5l.9-3.6L15.9 5.4a2.1 2.1 0 0 1 3 3L8.4 18.9l-3.9.6zM13.9 7.4l3 3" />
@@ -340,7 +383,7 @@
               :class="[m.role === 'user' ? 'msg-user' : 'msg-assistant', { 'is-enter': m.enter }]"
             >
               <div v-if="m.role === 'assistant'" class="msg-avatar">
-                <ClussLogo :size="26" />
+                <ClussLogo :size="22" />
               </div>
               <div class="msg-col">
                 <div class="bubble" :class="m.role === 'user' ? 'bubble-user' : 'bubble-assistant'">
@@ -374,8 +417,10 @@
                     @toggle="m.reasoningOpen = $event.target.open"
                   >
                     <summary class="think-summary">
-                      <span class="think-dot" v-if="m.streaming" aria-hidden="true"></span>
-                      {{ m.streaming ? '正在推演思路…' : '思考过程' }}
+                      <!-- 只有"确实在推演"时才转这颗点：一旦出了正文、或正在检索，
+                           模型并没有在写思考，继续显示"正在推演思路…"就是假的 -->
+                      <span class="think-dot" v-if="m.streaming && !m.content && !visionStatus" aria-hidden="true"></span>
+                      {{ (m.streaming && !m.content && !visionStatus) ? '正在推演思路…' : '思考过程' }}
                       <span class="think-toggle muted tiny">（{{ m.reasoningOpen ? '收起' : '展开' }}）</span>
                     </summary>
                     <div class="think-body">{{ m.reasoning }}</div>
@@ -396,21 +441,77 @@
                     class="md-body"
                     v-html="m.html"
                   ></div>
-                  <!-- 还没出第一个字时给状态提示：三点波浪说明"在工作"，
-                       文字说明"为什么可能慢"（8s / 20s 分级升级，见 utils/waiting）。
-                       role=status 让读屏器也能听到"正在思考"，而不是只看到动画 -->
+                  <!-- 空回复时的状态行：三点波浪说明"在工作"，文字说明"在做什么 /
+                       为什么可能慢"（8s / 20s 分级见 utils/waiting）。
+                       检索阶段（visionStatus 有值）优先显示"正在联网搜索"——
+                       **同一个位置只留一个指示器**：以前状态行是气泡外单独一条胶囊，
+                       搜索时会和这里的"正在思考…"同时挂着，一句话说两遍，
+                       而且检索时那句"正在思考"是假的。role=status 让读屏器也能读到。 -->
                   <div
                     v-else-if="m.role === 'assistant' && m.streaming"
                     class="waiting-hint"
+                    :class="{ 'waiting-hint-strong': !!visionStatus }"
                     role="status"
                   >
-                    <span class="waiting-dots" aria-hidden="true"><span></span><span></span><span></span></span><span>{{ waitText }}</span>
+                    <span class="waiting-dots" aria-hidden="true"><span></span><span></span><span></span></span><span>{{ visionStatus || waitText }}</span>
                   </div>
                   <div
                     v-else-if="m.role === 'assistant' && m.stopped && !m.streaming"
                     class="stopped-hint"
                   >已停止生成</div>
                   <div v-else-if="m.role === 'user'" class="user-text">{{ m.content }}</div>
+                  <!-- 已经出过字、又开始检索：状态行接在正文下面，不覆盖已经写出来的内容。
+                       模型先说了句"我查一下最新消息"再发起工具调用时就是这条路径。 -->
+                  <div
+                    v-if="m.role === 'assistant' && m.streaming && visionStatus && m.content"
+                    class="waiting-hint waiting-hint-inline"
+                    role="status"
+                  >
+                    <span class="waiting-dots" aria-hidden="true"><span></span><span></span><span></span></span><span>{{ visionStatus }}</span>
+                  </div>
+                  <!-- 参考来源：正文里 [n] 对应的那条结果。
+                       没有它，[1][2] 就是一串没有出处的编号 —— 学生没法核，
+                       也无从判断该信谁；而这正是联网搜索的价值所在。
+                       只在生成结束后出现（生成中还没有完整引用）。
+                       ⚠️ 刻意**不做成外链**：教室平板的网络要过 MDM 过滤，
+                       点开大概率白屏或撞上拦截页，而重新回到对话要再登录一次。
+                       所以点开 = 就地展开检索时抓到的摘要（零网络请求），
+                       链接只作为"复制"备用。 -->
+                  <div
+                    v-if="m.role === 'assistant' && !m.streaming && m.sources && m.sources.length"
+                    class="msg-sources"
+                  >
+                    <div class="msg-sources-title">
+                      <span>参考来源</span>
+                      <span class="msg-sources-tip">点开看摘要</span>
+                    </div>
+                    <div v-for="s in m.sources" :key="s.n" class="msg-source-item">
+                      <button
+                        type="button"
+                        class="msg-source"
+                        :class="{ 'is-open': openSource === (idx + '|' + s.url) }"
+                        :aria-expanded="openSource === (idx + '|' + s.url) ? 'true' : 'false'"
+                        @click="toggleSource(idx, s)"
+                      >
+                        <span class="msg-source-n">{{ s.n }}</span>
+                        <span class="msg-source-title">{{ s.title }}</span>
+                        <span class="msg-source-host">{{ s.host }}</span>
+                        <span class="msg-source-caret" aria-hidden="true"></span>
+                      </button>
+                      <div v-if="openSource === (idx + '|' + s.url)" class="msg-source-body">
+                        <p v-if="s.snippet" class="msg-source-snippet">{{ s.snippet }}</p>
+                        <p v-else class="msg-source-snippet is-empty">
+                          这条来源没有可用摘要，可复制链接到能上网的设备上查看。
+                        </p>
+                        <div class="msg-source-foot">
+                          <span v-if="s.published" class="msg-source-date">{{ s.published }}</span>
+                          <button type="button" class="msg-source-copy" @click="copySourceLink(s)">
+                            {{ copiedLink === s.url ? '已复制链接' : '复制链接' }}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                   <!-- 流式光标不再放在这里：容器后的行内元素会另起一行，
                        光标孤零零悬在正文下面。改为由 paint 注入渲染结果的
                        最后一行行内（见 utils/stream-caret 与 runTurn 里的 paint） -->
@@ -442,11 +543,6 @@
                   >重新生成</button>
                 </div>
               </div>
-            </div>
-
-            <div v-if="visionStatus" class="vision-status">
-              <span class="spinner"></span>
-              <span>{{ visionStatus }}</span>
             </div>
 
             <div v-if="streamError" class="stream-error alert alert-danger">
@@ -608,7 +704,10 @@ import { renderMarkdown, renderStream, ensureKatexIdle, onKatexReady } from '@/u
 import { createStreamPainter } from '@/utils/stream-paint';
 import { appendStreamCaret } from '@/utils/stream-caret';
 import { readSseStream } from '@/utils/sse';
+import { appendLocalNote } from '@/utils/notes-local';
 import streamSession from '@/utils/stream-session';
+// 联网搜索的「参考来源」：只留正文里真正引用到的几条（见 utils/sources）
+import { pickSources } from '@/utils/sources';
 // 学习偏好：随每次提问一起上报，让 AI 按学生设定的风格与科目作答
 import { readStudentPrefs } from '@/utils/student-prefs';
 import waiting from '@/mixins/waiting';
@@ -629,6 +728,10 @@ export default {
   data: function() {
     return {
       conversations: [],
+      // 是否在列表里显示已隐藏的会话。默认 false ——
+      // 「解锁」与「显示」分成两步是故意的：解锁只代表"认得你"，
+      // 而把隐藏内容摆出来是另一个明确动作，借用别人设备的场景两者并不等价。
+      showHidden: false,
       conversationId: '',
       messages: [],
       models: [],
@@ -646,6 +749,12 @@ export default {
       atBottom: true,
       // 刚复制过的消息下标，用于把「复制」短暂变成「已复制」
       copiedKey: -1,
+      // 展开中的来源（key = 消息下标 + '|' + 链接）。
+      // 用链接而不是编号当 key：编号会随 regenerate 变化，链接不会，
+      // 而且同一个页面在两条回答里都出现时互不干扰。
+      openSource: '',
+      // 刚复制过链接的来源 url，用于把「复制链接」短暂变成「已复制链接」
+      copiedLink: '',
       // 用户主动点了停止
       stopped: false,
       // 主输入是否为触摸（安卓平板 = true）：决定 Enter 是发送还是换行
@@ -700,6 +809,13 @@ export default {
     };
   },
   computed: {
+    // 隐私锁的当前态（store/lock 是唯一真相源，三个页面共用）
+    lockHasPassword: function() {
+      return this.$store.state.lock.hasPassword;
+    },
+    lockUnlocked: function() {
+      return this.$store.state.lock.unlocked;
+    },
     user: function() { return this.$store.state.auth.user || {}; },
     wallet: function() { return this.$store.state.auth.wallet; },
 
@@ -914,6 +1030,11 @@ export default {
     // 而不是以为模板漏用了什么。
   },
   watch: {
+    // 状态行（检索 / 识别）在气泡内部，高度变化很小；但长会话里仍可能被顶到
+    // 视口下沿。只在学生本来就停在底部时跟随 —— 他往上翻记录时不要拽回来。
+    visionStatus: function() {
+      if (this.atBottom) this.scrollToBottom();
+    },
     // 切到日常模式时恢复人格：优先用当前会话存的，其次用本地记住的偏好
     mode: function(val) {
       if (val === 'daily' && !this.persona) {
@@ -954,12 +1075,25 @@ export default {
     if (this.mode === 'daily') this.persona = this.lastStoredPersona();
     // 深度思考偏好同理：先恢复，不等 /models 回来（开关的可见性由模型能力决定）
     try { this.thinking = localStorage.getItem('cluss_thinking') === '1'; } catch (e) { /* 忽略 */ }
-    this.loadConversations();
+    // 隐私锁状态：**必须先于** loadConversations —— 列表要不要带隐藏会话
+    // 取决于解锁态，并行的话请求可能先于状态回来，第一屏漏掉隐藏会话
+    // （学生以为自己没隐藏过任何东西）。
+    // ⚠️ 必须接 .catch 兜底：这是"顺带读一下"的旁路请求，它失败绝不许可
+    //    拖垮主功能（对话列表）。曾经漏了这句，锁状态一异常整页列表全空，
+    //    而且无声无息——探针查了半天才发现 /api/conversations 根本没发出去。
+    var self = this;
+    this.$store.dispatch('lock/refresh').catch(function () {
+      return null;
+    }).then(function () {
+      self.loadConversations();
+    });
     // 后台可能还挂着一轮生成（学生切走过又回来）：挂上去就能接着看
     streamSession.attach('chat', this);
   },
   beforeDestroy: function() {
     clearTimeout(this._copyTimer);
+    // 「已复制链接」的回退定时器同理
+    clearTimeout(this._linkTimer);
     // 搜索防抖挂着的定时器：不撤的话它会在这块已销毁的 vm 上继续跑一次请求
     clearTimeout(this._convQueryTimer);
     this.clearServerPoll();
@@ -970,6 +1104,9 @@ export default {
       this._scrollRaf = null;
     }
     // 等待提示的定时器与挂起的渲染帧分别由 mixins/waiting、mixins/streamFrame 清理
+    // 状态行的"慢速安抚"定时器归本页管（切走就不再需要安抚了；状态文本存在
+    // stream-session 里，回来还能看到"正在联网搜索…"）
+    this.clearBusyTimer();
     //
     // ⚠️ 这里**绝不** abort 在途请求 —— 切页面不等于不想生成了。
     // 请求交给 utils/stream-session 在后台继续消费，回来 attach 时接着显示；
@@ -1129,6 +1266,12 @@ export default {
 
       var params = { limit: o.limit || 30, q: this.convQuery.trim() };
       if (o.cursor) params.cursor = o.cursor;
+      // 隐藏会话只在两个条件同时成立时才向服务端要：
+      //   ① 学生显式打开了"显示已隐藏"（showHidden）
+      //   ② 当前确实处于解锁态（store 镜像，以服务端 status 为准）
+      // 少了 ② 的话锁着也会发出请求，服务端照样按未解锁过滤 ——
+      // 那样只是白发一次请求，还可能把"我解锁了"误判成"列表还是空的"。
+      if (this.showHidden && this.lockUnlocked) params.include_hidden = '1';
 
       if (reset) this.convLoading = true; else this.convLoadingMore = true;
 
@@ -1223,6 +1366,9 @@ export default {
             //    运行期再赋值视图不会更新（表现为"冻结段不显示"）。
             htmlFrozen: '',
             attachments: m.attachments || [],
+            // 参考来源（联网搜索才有）。同样要在对象创建时声明：
+            // Vue 2 不追踪后加的属性，运行期赋值不会更新视图。
+            sources: pickSources(m.sources, m.content),
             // 服务端标记"还在生成"（迁移 019）：显示光标，并交给轮询把后续内容补上
             streaming: !!m.streaming,
             enter: false
@@ -1252,6 +1398,14 @@ export default {
         // 换会话 = 换上下文：上一轮的统计描述的是**另一个会话**，
         // 带着过去会让圆环在新会话里显示假的完整度（见 data 里 contextStats 的说明）
         self.contextStats = null;
+        // 但 null 只应活在"这个会话还没有任何历史"的场景。
+        // 刷新 / 切页再回来（没有 keep-alive，页面是真销毁重建的）时，
+        // SSE 要等下一轮对话才带着 context 回来，此前圆环一直停在" — "，
+        // 学生看到的是"这东西平时根本不显示，得聊一句才冒出来"。
+        // 已加载的历史消息就能把圆环立起来：total/included/available 的
+        // 口径与服务端一致（最近 20 条参与本轮），token 是估算值，
+        // 下一轮真实 SSE 数据到了自然校准。
+        if (!self.contextStats) self.contextStats = self.estimateContextStats();
         self.closeCtxPop();
         self.scrollToBottom();
       }).catch(function(err) {
@@ -1284,6 +1438,70 @@ export default {
       }).catch(function(err) {
         self.$store.dispatch('toast', { message: err.message || '删除失败', type: 'error' });
       });
+    },
+
+    // ---- 隐藏会话 ----
+    //
+    // 方向不对称是刻意的：**隐藏不需要密码，取消隐藏要**。
+    //   「不想被旁边的人看见」是即兴动作（同桌凑过来、临时借设备），
+    //   先弹密码框会让这个动作慢到不可用；而"重新放出"是有意的主动行为，
+    //   此时要密码正合适。
+    // 取消隐藏的流程：先弹 unlock → 成功后 POST hide{hidden:false}。
+    //   （不直接 POST —— 服务端在未解锁时对取消隐藏返回 404，
+    //    先把解锁做了，错误才能显示成"密码不对"而不是"会话不存在"。）
+
+    hideConversation: function(c) {
+      var self = this;
+      this.$http.post('/conversations/' + c.id + '/hide', { hidden: true }).then(function(r) {
+        if (r.data.code !== 200) throw new Error(r.data.message || '隐藏失败');
+        // 从列表移除。若正好开着它，同时退回新对话页 ——
+        // 否则学生会看到一个"能继续打字但发不出去"的会话（服务端会 404）。
+        self.conversations = self.conversations.filter(function(x) { return x.id !== c.id; });
+        if (self.conversationId === c.id) self.newConversation();
+        self.$store.dispatch('toast', { message: '已隐藏，设了密码才能重新看到', type: 'success' });
+      }).catch(function(err) {
+        self.$store.dispatch('toast', { message: err.message || '隐藏失败', type: 'error' });
+      });
+    },
+
+    unhideConversation: function(c) {
+      var self = this;
+      this.$http.post('/conversations/' + c.id + '/hide', { hidden: false }).then(function(r) {
+        if (r.data.code !== 200) throw new Error(r.data.message || '取消隐藏失败');
+        c.hidden = 0;
+        self.$store.dispatch('toast', { message: '已取消隐藏', type: 'success' });
+      }).catch(function(err) {
+        self.$store.dispatch('toast', { message: err.message || '取消隐藏失败', type: 'error' });
+      });
+    },
+
+    // 侧栏入口：显示已隐藏的会话
+    // 已解锁时直接列（不再问密码）—— 解锁本身就是"已表明身份"，
+    // 再弹一次框只会让人以为密码过期了。
+    showHiddenConversations: function() {
+      var self = this;
+      if (!this.lockHasPassword) {
+        this.$store.dispatch('toast', { message: '还没有隐藏内容', type: 'info' });
+        return;
+      }
+      if (this.lockUnlocked) {
+        this.showHidden = true;
+        this.loadConversations();
+        return;
+      }
+      this.$store.dispatch('lock/promptUnlock').then(function(ok) {
+        if (!ok) return;
+        self.showHidden = true;
+        self.loadConversations();
+      });
+    },
+
+    // 停止显示隐藏会话：**只收列表，不锁**。
+    // 收了列表下次进来默认就看不见；而"上锁"是更强的动作（清解锁态），
+    // 留给设置里的手动上锁 —— 合并成一个按钮会让人分不清自己做了什么。
+    stopShowingHidden: function() {
+      this.showHidden = false;
+      this.loadConversations();
     },
 
     // ---- 会话重命名（行内编辑，PATCH /conversations/:id 的 title 字段）----
@@ -1413,6 +1631,34 @@ export default {
       });
     },
 
+    // ---- 参考来源：就地展开摘要 / 复制链接 ----
+    //
+    // 为什么不做成外链：教室设备的网络要过 MDM 过滤，点开多半白屏或撞上拦截页；
+    // 本应用又没有 keep-alive（切走回来是重建），学生想看原文的代价是重新登录、
+    // 并且丢掉当前对话的位置。摘要本来就是检索时为了"能否核验"抓下来的正文，
+    // 就地展开即可自证，一个网络请求都不需要。
+    toggleSource: function(idx, s) {
+      if (!s || !s.url) return;
+      var key = idx + '|' + s.url;
+      this.openSource = this.openSource === key ? '' : key;
+    },
+
+    // 复制链接：受限网络下，这是唯一还能真正打开原文的路 ——
+    // 学生把它带到家里或手机上粘贴即可。复制不跳转，所以不影响当前上下文。
+    copySourceLink: function(s) {
+      var self = this;
+      if (!s || !s.url) return;
+      this.copyText(s.url).then(function(ok) {
+        if (!ok) {
+          self.$store.dispatch('toast', { message: '复制失败，请长按链接手动复制', type: 'error' });
+          return;
+        }
+        self.copiedLink = s.url;
+        clearTimeout(self._linkTimer);
+        self._linkTimer = setTimeout(function() { self.copiedLink = ''; }, 1600);
+      });
+    },
+
     // ---- 把 AI 回复沉淀成资产：加入错题本 / 存进笔记 ----
     //
     // 「已加入 / 已存入」这类终态刻意挂在**消息对象**上，而不是按下标存数组：
@@ -1426,6 +1672,46 @@ export default {
       var line = String(text || '').split('\n')[0].trim();
       line = line.replace(/^\s*(#{1,6}\s*|>\s*|[-*+]\s+|\d+[.)]\s+)/, '').trim();
       return line;
+    },
+
+    // 用已加载的历史消息**本地估算**一份上下文统计（口径与服务端一致）。
+    //
+    // 存在的唯一理由：圆环此前只在流式响应回来后才亮（contextStats 是运行时
+    // 状态，切页/刷新即丢），学生看到的是"记忆完整度平时根本不显示"。
+    // 现在打开任意历史会话都能立刻看到一个如实反映"这一轮记得多少"的圆环，
+    // 下一轮真实 SSE 数据到了再校准（字段同名，直接覆盖）。
+    //
+    // 口径（与 server/src/services/context-builder.js 对齐，改这里记得改那边）：
+    //   history_total     本会话已加载的消息条数
+    //   history_available 参与本轮的上限 = min(total, 20)
+    //   history_included  同上（未裁剪场景；超长被预算裁掉时下一轮真实数据会变小）
+    //   estimated_tokens  字符数 / 1.8 的粗估（中文约 1 字 ≈ 0.55 token）
+    //   budget_tokens     用后端 context-builder 的同一默认预算
+    estimateContextStats: function() {
+      var total = this.messages ? this.messages.length : 0;
+      if (!total) return null;
+      var cap = total < 20 ? total : 20;
+      var chars = 0;
+      for (var i = 0; i < total; i++) {
+        var m = this.messages[i];
+        if (m && m.content) chars += String(m.content).length;
+      }
+      var images = 0;
+      for (var j = 0; j < total; j++) {
+        var mm = this.messages[j];
+        if (mm && mm.attachments) images += mm.attachments.length;
+      }
+      return {
+        history_total: total,
+        history_included: cap,
+        history_available: cap,
+        estimated_tokens: Math.round(chars / 1.8),
+        // 预算默认值与 server context-builder.js 的 budgetTokens 默认一致；
+        // 真实 SSE 数据（带真预算）回来即被覆盖。
+        budget_tokens: 10000,
+        image_count: images,
+        image_token_reserve: 0
+      };
     },
 
     // 加入错题本：字段与 WrongBook.vue 手动新增完全相同（POST /wrong-book），
@@ -1485,7 +1771,30 @@ export default {
       if (!title) title = 'Cluss 问答';
 
       this.$set(m, 'noteAdding', true);
-      this.$http.post('/notes/notes', {
+
+      // 落在**本地** notes_data：那是学生打开笔记页默认看到的列表。
+      // 早年写进云笔记（/notes/notes），而云笔记在笔记页另一个 tab 里 ——
+      // 点完"已存入笔记"去列表里翻不到，功能等于不存在。
+      var r = appendLocalNote({
+        id: 'note_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
+        title: title,
+        content: content,
+        tags: [],
+        folder: '默认'
+      });
+      if (r.ok) {
+        self.$set(m, 'noteSaved', true);
+        self.$set(m, 'noteLocalId', r.file.id);
+        self.$store.dispatch('toast', { message: '已存入笔记（本地列表）', type: 'success' });
+        self.$set(m, 'noteAdding', false);
+        return;
+      }
+      // 本地写不进去（隐私模式 / 配额满）才回退云笔记，
+      // 并明确告诉学生去哪找 —— 不能默默换目的地
+      var reason = r.reason === 'quota' ? '本地空间不足，已改存云笔记（云盘 tab）'
+        : r.reason === 'unavailable' ? '本地存储不可用，已改存云笔记（云盘 tab）'
+        : '保存失败';
+      self.$http.post('/notes/notes', {
         id: 'note_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
         title: title,
         content: content,
@@ -1495,10 +1804,10 @@ export default {
         is_pinned: 0,
         canvas_data: '',
         type: 'note'
-      }).then(function(r) {
-        if (!r.data || r.data.code !== 200) throw new Error((r.data && r.data.message) || '保存失败');
+      }).then(function(resp) {
+        if (!resp.data || resp.data.code !== 200) throw new Error((resp.data && resp.data.message) || '保存失败');
         self.$set(m, 'noteSaved', true);
-        self.$store.dispatch('toast', { message: '已存入笔记', type: 'success' });
+        self.$store.dispatch('toast', { message: reason, type: 'success' });
       }).catch(function(err) {
         self.$store.dispatch('toast', { message: err.message || '保存失败', type: 'error' });
       }).then(function() {
@@ -1583,10 +1892,56 @@ export default {
       this._copyTimer = setTimeout(function() { self.copiedKey = -1; }, 1600);
     },
 
+    // ---------- 进行中状态（识别 / 检索 / 整理）----------
+    //
+    // 全页只有这一句"当前在做什么"，渲染在助手气泡里（见模板）。
+    // 为什么不让它单独成行挂在气泡外：那样检索时它会和气泡里的"正在思考…"
+    // 同时挂着 —— 同一件事说两遍，而且检索时那句"正在思考"是假的。
+    setBusy: function(text, opts) {
+      var self = this;
+      var o = opts || {};
+      this.clearBusyTimer();
+      this.visionStatus = text || '';
+
+      // 检索可能挂满 12s 超时、识图也可能一张图算很久。一条静态文案放十几秒，
+      // 学生会以为卡死并点停止；到点换成一句诚实的"慢"，比编造进度可靠
+      // （不确定的等待更难熬，见 utils/waiting 的三条约束）。
+      if (o.slowText) {
+        var expect = this.visionStatus;
+        var slowText = o.slowText;
+        this._busyTimer = setTimeout(function() {
+          self._busyTimer = null;
+          // 只替换"仍然停在原句"的那一条：已经变成结果/失败/正文就不要盖掉
+          if (self.visionStatus === expect) {
+            self.visionStatus = slowText;
+            streamSession.setStatus(self.visionStatus);
+          }
+        }, 6000);
+      }
+      streamSession.setStatus(this.visionStatus);
+    },
+
+    clearBusy: function() {
+      this.clearBusyTimer();
+      this.visionStatus = '';
+      streamSession.setStatus('');
+    },
+
+    // 只撤定时器，不动状态：组件销毁时用这个。
+    // 状态本身存在后台会话里，学生切走再回来还要接着显示"正在联网搜索…"。
+    clearBusyTimer: function() {
+      if (this._busyTimer) {
+        clearTimeout(this._busyTimer);
+        this._busyTimer = null;
+      }
+    },
+
     // 中断当前生成：真正的收尾放在流式 promise 的 finally 里，这里只负责发出信号
     stop: function() {
       if (!this.sending) return;
       this.stopped = true;
+      // 状态行当场撤：点完"停止"还挂着"正在联网搜索…"，学生会以为没停掉
+      this.clearBusy();
       // 先把这轮标记为结束 —— 否则学生停止后再切走，后台会话会以为它还在生成，
       // 回来就把一条已停住的内容当成"还在写"继续显示。
       // （AbortError 在 runTurn 的 catch 里被直接 return 跳过，不会走到 finish）
@@ -1647,6 +2002,13 @@ export default {
       a.reasoning = s.reasoning;
       a.streaming = !s.done;
       this.sending = !s.done;
+      // 检索/识别阶段那句状态也存在后台会话里：切走再回来看到的是
+      // "正在联网搜索…"，而不是退回一句笼统的"正在思考…"。
+      this.visionStatus = s.status || '';
+      // 来源清单同理：切过页面的那一轮，历史里还没有 sources（尚未落库）
+      if (s.sources && s.sources.length) {
+        a.sources = pickSources(s.sources, a.content);
+      }
       // 恢复过来的组件没经历过"首字到达"那一刻（那次判定发生在旧组件里），
       // 等待提示会一直挂着 —— 这里按"已经出过字"补撤一次
       if (s.streaming && this.waitText) this.stopWaiting();
@@ -1674,7 +2036,7 @@ export default {
         } else {
           a = {
             role: 'assistant', content: '', html: '', htmlFrozen: '', attachments: [],
-            streaming: true, reasoning: '', reasoningOpen: false
+            streaming: true, reasoning: '', reasoningOpen: false, sources: []
           };
           self.messages.push(a);
         }
@@ -1686,6 +2048,8 @@ export default {
         self.streamAssistant = a;
         self.sending = !st.done;
         self.stopped = false;
+        self.visionStatus = st.status || '';
+        a.sources = pickSources(st.sources, a.content);
         self.resuming = false;
         self.paintStream();
 
@@ -1827,7 +2191,9 @@ export default {
       // 助手消息不设 enter：它在原地"长出来"，出现这一步已经由等待提示承担了
       var assistant = {
         role: 'assistant', content: '', html: '', htmlFrozen: '', attachments: [], streaming: true,
-        reasoning: '', reasoningOpen: false
+        reasoning: '', reasoningOpen: false,
+        // 收到 done 时才知道这轮用了哪些来源；属性先声明，Vue 2 才会追踪
+        sources: []
       };
       this.messages.push(assistant);
       // 这一轮交给后台会话托管：切走页面时组件会被销毁，但生成不能断
@@ -1898,8 +2264,25 @@ export default {
             }
           },
           onStatus: function(st) {
-            if (st.stage === 'vision') self.visionStatus = st.message || '正在识别图片…';
-            else if (st.stage === 'vision_done') self.visionStatus = '';
+            if (st.stage === 'vision') {
+              self.setBusy(st.message || '正在识别图片…', {
+                slowText: '图片还在识别，稍等一下…'
+              });
+            } else if (st.stage === 'vision_done') {
+              self.clearBusy();
+            } else if (st.stage === 'search') {
+              // count 只在"搜完了"那条里带。用它区分两个阶段：
+              //   开始 → 可能一等十几秒（超时 12s），挂一句慢速安抚；
+              //   结果 → 下一步只是模型整理，不要再说"慢"。
+              self.setBusy(st.message || '正在联网搜索…', {
+                slowText: typeof st.count === 'number' ? '' : '联网搜索比平时慢，还在查…'
+              });
+            } else if (st.stage === 'search_done') {
+              // 刻意**不清空文案**：它紧随"已查到 N 条结果，正在整理…"到达，
+              // 清空等于把这句话退回成"正在思考…"，学生看到的信息量是倒退的。
+              // 只撤慢速安抚（已经查到了）；文案等首字 / 收尾 / 出错时再撤。
+              self.clearBusyTimer();
+            }
           },
           onReasoning: function(text) {
             // 第一份思考内容到达就撤掉"正在思考…"：
@@ -1907,6 +2290,9 @@ export default {
             // 面板默认折叠——大部分学生不想对着一大串推理文本，
             // 但要能一眼看出"它在动"，而不是盯着三个点怀疑卡死。
             if (self.waitText) self.stopWaiting();
+            // 状态行（"正在联网搜索…"）也一起撤：已经在出字了，
+            // 再挂一句"在查"就成了自相矛盾。
+            if (self.visionStatus) self.clearBusy();
             assistant.reasoning += text;
             // 同时喂给后台会话：组件在不在都照样累积，切走回来才能接着看
             streamSession.feed('', text);
@@ -1919,6 +2305,7 @@ export default {
           onDelta: function(text) {
             // 第一个字一到就撤掉等待提示，别让它和正文并存
             if (self.waitText) self.stopWaiting();
+            if (self.visionStatus) self.clearBusy();
             assistant.content += text;
             streamSession.feed(text, '');
             if (self.destroyed) return;
@@ -1931,7 +2318,11 @@ export default {
             // 收尾补一次完整渲染：合并期间到达的最后几个字不能丢
             self.cancelFrame();
             paint();
-            self.visionStatus = '';
+            // 参考来源：只列正文里真的引用到的 [n]；一条都没引用就不列
+            assistant.sources = pickSources(done && done.sources, assistant.content);
+            // 交给后台会话：这一轮如果切过页面，新组件要靠它把来源补回去
+            streamSession.setSources(done && done.sources);
+            self.clearBusy();
             // 上下文统计：服务端这一轮真实组装出来的东西（历史纳入条数 / 估算 token …）。
             // 它随 done 事件一起下来，不用额外请求 —— 但**只有真的跑过一轮才有**，
             // 所以没发过消息的会话圆环保持"未测量"，不去猜一个数填上。
@@ -1945,13 +2336,13 @@ export default {
           onError: function(message) {
             assistant.streaming = false;
             streamSession.finish(message);
-            self.visionStatus = '';
+            self.clearBusy();
             self.streamError = message || '生成失败，请重试';
           }
         });
       }).catch(function(err) {
         assistant.streaming = false;
-        self.visionStatus = '';
+        self.clearBusy();
         // 主动停止的那次在 stop() 里已经 finish 过了，这里不再覆盖
         if (err && err.name === 'AbortError') return;
 
@@ -1987,6 +2378,11 @@ export default {
         self._abort = null;
         // 无论成功、报错还是中断，都要撤掉等待提示，并把渲染补完
         self.stopWaiting();
+        // 中断（点停止）这条路径不走 onDone/onError，状态行得在这里收。
+        // 只有真的挂着状态才走 clearBusy：它会通知后台会话，
+        // 在 409（上一轮还在跑，streamAssistant 已被摘空）时没必要多触发一次同步。
+        if (self.visionStatus) self.clearBusy();
+        else self.clearBusyTimer();
         self.cancelFrame();
         paint();
 
@@ -2248,6 +2644,18 @@ html.no-flex-gap .conv-item > * + * {
   white-space: nowrap;
 }
 
+/* 隐藏会话的小锁标：实心（与描边的线性图标区分），跟在标题前面。
+   放在标题内部而不是绝对定位到右上角 —— 标题省略号会把它一起截掉，
+   且窄栏下它会把标题文字挤成三个点。 */
+.conv-hidden-mark {
+  width: 11px;
+  height: 11px;
+  margin-right: 4px;
+  vertical-align: -1px;
+  fill: currentColor;
+  flex-shrink: 0;
+}
+
 .conv-item.active .conv-title {
   color: var(--accent);
   font-weight: 500;
@@ -2265,6 +2673,8 @@ html.no-flex-gap .conv-item > * + * {
   cursor: pointer;
   opacity: 0;
   flex-shrink: 0;
+  /* ::after 撑命中区需要定位上下文 */
+  position: relative;
 }
 
 @media (hover: hover) {
@@ -2273,8 +2683,36 @@ html.no-flex-gap .conv-item > * + * {
 }
 }
 
-/* 触屏没有 hover：竖屏触控设备上操作按钮常显（靠低对比让位正文，
-   与桌面"悬停才出现"的克制并存） */
+/* 触屏没有 hover，「悬停才出现」就不成立。
+   ⚠️ 判据必须是 @media (hover: none)，**不能**用 html.is-portrait：
+   受管平板的主力姿态是横屏，is-portrait 永不成立 →
+   这四个按钮永远停在 opacity:0，用户看到的就是"删除/重命名图标不见了"
+   （2026-10-21 实测反馈）。
+   做法与 .msg-tools 同一套：常显低对比让位正文（0.7 是可读下限），
+   :active 提亮确认按下，命中区靠 ::after 向上下扩到 40px（不动布局）。 */
+@media (hover: none) {
+  .conv-del {
+    opacity: 0.7;
+  }
+  .conv-del:active {
+    opacity: 1;
+    background: var(--danger-tint);
+    color: var(--danger);
+  }
+  .conv-del::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 40px;
+    transform: translateY(-50%);
+    background: transparent;
+  }
+}
+
+/* 竖屏触控：按钮本就不该抢正文（横屏靠 0.7 的低对比已经够），
+   这里保留更亮的一档 —— 竖屏列表整行更窄，按钮更容易被误认为装饰 */
 html.is-portrait .conv-del {
   opacity: 1;
 }
@@ -2341,6 +2779,34 @@ html.no-flex-gap .conv-main > * + * {
 @media (hover: hover) {
 .conv-more:hover {
   background: var(--ink-1);
+}
+}
+
+/* "显示已隐藏的会话"入口：与"显示更早的对话"同族（整行、低对比），
+   但**常显** —— 它是一个"这里有一件你不知道的事"的提示，
+   而不是列表的自然延伸，藏起来就失去了意义。
+   ⚠️ 这些规则刻意放在 @media (hover: hover) 之外：
+   塞进去就等于"只有有鼠标的设备才显示入口"（主力是触屏平板）。 */
+.conv-hidden-entry {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin: 6px 0 2px;
+  padding: 8px;
+  border: 1px dashed var(--ink-3);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+@media (hover: hover) {
+.conv-hidden-entry:hover {
+  background: var(--ink-1);
+  color: var(--text-primary);
 }
 }
 
@@ -2840,6 +3306,18 @@ html.no-flex-gap .msg > * + * {
 .msg-avatar {
   flex-shrink: 0;
   margin-top: 2px;
+  /* 浅色玻璃片直接放在页面底上只剩一个淡蓝点，看着像渲染残留。
+     给它一张 26px 的白色小卡片（与气泡同材质、更轻），才读得出是头像。 */
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 1px 4px rgba(31, 41, 72, 0.06);
+  box-sizing: border-box;
 }
 
 /* 气泡 + 操作条的竖排容器。
@@ -2980,6 +3458,158 @@ html.is-portrait .bubble {
   min-width: 56px;
 }
 
+/* ---------- 参考来源（联网搜索） ----------
+   贴在答案末尾、用一条极浅的分割线与正文分开：
+   它属于"依据"，不属于"回答"，所以不抢正文的字号与颜色。
+   行高 ≥ 34px 是为了触屏 —— 平板上一行只有 20px 高时很难点中。
+
+   ⚠️ 行为上刻意**不是链接**：教室设备的网络要过 MDM 过滤，
+   外链点开多半白屏或撞上拦截页，而跳回来要重新登录、对话位置也没了。
+   所以点 = 就地展开检索时抓到的摘要（零网络请求），链接只作为"复制"备用。 */
+.msg-sources {
+  margin-top: 12px;
+  padding-top: 9px;
+  border-top: 1px solid var(--ink-3);
+}
+.msg-sources-title {
+  display: flex;
+  align-items: baseline;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+.msg-sources-tip {
+  /* 来源块看起来像链接，不说明没人知道能点。这句话是给触屏的 */
+  margin-left: auto;
+  font-size: 11px;
+  letter-spacing: 0;
+  color: var(--text-tertiary);
+  opacity: 0.85;
+}
+.msg-source {
+  /* 触屏按钮重置：button 默认带边框、居中文字与系统字体 */
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: calc(100% + 16px);
+  box-sizing: border-box;
+  min-height: 34px;
+  padding: 7px 8px;
+  margin: 0 -8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+html.no-flex-gap .msg-source > * + * {
+  margin-left: 8px;
+}
+.msg-source:active {
+  /* 课堂主力是触屏平板：按压态比 hover 更重要，hover 在这里没有意义 */
+  background: var(--ink-2);
+}
+@media (hover: hover) {
+  /* 只放 hover 规则本身 —— 顺手写进来的常规样式会变成"只在有鼠标的设备生效" */
+  .msg-source:hover {
+    background: var(--ink-1);
+  }
+}
+.msg-source.is-open {
+  background: var(--ink-1);
+}
+.msg-source-n {
+  flex-shrink: 0;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 19px;
+  text-align: center;
+  box-sizing: border-box;
+}
+.msg-source-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-source-host {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+.msg-source-caret {
+  /* 用两条边画出的小箭头：不依赖字体里的 › 会不会被替换成怪字符。
+     顶点在右下角，所以 -45deg 才是「朝右」（45deg 会变成朝下）。 */
+  flex-shrink: 0;
+  align-self: center;
+  width: 6px;
+  height: 6px;
+  margin-top: 1px;
+  border-right: 1.5px solid var(--text-tertiary);
+  border-bottom: 1.5px solid var(--text-tertiary);
+  transform: rotate(-45deg);
+  transition: transform 0.16s var(--ease-standard, ease-out);
+}
+.msg-source.is-open .msg-source-caret {
+  /* 展开时抬成朝上。刻意写 -135deg 而不是 225deg：两者等价，
+     但 225 会让 transition 从 -45 顺时针绕 270° 转一大圈才到位。 */
+  transform: rotate(-135deg);
+}
+.msg-source-body {
+  /* 左缩进 = 编号 19 + 间距 8，让摘要与标题首字对齐，读起来是"这一条的补充" */
+  padding: 2px 8px 10px 27px;
+  margin: 0 -8px;
+}
+.msg-source-snippet {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.msg-source-snippet.is-empty {
+  color: var(--text-tertiary);
+}
+.msg-source-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 9px;
+}
+html.no-flex-gap .msg-source-foot > * + * {
+  margin-left: 10px;
+}
+.msg-source-date {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+.msg-source-copy {
+  min-height: 30px;
+  padding: 4px 11px;
+  border: 1px solid var(--ink-3);
+  border-radius: 7px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.msg-source-copy:active {
+  background: var(--ink-2);
+}
+
 .bubble-attachments {
   display: flex;
   flex-wrap: wrap;
@@ -3029,33 +3659,19 @@ html.no-flex-gap .bubble-attachments > * + * {
 /* 流式光标样式在 global.css（.stream-caret）：三页共用同一份，
    避免三个 scoped 副本在"形态调优"时走偏 */
 
-.vision-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 auto var(--gap-sm);
-  padding: 8px 14px;
-  border-radius: var(--radius-pill);
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-size: 12.5px;
-  width: fit-content;
-}
-html.no-flex-gap .vision-status > * + * {
-  margin-left: 8px;
+/* 状态行（检索 / 识别）嵌在助手气泡里，用等待提示那套形态。
+   不再单独做一条居中胶囊：那会和气泡内的"正在思考…"同时出现，
+   同一件事说两遍，还多一次布局跳动。 */
+.waiting-hint-strong {
+  /* 检索/识别是"它真的在做一件具体的事"，比单纯的"思考中"更值得被看见，
+     所以从 tertiary 提到 secondary；再深就抢正文了 */
+  color: var(--text-secondary);
 }
 
-.spinner {
-  width: 13px;
-  height: 13px;
-  border: 2px solid var(--accent-ring);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
+/* 已经出过字之后又去检索：接在正文下面，和正文留一点距离 */
+.waiting-hint-inline {
+  margin-top: 8px;
+  animation: none;
 }
 
 .stream-error {
@@ -3126,7 +3742,11 @@ html.no-flex-gap .composer > * + * {
   border-color: var(--accent);
   color: var(--accent);
 }
-
+}
+/* ⚠️ 这条规则**不能**放进 @media (hover: hover)：触屏平板不匹配 hover，
+   整条规则会被丢弃，SVG 退回浏览器默认（fill: 黑色、无描边）——
+   深色主题下「引用笔记」的图标就变成一块看不见的黑影。
+   2026-10-21 实测：横屏受管平板上的症状就是"图标的框在，图标没了"。 */
 /* SVG 图标继承按钮字色（hover 变色自动跟随），尺寸与 34px 按钮协调 */
 .btn-ic {
   display: block;
@@ -3138,7 +3758,6 @@ html.no-flex-gap .composer > * + * {
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
-}
 }
 
 .composer-input {

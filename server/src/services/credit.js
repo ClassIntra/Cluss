@@ -286,6 +286,23 @@ function applyAssignment(p) {
     }
 
     var before = getAssignment(uid);
+    // getAssignment 对不存在的学生也会返回默认对象，必须单独判「行是否存在」，
+    // 否则新学生（0/0/''）会被误判成「值没变」而永远建不出账本行。
+    var rowExists = !!db.prepare('SELECT 1 FROM cluss_credit WHERE user_id = ?').get(uid);
+
+    // 值完全没变就整行跳过。
+    //
+    // 跨班额度是每轮**全量下发**的（节点 60 秒拉一次），无条件 UPSERT 会把这
+    // 几十人的 updated_at / assigned_by 每分钟刷一遍 —— 结果「更新于」永远是
+    // 一分钟前、assigned_by 一律 relay-pull，管理员想追「谁在什么时候被改过」
+    // 就没有依据了。流水日志仍然只在 delta≠0 时记，所以对账不受影响。
+    if (rowExists &&
+        Number(before.allocated_micro || 0) === allocated &&
+        Number(before.weekly_quota_micro || 0) === weekly &&
+        String(before.assigned_by || '') === String(p.assigned_by || '')) {
+      return true;
+    }
+
     db.prepare([
       'INSERT INTO cluss_credit (user_id, allocated_micro, weekly_quota_micro, org_id, updated_at, assigned_by)',
       'VALUES (?, ?, ?, ?, ?, ?)',

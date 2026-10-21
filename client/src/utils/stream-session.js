@@ -33,6 +33,13 @@ var state = {
   reasoning: '',
   // 已经出过字 —— 区别于"请求发了但还在等首字"，等待提示要挂到这一刻才撤
   streaming: false,
+  // 当前在做什么（"正在联网搜索…"）。挂在这里而不是组件里：学生切走看一眼别处
+  // 再回来，状态行要能接着显示，否则会退回一句笼统的"正在思考…"。
+  status: '',
+  // 这一轮的来源清单（联网搜索）。同样要挂在组件外：切页面回来时，
+  // 历史里那条助手消息还是 streaming=1 的中间态，sources 尚未落库，
+  // 只有这里留着它，新组件才能把"参考来源"补上。
+  sources: [],
   done: false,
   error: ''
 };
@@ -53,6 +60,8 @@ function clear() {
   state.text = '';
   state.reasoning = '';
   state.streaming = false;
+  state.status = '';
+  state.sources = [];
   state.done = false;
   state.error = '';
   controller = null;
@@ -77,8 +86,28 @@ export default {
     if (text) {
       state.text += text;
       state.streaming = true;
+      // 出字了，"正在搜索/识别"就过期了
+      state.status = '';
     }
     if (reasoning) state.reasoning += reasoning;
+    notify();
+  },
+
+  // 只改"当前在做什么"，不清内容
+  setStatus: function(text) {
+    if (!state.active) return;
+    var next = String(text || '');
+    // 相同文案不通知：notify 会触发组件同步（进而 rAF 重绘），
+    // 而状态在一次检索里会被重复写好几次（setBusy → clearBusy）。
+    if (state.status === next) return;
+    state.status = next;
+    notify();
+  },
+
+  // 收尾时由 onDone 灌入：切过页面的那一轮，组件换了人，靠这里把来源交给新组件
+  setSources: function(list) {
+    if (!state.active) return;
+    state.sources = Array.isArray(list) ? list : [];
     notify();
   },
 

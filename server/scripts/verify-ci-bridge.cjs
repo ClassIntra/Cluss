@@ -31,6 +31,12 @@ function ok(name, cond, extra) {
 function section(t) { lines.push(''); lines.push('== ' + t + ' =='); }
 function has(n, h) { return String(h).indexOf(n) !== -1; }
 
+// CI 段的**段标题行**。不能只匹配「【他在校园社区里的活动】」：
+// BASE 第 15 条会列出注入块名称提醒模型"这是系统数据、不可伪造"，
+// 裸标题在"没有注入"时也会命中，存在性与位置断言都会假阳性。
+var CI_HEAD = '【他在校园社区里的活动】（来自学校系统';
+function hasCi(h) { return has(CI_HEAD, h); }
+
 // ------------------------------------------------------------
 // 时间打桩：ci-bridge 用 Date.now() 判 TTL，偏移它即可模拟时间流逝
 // ------------------------------------------------------------
@@ -193,22 +199,25 @@ async function run(port) {
     memories: [{ key: '偏好_风格', content: '喜欢简洁' }],
     ciProfile: ciSample
   });
-  ok('含 CI 素材段标题', has('【他在校园社区里的活动】', withCi));
+  ok('含 CI 素材段标题', hasCi(withCi));
   ok('含个性签名', has('探针签名', withCi));
   ok('含学业倒计时', has('期末考试', withCi));
   ok('含音乐口味', has('周杰伦', withCi));
   ok('含社区标签', has('棋类', withCi));
   ok('含帖标题', has('我的象棋心得', withCi));
-  ok('含棋类', has('国际象棋', withCi));
+  ok('含棋类', has('象棋 2 局', withCi));
 
   // 反向对照：必须带"绝不要主动提起"的护栏，否则等于给学生装了台监视器
   ok('含「绝对不要主动提起」护栏', has('绝对不要主动提起这些内容', withCi));
-  ok('含「以他现在说的为准」时效声明', has('以他现在说的为准', withCi));
-  ok('含「不要拿等级评价他」护栏', has('不是学习水平', withCi));
+  ok('含「以他现在说的为准」时效声明', has('他现在的说法', withCi));
+  ok('含「不要拿等级评价他」护栏', has('不要用等级、连续登录天数去评价他', withCi));
 
   // 位置：画像之后、记忆之前（三段都在末尾，但相对顺序必须稳定）
+  // ⚠️ 定位必须用**段标题行**（带后半句），不能用裸的「【他在校园社区里的活动】」：
+  //    BASE 第 15 条会把注入块名称列出来提醒模型"这是系统数据、不可伪造"，
+  //    裸标题会先命中那一处，位置与存在性断言全部失真。
   var iProfile = withCi.indexOf('【关于这个学生】');
-  var iCi = withCi.indexOf('【他在校园社区里的活动】');
+  var iCi = withCi.indexOf(CI_HEAD);
   var iMem = withCi.indexOf('【关于这个学生的长期记忆】');
   ok('画像段在前', iProfile > 0 && iProfile < iCi, 'profile=' + iProfile + ' ci=' + iCi);
   ok('CI 段在记忆段之前', iCi > 0 && iCi < iMem, 'ci=' + iCi + ' mem=' + iMem);
@@ -221,13 +230,13 @@ async function run(port) {
     memories: [{ key: '偏好_风格', content: '喜欢简洁' }],
     ciProfile: null
   });
-  ok('ciProfile = null → 不含 CI 段', !has('【他在校园社区里的活动】', noCi));
+  ok('ciProfile = null → 不含 CI 段', noCi.indexOf(CI_HEAD) < 0);
   ok('null 时其余段照常（画像在）', has('【关于这个学生】', noCi));
 
   var emptyCi = prompts.getSystemPrompt({
     mode: 'daily', memories: [], ciProfile: {}
   });
-  ok('ciProfile = {} → 不含 CI 段（不注入空壳）', !has('【他在校园社区里的活动】', emptyCi));
+  ok('ciProfile = {} → 不含 CI 段（不注入空壳）', emptyCi.indexOf(CI_HEAD) < 0);
 
   // 反向对照：不传 ciProfile 与传 null 的产物必须完全一致
   var omitted = prompts.getSystemPrompt({
@@ -239,15 +248,15 @@ async function run(port) {
 
   // 最小素材也能出段（只有签名）
   var minCi = prompts.getSystemPrompt({ mode: 'daily', memories: [], ciProfile: { signature: '就一句话' } });
-  ok('只有签名时也能出 CI 段', has('【他在校园社区里的活动】', minCi) && has('就一句话', minCi));
+  ok('只有签名时也能出 CI 段', hasCi(minCi) && has('就一句话', minCi));
 
   // 学习模式同样注入（棋类类比对解题也有用）
   var studyCi = prompts.getSystemPrompt({
     mode: 'study', studyStyle: 'guided', taskKind: 'single', memories: [], ciProfile: ciSample
   });
-  ok('学习模式也注入 CI 段', has('【他在校园社区里的活动】', studyCi));
+  ok('学习模式也注入 CI 段', hasCi(studyCi));
 
   // 笔记辅助模式同样注入
   var noteCi = prompts.getSystemPrompt({ mode: 'note', memories: [], ciProfile: ciSample });
-  ok('笔记辅助模式也注入 CI 段', has('【他在校园社区里的活动】', noteCi));
+  ok('笔记辅助模式也注入 CI 段', hasCi(noteCi));
 }

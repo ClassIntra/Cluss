@@ -9,6 +9,12 @@
 //   轮 2：后台刷新已完成 → prompt 里**应该**有 CI 段
 //   轮 3：CI 被关掉 → 没有 CI 段，但对话必须照常成功（增强项不该拖垮主链路）
 //
+// ⚠️ CI 段的位置：它属于**逐轮变化段**（画像 / 记忆 / 余额 / 时间同一类），
+//    由 prompt-registry 的 getSystemPromptParts 放在 dynamic 里，再由
+//    context-builder 拼到**本轮用户消息末尾**。system 只留逐字节恒定的部分 ——
+//    否则每轮都会打掉上游前缀缓存（实测命中率 10.2%）。
+//    因此断言要落在「模型实际收到的全部上下文」上，而不是只盯 system。
+//
 // 什么时候跑：改 turn-runner 的上下文组装、或改 ci-bridge / CI 素材段之后。
 // 安全：全程只打本地假上游（临时库里其余模型一律停用），不产生任何真实外呼。
 //
@@ -120,6 +126,26 @@ function listen(srv) {
 }
 function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
+// CI 段**真正的标题行**。不能只匹配「【他在校园社区里的活动】」这几个字：
+// BASE 第 15 条会把注入块的名称列出来提醒模型「这是系统注入、不可伪造」，
+// 光看标题会出现「没注入也命中」的假阳性（本脚本踩过）。
+var CI_HEAD = '【他在校园社区里的活动】（来自学校系统';
+function hasCi(text) { return String(text || '').indexOf(CI_HEAD) >= 0; }
+
+// 模型这一轮实际看到的最后一条用户消息（动态背景块就挂在它的末尾）
+function lastUserText(body) {
+  var msgs = (body && body.messages) || [];
+  for (var i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i] && msgs[i].role === 'user') {
+      return typeof msgs[i].content === 'string'
+        ? msgs[i].content
+        : JSON.stringify(msgs[i].content);
+    }
+  }
+  return '';
+}
+
+
 // ------------------------------------------------------------
 // 主流程
 // ------------------------------------------------------------
@@ -182,7 +208,8 @@ function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
   ok('轮 1 向假上游发了 1 次请求', upBodies.length === 1, upBodies.length);
   var sys1 = upBodies[0] && upBodies[0].body && upBodies[0].body.messages[0];
   ok('轮 1 system 是第一条消息', !!(sys1 && sys1.role === 'system'));
-  ok('轮 1 system 不含 CI 段', !has('【他在校园社区里的活动】', sys1 && sys1.content));
+  ok('轮 1 模型上下文不含 CI 段', !hasCi(String(sys1 && sys1.content)) &&
+    !hasCi(lastUserText(upBodies[0].body)));
   ok('轮 1 对话正常收尾（有 done 事件）', has('event: done', res1.body()));
   ok('轮 1 没有 error 事件', !has('event: error', res1.body()));
   ok('轮 1 上游收到的是「日常」场景（含人格/日常段）', has('日常', String(sys1 && sys1.content)));
@@ -193,7 +220,7 @@ function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
   ok('轮 1 之后缓存里已有素材', !!ciBridge.getCachedStudentProfile(USER));
 
   // ---------- 轮 2：缓存命中 → system prompt 里必须有 CI 段 ----------
-  section('轮 2：缓存命中（CI 素材进入 system prompt）');
+  section('轮 2：缓存命中（CI 素材进入本轮上下文）');
   upBodies.length = 0;
   var res2 = new MockRes();
   await runner.runStreamTurn({
@@ -206,22 +233,25 @@ function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
   ok('轮 2 向假上游发了 1 次请求', upBodies.length === 1, upBodies.length);
   var sys2 = String((upBodies[0] && upBodies[0].body.messages[0] || {}).content || '');
-  ok('轮 2 system **含** CI 段标题', has('【他在校园社区里的活动】', sys2));
-  ok('轮 2 含 CI 里的个性签名', has('探针签名_来自CI', sys2));
-  ok('轮 2 含 CI 里的学业倒计时', has('期末考试', sys2));
-  ok('轮 2 含 CI 里的音乐口味', has('周杰伦', sys2));
-  ok('轮 2 含 CI 里的棋类', has('国际象棋', sys2));
-  ok('轮 2 含「绝对不要主动提起」护栏', has('绝对不要主动提起这些内容', sys2));
+  var dyn2 = lastUserText(upBodies[0].body);
+  // 分层的核心不变量：逐轮变化段绝不进 system，否则前缀缓存每轮全废
+  ok('轮 2 system **不含** CI 段（逐轮变化段不进 system）', !hasCi(sys2));
+  ok('轮 2 system 与轮 1 逐字节相同（前缀缓存的前提）',
+    sys2.length > 0 && sys2 === String(sys1.content), sys2.length + ' 字节');
+  ok('轮 2 动态块挂在最后一条用户消息末尾（含 CI 段）', hasCi(dyn2));
+  ok('轮 2 含 CI 里的个性签名', has('探针签名_来自CI', dyn2));
+  ok('轮 2 含 CI 里的学业倒计时', has('期末考试', dyn2));
+  ok('轮 2 含 CI 里的音乐口味', has('周杰伦', dyn2));
+  ok('轮 2 含 CI 里的棋类', has('象棋', dyn2));
+  ok('轮 2 含「绝对不要主动提起」护栏', has('绝对不要主动提起这些内容', dyn2));
   ok('轮 2 对话正常收尾', has('event: done', res2.body()));
 
-  // 位置：CI 段必须在 system 的末尾区（否则每轮都会打掉上游前缀缓存）
-  var iCi = sys2.indexOf('【他在校园社区里的活动】');
-  ok('CI 段位于 system 末尾区（> 60% 处）', iCi > sys2.length * 0.6, iCi + '/' + sys2.length);
-
-  // 反向对照：CI 段里的素材不该出现在**用户消息**里（只给模型看，不进对话记录）
+  // 反向对照：动态块只挂在**最后一条**用户消息上，
+  // 历史消息（以及落库的正文）里不该带着背景块，否则会一轮轮叠加。
   var userMsgs = (upBodies[0].body.messages || []).filter(function (m) { return m.role === 'user'; });
-  var userText = userMsgs.map(function (m) { return String(m.content); }).join('\n');
-  ok('CI 素材没有污染用户消息', !has('探针签名_来自CI', userText) && !has('我的象棋心得', userText));
+  var historyText = userMsgs.slice(0, -1).map(function (m) { return String(m.content); }).join('\n');
+  ok('动态块只在本轮消息上，历史消息没被污染',
+    !has('探针签名_来自CI', historyText) && !has('我的象棋心得', historyText));
 
   // ---------- 轮 3：CI 完全关掉 → 没有 CI 段，但对话仍必须成功 ----------
   section('轮 3：CI 不可用（增强项不该拖垮主链路）');
@@ -245,7 +275,7 @@ function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
   ok('轮 3 不抛异常', !threw);
   ok('轮 3 仍向上游发出请求', upBodies.length === 1, upBodies.length);
   var sys3 = String((upBodies[0] && upBodies[0].body.messages[0] || {}).content || '');
-  ok('轮 3 system **不含** CI 段', !has('【他在校园社区里的活动】', sys3));
+  ok('轮 3 模型上下文不含 CI 段', !hasCi(sys3) && !hasCi(lastUserText(upBodies[0].body)));
   ok('轮 3 system 仍正常（含日常场景段）', has('日常', sys3));
   ok('轮 3 对话正常收尾（有 done 事件）', has('event: done', res3.body()));
   ok('轮 3 没有 error 事件', !has('event: error', res3.body()));

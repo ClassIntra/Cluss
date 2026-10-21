@@ -24,6 +24,7 @@ var db = require('../utils/db');
 var ai = require('./ai');
 var pricing = require('./pricing');
 var memory = require('./memory');
+var affinity = require('./affinity');
 
 // 每多少轮助手回复触发一次提取。
 // 取值权衡：太小会让每轮都多打一次上游（成本翻倍），太大则"记住"来得太慢。
@@ -37,10 +38,18 @@ var TRANSCRIPT_TOTAL_CHARS = 4000;
 
 // 单次最多写入几条。宁少勿滥 —— 记忆是给模型的背景，多了会喧宾夺主，
 // 而且模型偶尔会为凑数硬编几条无关紧要的。
-var MAX_ITEMS_PER_RUN = 5;
+//
+// 2026-10-20 调到 8：实测每 4 轮提取一次、单轮 5 条 160 字的额度远远用不满
+// 模型能力（一次完整对话里值得记的事实经常 6~8 条），且学生反馈
+// "记忆太短、没达到模型能力上限"。8 条仍在"背景"的量级内。
+var MAX_ITEMS_PER_RUN = 8;
 
 var MAX_KEY_CHARS = 24;
-var MAX_CONTENT_CHARS = 160;
+// 单条记忆正文字数。160 字对"他物理电学吃力，做题漏条件，期末想冲 85"这种
+// 颗粒度够用；翻倍到 320 是为了让模型能一次写清"事实 + 上下文"
+// （不止干巴巴一个结论）。注入时另有 MAX_INJECT=8 条的条数与
+// selectForContext 的字符预算兜底，不会无限膨胀。
+var MAX_CONTENT_CHARS = 320;
 
 // 内存级防重入：同一会话正在提取时，下一轮结束不再叠加一次请求。
 // 只活到进程重启，够了 —— 节流本来靠上面的条数取模，这里只防"同时跑两份"。
@@ -87,15 +96,32 @@ function pickCheapestModel() {
 // ------------------------------------------------------------
 // 触发判定
 // ------------------------------------------------------------
-function countFinishedAssistantTurns(convId) {
+// 该用户在**全部会话**里已完成的助手回合数。
+//
+// 为什么按用户而不是按会话（2026-10-20 实测改）：
+//   学生是一个会话问几句就换下一个的 —— 实测 251800 有 7 个会话共 22 个助手回合，
+//   平均每会话 3 回合，几乎没有一个会话能摸到"第 4 回合"。
+//   按单会话计数时，这套长期记忆系统 structural 性地收不到多少料，
+//   表现为"聊了很多天，记忆里还是一条都没有"。
+//   改成跨会话累计后，学生感知到的规则很简单：**每聊满 4 轮，AI 整理一次**。
+function countUserFinishedTurns(userId) {
   var row = db.prepare([
-    "SELECT COUNT(*) AS n FROM ai_messages",
-    "WHERE conversation_id = ? AND role = 'assistant' AND streaming = 0"
-  ].join('\n')).get(String(convId));
+    'SELECT COUNT(*) AS n FROM ai_messages m',
+    'JOIN ai_conversations c ON m.conversation_id = c.id',
+    "WHERE c.user_id = ? AND m.role = 'assistant' AND m.streaming = 0"
+  ].join('\n')).get(String(userId));
   return row ? Number(row.n) : 0;
 }
 
-// 该不该为这个会话跑一次提取
+// 距离下次整理还差几轮（给学生看的节奏提示）。
+// 刚整理完（n 是 4 的倍数）时返回 4：下一轮就开始从头数。
+function nextExtractIn(userId) {
+  var n = countUserFinishedTurns(userId);
+  if (n <= 0) return EVERY_N_TURNS;
+  return EVERY_N_TURNS - (n % EVERY_N_TURNS);
+}
+
+// 该不该跑一次提取
 //
 // 只处理"自由对话"，不处理任务型链路：
 //   拍题 / 批改 / 作文的正文里主要是**题目与学生答案**，不是"关于他这个人"的信息；
@@ -108,7 +134,8 @@ function shouldExtract(ctx) {
   var mode = String(ctx.mode || 'study');
   if (mode !== 'daily' && mode !== 'study') return false;
 
-  var n = countFinishedAssistantTurns(ctx.conversationId);
+  // 触发看**跨会话累计**回合；这一轮合格（上面两个 if）只是入场券。
+  var n = countUserFinishedTurns(ctx.userId);
   if (n <= 0 || n % EVERY_N_TURNS !== 0) return false;
   return true;
 }
@@ -116,12 +143,16 @@ function shouldExtract(ctx) {
 // ------------------------------------------------------------
 // 取对话片段
 // ------------------------------------------------------------
-function loadTranscript(convId) {
+// 与触发统计一致：跨会话取该用户最近的若干条。
+// 单会话的片段撑不起一份"长期记忆"——学生把"我下周要期中考"这件事
+// 分散在三四个会话里说过，只有跨会话拼起来才看得见。
+function loadTranscript(userId) {
   var rows = db.prepare([
-    "SELECT role, content FROM ai_messages",
-    "WHERE conversation_id = ? AND streaming = 0 AND content <> ''",
-    'ORDER BY id DESC LIMIT ?'
-  ].join('\n')).all(String(convId), TRANSCRIPT_MESSAGES);
+    'SELECT m.role, m.content FROM ai_messages m',
+    'JOIN ai_conversations c ON m.conversation_id = c.id',
+    "WHERE c.user_id = ? AND m.streaming = 0 AND m.content <> ''",
+    'ORDER BY m.id DESC LIMIT ?'
+  ].join('\n')).all(String(userId), TRANSCRIPT_MESSAGES);
   rows.reverse();
 
   var chunks = [];
@@ -167,7 +198,7 @@ var EXTRACT_SYSTEM = [
   '   情绪（长期的状态与压力来源）、事实（家庭、人际、经历）。',
   '   不要自创类别词 —— 系统按类别决定这条记忆什么时候生效，自创的会被漏掉。',
   '   **同一类信息必须用同一个 key**，这样再次提到时会覆盖旧内容而不是堆积成多条。',
-  '4. content 用第三人称（"他…"）一句话说清，不超过 80 字。',
+  '4. content 用第三人称（"他…"）说清，不超过 160 字：结论 + 支撑它的上下文。',
   '5. 没有任何值得记的内容时，输出 []。',
   '',
   '示例：',
@@ -308,7 +339,7 @@ function run(c) {
 
   var transcript;
   try {
-    transcript = loadTranscript(convId);
+    transcript = loadTranscript(userId);
   } catch (e) {
     log('读取对话片段失败：%s', e.message);
     return Promise.resolve();
@@ -332,9 +363,11 @@ function run(c) {
     // 低温度：这是"抽事实"，不是"创作"，输出越稳定越好
     temperature: 0.2,
     timeout: 60000,
-    // 提取器每次最多吐一小组 JSON 条目，几百 token 封顶。
-    // 它每轮都在后台跑，跑飞一次就是纯浪费（学生看不到这段输出，却要付钱）。
-    maxTokens: 1024
+    // 提取器每次最多吐一小组 JSON 条目。
+    // 2026-10-20 从 1024 提到 2048：条数上限调到 8 条、单条 320 字后，
+    // 1024 会把输出截断在 JSON 中间（模型吐到一半没 token 了），
+    // 解析失败即整轮白跑 —— 那是"额度给大了反而一条不剩"。
+    maxTokens: 2048
   }).then(function(resp) {
     var text = readContent(resp);
     var items = parseItems(text);
@@ -361,16 +394,28 @@ function run(c) {
     }
     log('用户 %s 会话 %s：新增 %d 条、更新 %d 条（模型 %s，%dms）',
       userId, convId, added, updated, model.id, Date.now() - startedAt);
+
+    // 好感度：「被 AI 记住」是学生对这套系统最直接的感知，值得单独加分。
+    // 只挂在这里（不挂路由层的手动添加）—— 这是"它自己记下的"，
+    // 不是"我教它记的"，加分理由才对得上。affinity 内部有每日一次与封顶。
+    if (added + updated > 0) {
+      try { affinity.noteNewMemory(userId); } catch (e) { /* 好感度绝不拖累记忆 */ }
+    }
   });
 }
 
 module.exports = {
   EVERY_N_TURNS: EVERY_N_TURNS,
   maybeExtractAfterTurn: maybeExtractAfterTurn,
+  // 给学生看的节奏："再聊几轮会整理一次"。
+  // 路由层用它把后台节奏变成明示承诺 —— 后台悄悄跑却不告诉学生，
+  // 学生看到的就是"设了/聊了，但它什么都没记"。
+  nextExtractIn: nextExtractIn,
   // 以下导出仅为可测性（探针要用），业务代码不要依赖
   _internal: {
     pickCheapestModel: pickCheapestModel,
     shouldExtract: shouldExtract,
+    countUserFinishedTurns: countUserFinishedTurns,
     loadTranscript: loadTranscript,
     parseItems: parseItems,
     readContent: readContent,

@@ -21,6 +21,10 @@
             <div v-if="dashboard && dashboard.totals.admins" class="tiny muted metric-foot">
               另含 {{ dashboard.totals.admins }} 个管理员账号
             </div>
+            <!-- 组网之后这个数字包含别的班。不标出来管理员会以为都是本机的 -->
+            <div v-if="dashboard && dashboard.totals.remote_users" class="tiny muted metric-foot">
+              其中 {{ dashboard.totals.remote_classes }} 个接入班共 {{ dashboard.totals.remote_users }} 人
+            </div>
           </div>
           <div class="metric glass">
             <div class="metric-label">已分配额度</div>
@@ -261,7 +265,90 @@
 <!-- ================= 额度分配 ================= -->
         <!-- 列表含管理员：班管本人既管钱也是要用的学生，滤掉他就找不到自己那一行、
              连给自己充值都做不到（充值按钮挂在每行的操作列上）。管理员行加徽标区分。 -->
-        <template v-else-if="tab === 'quota'">
+        <template v-else-if="tab === 'mesh'">
+        <section class="metrics">
+          <div class="metric glass">
+            <div class="metric-label">本机角色</div>
+            <div class="metric-value metric-value-sub">
+              <span v-if="meshStatus && meshStatus.is_hub" class="badge badge-success">组网中枢</span>
+              <span v-else class="badge">未组网</span>
+            </div>
+            <div class="tiny muted metric-foot">{{ (meshStatus && meshStatus.instance_id) || '—' }}</div>
+          </div>
+          <div class="metric glass">
+            <div class="metric-label">接入密钥</div>
+            <div class="metric-value metric-value-sub">
+              <span
+                class="badge"
+                :class="meshStatus && meshStatus.secret_configured ? 'badge-success' : 'badge-danger'"
+              >{{ meshStatus && meshStatus.secret_configured ? '已配置' : '未配置' }}</span>
+            </div>
+            <!-- 排障第一件事就是它：密钥不一致的表现是节点 403，日志里只一句「校验失败」 -->
+            <div class="tiny muted metric-foot">节点要填同一个密钥</div>
+          </div>
+          <div class="metric glass">
+            <div class="metric-label">已接入班级</div>
+            <div class="metric-value">{{ meshStatus ? meshStatus.nodes.length : 0 }}</div>
+            <div class="tiny muted metric-foot">名册镜像 {{ meshStatus ? meshStatus.roster_count : 0 }} 人</div>
+          </div>
+          <div class="metric glass">
+            <div class="metric-label">管理员席位</div>
+            <div class="metric-value metric-value-sub">
+              <span class="badge badge-accent">{{ (meshStatus && meshStatus.seat_instance) || '—' }}</span>
+            </div>
+            <div class="tiny muted metric-foot">
+              {{ meshStatus && meshStatus.seat_is_self ? '在本机，可直接改全校配置' : '在别的班，本机只读' }}
+            </div>
+          </div>
+        </section>
+
+        <section class="panel glass">
+          <h2 class="panel-title">已接入的班级</h2>
+          <div v-if="meshLoading" class="tiny muted">读取中…</div>
+          <div v-else-if="!meshStatus || !meshStatus.nodes.length" class="tiny muted">
+            还没有班级连上来。节点侧需要三件事：<code>CLUSS_MODE=node</code>、
+            <code>CLUSS_RELAY_URL</code> 指向本机、接入密钥与本机一致。
+          </div>
+          <div v-else class="mesh-nodes">
+            <div v-for="n in meshStatus.nodes" :key="n.instance_id" class="mesh-node">
+              <div class="mesh-node-head">
+                <span class="mesh-node-id">{{ n.instance_id }}</span>
+                <span class="badge" :class="nodeOnline(n) ? 'badge-success' : 'badge-danger'">
+                  {{ nodeOnline(n) ? '在线' : '离线' }}
+                </span>
+                <span v-if="meshStatus.seat_instance === n.instance_id" class="badge badge-accent">管理员席位</span>
+              </div>
+              <div class="tiny muted mesh-node-meta">
+                心跳 {{ lastSeenText(n) }} · 版本 {{ n.node_version || '未知' }} ·
+                额度 v{{ n.last_assign_version }}/v{{ meshStatus.assign_version }} ·
+                配置 v{{ n.last_model_version }}/v{{ meshStatus.model_version }}
+                <!-- 「中枢有新版但它还没拉」是管理员唯一需要盯的异常：其余都由节点自己完成。
+                     成对显示（节点/中枢）而不是只说「有新版本」——管理员要能一眼看出差几版、
+                     是刚改的还是卡住了。 -->
+                <span v-if="meshStatus.assign_version > n.last_assign_version" class="badge">额度待同步</span>
+                <span v-if="meshStatus.model_version > n.last_model_version" class="badge">配置待同步</span>
+                <!-- 模型是否跟随中枢：关掉的班会保留自己的渠道/Key/单价，
+                     额度与名单照常跟随。放在状态行里，管理员一眼能看出「这个班没跟」是
+                     有意为之还是卡住了 -->
+                <span class="badge" :class="n.model_sync === 0 ? 'badge-accent' : ''">
+                  {{ n.model_sync === 0 ? '模型本班自选' : '模型跟随中枢' }}
+                </span>
+              </div>
+              <div class="mesh-node-actions">
+                <button v-if="meshStatus.seat_instance !== n.instance_id" class="btn btn-sm btn-ghost" @click="setSeat(n.instance_id)">设为管理员班</button>
+                <button class="btn btn-sm btn-ghost" @click="toggleModelSync(n)">
+                  {{ n.model_sync === 0 ? '改为跟随中枢模型' : '改为本班自选模型' }}
+                </button>
+              </div>
+            </div>
+            <div v-if="!meshStatus.seat_is_self" class="mesh-node-actions">
+              <button class="btn btn-sm btn-ghost" @click="setSeat('')">把席位收回本机</button>
+            </div>
+          </div>
+        </section>
+      </template>
+
+      <template v-else-if="tab === 'quota'">
           <section class="panel glass">
             <div class="panel-head">
               <div>
@@ -319,7 +406,14 @@
                   </td>
                   <td>
                     {{ u.class_no ? u.class_no + ' 班' : '--' }}
-                    <span v-if="u.remote" class="badge badge-remote" title="本班没有这个学生——余额与消耗来自云端账本，充值会同步到他所在的班">外班</span>
+                    <!-- 「外班」是管理员最需要看清的一列：这批学生不在本机账本里，
+                         充的钱要同步回他自己的班。hover 说明里带上来源节点，
+                         方便核对「这个学生到底是哪台机器报上来的」。 -->
+                    <span
+                      v-if="u.remote"
+                      class="badge badge-remote"
+                      :title="'本班没有这个学生——余额来自中枢账本，充值会同步到他所在的班' + (u.instance_id ? '（' + u.instance_id + '）' : '')"
+                    >外班</span>
                   </td>
                   <td class="num">¥{{ u.allocated_yuan }}</td>
                   <td class="num">¥{{ u.used_yuan }}</td>
@@ -633,6 +727,85 @@
         </section>
       </template>
 
+      <!-- ================= 联网搜索 ================= -->
+      <template v-else-if="tab === 'search'">
+        <section class="panel glass">
+          <h2 class="panel-title">联网搜索</h2>
+          <p class="panel-sub tiny muted">
+            开启后，AI 遇到不确定或需要最新信息的问题（天气、新闻、价格、赛事、版本号等）
+            会自己调用搜索工具查证，并在回答里用 [1][2] 标注来源。
+            不需要查资料的问题不会因此多花钱，也不会变慢。
+          </p>
+
+          <div v-if="search.last_error" class="alert alert-warning">
+            上次搜索失败：{{ search.last_error }}
+            <span v-if="search.last_error_at" class="tiny muted">（{{ search.last_error_at }}）</span>
+          </div>
+
+          <div class="switch-list">
+            <label class="switch-row">
+              <input type="checkbox" v-model="search.enabled" />
+              <span>允许 AI 联网搜索（关闭后模型压根不会收到搜索工具，学生端毫无感知）</span>
+            </label>
+          </div>
+
+          <div class="row-3">
+            <label class="field">
+              <span class="field-label">搜索服务</span>
+              <select v-model="search.provider" class="input">
+                <option v-for="p in search.providers" :key="p.id" :value="p.id">{{ p.label }}</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">单次返回条数</span>
+              <input v-model="search.max_results" class="input" type="number" min="1" max="10" />
+            </label>
+            <label class="field">
+              <span class="field-label">超时（毫秒）</span>
+              <input v-model="search.timeout_ms" class="input" type="number" min="3000" max="30000" step="1000" />
+            </label>
+          </div>
+
+          <label class="field">
+            <span class="field-label">API Key</span>
+            <input
+              v-model="searchKeyInput"
+              class="input"
+              type="password"
+              :placeholder="search.has_key ? ('已配置：' + search.key_masked + '（留空表示不修改）') : '粘贴搜索服务的 API Key'"
+            />
+            <span class="tiny muted field-note">
+              留空 = 保持原 Key 不变。换服务商时先改上面的「搜索服务」，再填新的 Key。
+            </span>
+          </label>
+
+          <div class="panel-actions">
+            <button class="btn btn-primary" :disabled="savingSearch" @click="saveSearch">
+              {{ savingSearch ? '保存中…' : '保存配置' }}
+            </button>
+            <button class="btn btn-ghost" :disabled="testingSearch" @click="testSearch">
+              {{ testingSearch ? '测试中…' : '测试一句' }}
+            </button>
+          </div>
+
+          <div v-if="searchTestText" class="alert" :class="searchTestOk ? 'alert-success' : 'alert-danger'">
+            {{ searchTestText }}
+          </div>
+
+          <div v-if="searchTestResults.length" class="search-test-list">
+            <div v-for="(r, i) in searchTestResults" :key="i" class="search-test-item">
+              <div class="search-test-title">{{ i + 1 }}. {{ r.title }}</div>
+              <div class="search-test-meta tiny muted">
+                <span v-if="r.source_type" class="search-test-tag">{{ r.source_type }}</span>
+                <span v-if="r.published">{{ r.published }}</span>
+              </div>
+              <a class="search-test-url tiny" :href="r.url" target="_blank" rel="noopener">{{ r.url }}</a>
+              <div v-if="r.snippet" class="tiny muted">{{ r.snippet }}</div>
+            </div>
+          </div>
+        </section>
+      </template>
+
       <!-- ================= 用量统计 ================= -->
       <template v-else-if="tab === 'usage'">
         <!-- 异常检出：成本安全的短板在管理员的可见性 —— 这两个视图纯管理侧，学生永远看不到 -->
@@ -807,6 +980,28 @@
                 placeholder="也可以直接问一个具体问题，例如：本月会不会超预算？哪个班消耗最快？"
                 @keydown.ctrl.enter="runInsight"
               ></textarea>
+              <!-- 分析用的模型：与「模型与单价」里的默认模型互不影响。
+                   下拉常驻在按钮左边，不给它单独一屏 —— 这是一个"顺手改"的次要选择，
+                   但如果藏起来，管理员就会以为分析永远只能用系统默认那一只。 -->
+              <div class="insight-model-pick">
+                <label class="insight-model-label tiny muted" for="insight-model">分析模型</label>
+                <select
+                  id="insight-model"
+                  v-model="insight.modelId"
+                  class="input insight-model-select"
+                  :disabled="insight.loading"
+                >
+                  <option value="">
+                    自动{{ insight.autoLabel ? '（' + insight.autoLabel + '）' : '' }}
+                  </option>
+                  <option
+                    v-for="m in insight.modelOptions"
+                    :key="m.id"
+                    :value="m.id"
+                    :disabled="!m.ready"
+                  >{{ m.label }}{{ m.ready ? '' : '（未配置 Key）' }}{{ m.is_default ? ' · 默认' : '' }}</option>
+                </select>
+              </div>
               <button
                 class="btn btn-primary"
                 :disabled="insight.loading"
@@ -1001,6 +1196,11 @@ export default {
       // ---- 额度 ----
       dashboard: null,
       users: [],
+
+      // ---- 组网互联（mesh）----
+      // null = 还没取过；取回来之前不显示空态文案，避免「还没加载」被当成「没有班级」
+      meshStatus: null,
+      meshLoading: false,
       logs: [],
       keyword: '',
       classFilter: '',
@@ -1069,6 +1269,22 @@ export default {
       relayCandidates: [],
       savingVision: false,
 
+      // ---- 联网搜索 ----
+      // 默认值刻意写成"关 + 空 Key"：真正状态以服务端返回为准，
+      // 这里只是避免首帧渲染时模板取到 undefined 而报错。
+      search: {
+        enabled: false, provider: 'tavily', provider_label: 'Tavily',
+        has_key: false, key_masked: '', max_results: 5, timeout_ms: 12000,
+        depth: 'basic', ready: false, providers: [], last_error: '', last_error_at: ''
+      },
+      // Key 单独放：输入框留空表示"不改动已有 Key"
+      searchKeyInput: '',
+      savingSearch: false,
+      testingSearch: false,
+      searchTestText: '',
+      searchTestOk: false,
+      searchTestResults: [],
+
       // ---- 用量 ----
       usageDays: '7',
       usageGroup: 'user',
@@ -1085,6 +1301,14 @@ export default {
         answer: '',
         html: '',
         model: '',
+        // 选中的模型 id：'' = 自动（第一个可用）。管理员可以「平时用便宜的、
+        // 月底用强的」；这里只影响这一次分析，不改全站默认模型。
+        modelId: '',
+        modelOptions: [],
+        // 「自动」会落到哪只模型 —— 把黑盒摊开，否则排查时分不清是人选错了还是系统选的
+        autoId: '',
+        autoLabel: '',
+        modelsLoaded: false,
         elapsed: 0,
         context: null,
         loading: false,
@@ -1131,9 +1355,12 @@ export default {
     tabOptions: function() {
       return [
         { id: 'overview', label: '总览' },
+        // 组网互联：本机当中心时，别的班在这一页管理（在线状态、策略与额度的到达情况、管理员席位）
+        { id: 'mesh', label: '班级组网' },
         { id: 'quota', label: '额度分配' },
         { id: 'models', label: '模型与单价' },
         { id: 'vision', label: '视觉配置' },
+        { id: 'search', label: '联网搜索' },
         { id: 'usage', label: '用量统计' },
         { id: 'ai', label: 'AI 洞察' }
       ];
@@ -1237,11 +1464,15 @@ export default {
     tab: function(val) {
       // 切到某个标签才加载它的数据：避免进管理台就把三个大查询全跑一遍
       if (val === 'overview') this.loadOverview();
+      else if (val === 'mesh') this.loadMeshStatus();
       else if (val === 'quota') this.loadQuotaTab();
       else if (val === 'models') { this.loadModels(); this.loadOffpeak(); }
       else if (val === 'vision') this.loadVision();
+      else if (val === 'search') this.loadSearch();
       else if (val === 'usage') { this.loadUsage(); this.loadAnomalies(); }
-      // ai 标签**刻意不预加载**：每次分析都是一次真实模型调用，理由见 data 里 insight 的注释
+      // ai 标签：只拉「可选模型清单」这个零成本的配置读接口，不跑任何分析。
+      // 每次分析本身仍然只在点「开始分析」时发生（一次真实模型调用）。
+      else if (val === 'ai') { this.loadInsightModels(); }
     },
     usageDays: function() { this.loadUsage(); },
     usageGroup: function() { this.loadUsageSummary(); }
@@ -1250,6 +1481,83 @@ export default {
     this.loadOverview();
   },
   methods: {
+    // ---- 组网互联（mesh）----
+    loadMeshStatus: function() {
+      var self = this;
+      this.meshLoading = true;
+      this.$http.get('/admin/mesh/status').then(function(r) {
+        if (r.data.code === 200) self.meshStatus = r.data.data;
+      }).catch(function(e) {
+        self.error = (e && e.message) || '读取组网状态失败';
+      }).then(function() {
+        self.meshLoading = false;
+      });
+    },
+
+    // 心跳过去了多久（毫秒）。服务端给的是 UTC 且不带时区标记，按 Z 解析。
+    seenMsAgo: function(n) {
+      if (!n || !n.last_seen_at) return null;
+      var t = Date.parse(String(n.last_seen_at).replace(' ', 'T') + 'Z');
+      return isFinite(t) ? (Date.now() - t) : null;
+    },
+
+    // 离线阈值 3 分钟：节点每 60 秒轮询一次，连丢三轮才标红 ——
+    // 一次抖动就标红会让管理员去查一个根本没坏的东西。
+    nodeOnline: function(n) {
+      var ms = this.seenMsAgo(n);
+      return ms !== null && ms < 3 * 60 * 1000;
+    },
+
+    lastSeenText: function(n) {
+      var ms = this.seenMsAgo(n);
+      if (ms === null) return '从未';
+      if (ms < 60000) return '刚刚';
+      var m = Math.floor(ms / 60000);
+      if (m < 60) return m + ' 分钟前';
+      var h = Math.floor(m / 60);
+      if (h < 24) return h + ' 小时前';
+      return Math.floor(h / 24) + ' 天前';
+    },
+
+    // 席位只能有一处：给出去本机就变只读，收回来本机才能改全校配置。
+    // 这个按钮看起来像「授权」，实际是「移交」，所以文案要说清谁失去权限。
+    setSeat: function(instanceId) {
+      var self = this;
+      this.$http.post('/admin/mesh/seat', { instance_id: instanceId || '' }).then(function(r) {
+        if (r.data.code === 200) {
+          self.$store.commit('SHOW_TOAST', { message: r.data.message, type: 'success' });
+          self.loadMeshStatus();
+        }
+      }).catch(function(e) {
+        var msg = (e && e.response && e.response.data && e.response.data.message) || '操作失败';
+        self.$store.commit('SHOW_TOAST', { message: msg, type: 'error' });
+      });
+    },
+
+    // 切换某个班「是否跟随中枢的模型选择」。
+    // 关掉之后该班保留自己的渠道/Key/单价，额度与名单照常跟随 ——
+    // 比让它整台断开组网要好。
+    toggleModelSync: function(node) {
+      var self = this;
+      var next = (node.model_sync === 0) ? 1 : 0;
+      var tip = next === 0
+        ? ('关闭后 ' + node.instance_id + ' 会保留自己的模型配置，额度与名单照常同步')
+        : ('开启后 ' + node.instance_id + ' 下一轮同步会拉取中枢的模型配置，覆盖它自己的');
+      if (!window.confirm(tip + '。确定继续？')) return;
+      this.$http.post('/admin/mesh/node-model-sync', {
+        instance_id: node.instance_id,
+        enabled: next
+      }).then(function(r) {
+        if (r.data.code === 200) {
+          self.$store.commit('SHOW_TOAST', { message: r.data.message, type: 'success' });
+          self.loadMeshStatus();
+        }
+      }).catch(function(e) {
+        var msg = (e && e.response && e.data && e.data.message) || '操作失败';
+        self.$store.commit('SHOW_TOAST', { message: msg, type: 'error' });
+      });
+    },
+
     sourceLabel: function(s) { return SOURCE_LABELS[s] || s || '对话'; },
 
     formatTokens: function(n) {
@@ -1735,6 +2043,77 @@ export default {
       });
     },
 
+    // ---------- 联网搜索 ----------
+    loadSearch: function() {
+      var self = this;
+      this.error = '';
+      return this.$http.get('/admin/search').then(function(r) {
+        if (r.data.code !== 200) return;
+        self.search = r.data.data;
+        // 每次加载都清空输入框：否则上次没保存的 Key 会留在框里，
+        // 下次点保存就把它当成"新 Key"又存一遍（看起来像没生效）。
+        self.searchKeyInput = '';
+      }).catch(function(err) {
+        self.error = err.message || '联网搜索配置加载失败';
+      });
+    },
+
+    saveSearch: function() {
+      var self = this;
+      this.savingSearch = true;
+      this.error = '';
+      var payload = {
+        enabled: this.search.enabled,
+        provider: this.search.provider,
+        max_results: Number(this.search.max_results),
+        timeout_ms: Number(this.search.timeout_ms),
+        depth: this.search.depth
+      };
+      // 留空 = 不改 Key（三态语义见服务端 admin.js 的注释）
+      if (this.searchKeyInput) payload.api_key = this.searchKeyInput;
+
+      this.$http.put('/admin/search', payload).then(function(r) {
+        if (r.data.code !== 200) throw new Error(r.data.message || '保存失败');
+        self.$store.dispatch('toast', { message: '搜索配置已保存，即时生效', type: 'success' });
+        return self.loadSearch();
+      }).catch(function(err) {
+        self.error = err.message || '保存失败';
+      }).then(function() {
+        self.savingSearch = false;
+      });
+    },
+
+    testSearch: function() {
+      var self = this;
+      this.testingSearch = true;
+      this.searchTestText = '';
+      this.searchTestResults = [];
+      this.$http.post('/admin/search/test', { query: '今天的新闻' }).then(function(r) {
+        var d = (r.data && r.data.data) || {};
+        self.searchTestOk = !!d.ok;
+        self.searchTestResults = d.results || [];
+        if (d.ok) {
+          // 把「几组关键词 / 上游几条 → 重排后几条」写出来：
+          // 老师判断"搜得准不准"靠的就是这几个数，而不是一句"搜索正常"。
+          var qn = (d.queries || []).length;
+          var extra = '';
+          if (qn > 1) extra += '，' + qn + ' 组关键词交叉核对';
+          if (d.total_before_rank && d.total_before_rank > self.searchTestResults.length) {
+            extra += '，上游 ' + d.total_before_rank + ' 条重排后取前 ' + self.searchTestResults.length;
+          }
+          self.searchTestText = '搜索正常：' + d.provider + ' 返回 ' + self.searchTestResults.length +
+            ' 条' + extra + '，用时 ' + d.took_ms + 'ms' + (d.cached ? '（命中缓存）' : '');
+        } else {
+          self.searchTestText = '搜索失败：' + (d.error || r.data.message || '未知原因');
+        }
+      }).catch(function(err) {
+        self.searchTestOk = false;
+        self.searchTestText = '搜索失败：' + (err.message || '请求出错');
+      }).then(function() {
+        self.testingSearch = false;
+      });
+    },
+
     // ---------- 用量 ----------
     loadUsage: function() {
       var self = this;
@@ -1779,6 +2158,24 @@ export default {
     },
 
     // ---------- AI 洞察 ----------
+    // 只读配置，不调模型，可以放心在切 tab 时拉。
+    // 失败不弹 toast：模型清单拿不到时，「自动」仍然能用（服务端自己挑），
+    // 为了一个下拉框的选项去打断管理员正在看台账，代价不对等。
+    loadInsightModels: function() {
+      var self = this;
+      if (this.insight.modelsLoaded) return Promise.resolve();
+      return this.$http.get('/admin/ai/insight/models').then(function(r) {
+        var d = (r.data && r.data.data) || {};
+        self.insight.modelOptions = Array.isArray(d.models) ? d.models : [];
+        self.insight.autoId = d.auto_id || '';
+        self.insight.autoLabel = d.auto_label || '';
+        self.insight.modelsLoaded = true;
+      }).catch(function() {
+        // 静默降级：清单空 = 只有「自动」一项
+        self.insight.modelsLoaded = true;
+      });
+    },
+
     runInsight: function() {
       var self = this;
       if (this.insight.loading) return Promise.resolve();
@@ -1787,7 +2184,9 @@ export default {
       // 超时放宽到 90s：服务端那段分析读的是整份快照，比一轮普通对话长；
       // 沿用实例默认的 30s 会先被前端掐断 —— 明明服务端算得出来，前端却报"请求超时"。
       return this.$http.post('/admin/ai/insight', {
-        question: this.insight.question.trim()
+        question: this.insight.question.trim(),
+        // '' = 自动（服务端挑第一个可用的）；指定了就只用这一只，服务端不会静默回退
+        model_id: this.insight.modelId || ''
       }, { timeout: 90000 }).then(function(r) {
         // 失败走的是 HTTP 200 + data.ok:false（与「模型连通性测试」同风格），
         // 所以这里先判 ok，不能让 error 分支把 message 当成正文渲染出来
@@ -2089,6 +2488,31 @@ html.no-flex-gap .insight-input > * + * {
   outline: none;
   border-color: var(--accent-border-strong);
   background: var(--surface-2);
+}
+
+/* 分析模型：固定一列，不跟输入的剩余空间抢宽度。
+   标签在上、下拉在下（横排会挤成一串省略号，模型名往往很长）。
+   放在按钮左边而不是另起一行：这是"顺手改"的次要选择，
+   单独占一行会让它看起来和"开始分析"同等重要。 */
+.insight-model-pick {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 196px;
+  min-width: 0;
+}
+html.no-flex-gap .insight-model-pick > * + * {
+  margin-top: 4px;
+}
+.insight-model-label {
+  margin-bottom: 4px;
+  line-height: 1.2;
+}
+html.no-flex-gap .insight-model-label {
+  margin-bottom: 0;
+}
+.insight-model-select {
+  width: 100%;
+  font-size: 13px;
 }
 
 .insight-error {
@@ -2721,6 +3145,11 @@ html.no-flex-gap .modal-actions > * + * {
     flex-direction: column;
     align-items: stretch;
   }
+  /* 竖排后模型选择跟着铺满：固定 196px 在手机屏上会留出一道右侧空白 */
+  .insight-model-pick {
+    flex: 0 0 auto;
+    width: 100%;
+  }
   html.no-flex-gap .insight-input > * + * {
     margin-left: 0;
     margin-top: var(--gap-sm);
@@ -2805,5 +3234,92 @@ html.no-flex-gap .anomaly-grid > * + * {
   .anomaly-grid {
     grid-template-columns: 1fr;
   }
+}
+.search-test-list {
+  margin-top: 14px;
+}
+.search-test-item {
+  padding: 10px 0;
+  border-top: 1px solid var(--border-color);
+}
+.search-test-item:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.search-test-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.search-test-url {
+  display: block;
+  color: var(--accent-text);
+  word-break: break-all;
+  margin-bottom: 4px;
+  text-decoration: none;
+}
+/* 来源类型标签：老师一眼看出这条是「政府/官方」还是「门户/聚合」。
+   刻意不用 flex + gap —— 基线是 Chrome 80，flex 的 gap 在 81 之前无效。 */
+.search-test-meta {
+  margin-bottom: 3px;
+}
+.search-test-meta > span {
+  display: inline-block;
+  margin-right: 8px;
+}
+.search-test-tag {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--accent-text);
+  background: var(--accent-soft, rgba(47, 107, 221, 0.12));
+}
+
+/* ---- 组网互联：已接入班级 ---- */
+/* 一个班一行而不是表格：平板上表格要横向滚动才看得全，
+   而这一页最需要一眼扫到的是「哪个班在线」，不是对齐的数字。 */
+.mesh-nodes {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+.mesh-node {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--ink-3);
+  border-radius: var(--radius-sm);
+  background: var(--ink-1);
+  /* 用 margin 而不是 flex gap：基线是 Chrome 80，旧内核的 flex gap 不生效，
+     节点之间会粘在一起 */
+  margin-bottom: 10px;
+}
+.mesh-node:last-child { margin-bottom: 0; }
+.mesh-node-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.mesh-node-id {
+  margin-right: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.mesh-node-head .badge {
+  margin-right: 6px;
+}
+.mesh-node-meta {
+  margin-top: 4px;
+}
+.mesh-node-actions {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+}
+/* 同上：不用 gap，旧内核不认 flex gap，按钮会粘成一串 */
+.mesh-node-actions .btn {
+  margin: 0 8px 4px 0;
 }
 </style>

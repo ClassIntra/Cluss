@@ -34,5 +34,10 @@ module.exports = [
   require('./023_cluss_nodes'),
   require('./024_cloud_orgs'),
   require('./025_campus_context'),
-  require('./026_sync_roster')
+  require('./026_sync_roster'),
+  require('./027_message_sources'),
+  require('./028_affinity'),
+  require('./029_conversation_hidden'),
+  require('./030_roster_hub_quota'),
+  require('./031_node_model_sync')
 ];

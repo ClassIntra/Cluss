@@ -28,6 +28,7 @@ var userProfile = require('./user-profile');
 var personaStore = require('./persona-store');
 // 对话里自动沉淀长期记忆（后台跑、失败隔离、不阻塞主链路）
 var memoryExtractor = require('./memory-extractor');
+var affinity = require('./affinity');
 // ClassIntra 联动桥：用于取"Cluss 自己没有的那一维"画像素材（校园社区活动痕迹）。
 // 注意它**不读** ClassIntra 的数据库，只是调用 CI 侧的只读接口（见该文件顶部说明）。
 var ciBridge = require('./ci-bridge');
@@ -103,6 +104,37 @@ function fail(res, status, message) {
   if (res.headersSent) return false;
   res.status(status).json({ code: status, message: message });
   return true;
+}
+
+// 多轮（工具调用）usage 累加。
+//
+// 为什么必须累加：每一轮工具往返都是一次真实的上游调用，都在计费。
+// 只记最后一轮 = 前面几轮的钱算漏 —— 学生少扣（看起来还行），
+// 但学校/账面上的成本与流水就对不上了，而且是静默的。
+//
+// 缓存字段先归一成 prompt_cache_hit_tokens 再累加：extractUsage 优先读它，
+// 这样第二轮"历史全命中缓存"的便宜不会在汇总时丢掉。
+function sumUsage(acc, one) {
+  if (!one) return acc;
+  var p = Number(one.prompt_tokens || 0);
+  var c = Number(one.completion_tokens || 0);
+  var hit = Number(
+    one.prompt_cache_hit_tokens ||
+    (one.prompt_tokens_details && one.prompt_tokens_details.cached_tokens) || 0
+  );
+  if (!acc) {
+    return {
+      prompt_tokens: p,
+      completion_tokens: c,
+      total_tokens: Number(one.total_tokens || (p + c)),
+      prompt_cache_hit_tokens: hit
+    };
+  }
+  acc.prompt_tokens += p;
+  acc.completion_tokens += c;
+  acc.total_tokens += Number(one.total_tokens || (p + c));
+  acc.prompt_cache_hit_tokens += hit;
+  return acc;
 }
 
 // 从上游 usage 提取令牌数（兼容 OpenAI 与 DeepSeek 两种缓存字段写法）
@@ -530,14 +562,26 @@ function runStreamTurn(ctx) {
       // 跨会话记忆：只取与本次提问相关的几条（检索命中，否则退化到最近更新）。
       // 全量塞进上下文既费 token，也会让陈年旧事被当成当前语境。
       // 构建失败只降级为空 —— 记忆是增强项，不该因为它挂掉整轮对话。
+      // 条数上限随默契度放宽（affinity.injectLimit）：越熟，AI 越"记得你的事"。
       var memories = [];
       if (useRecords) {
         try {
           var memorySvc = require('./memory');
-          memories = memorySvc.selectForContext(userId, content, memorySvc.MAX_INJECT);
+          var injectCap = memorySvc.MAX_INJECT;
+          try { injectCap = Math.max(memorySvc.MAX_INJECT, affinity.injectLimit(userId)); } catch (e) { /* 用默认 */ }
+          memories = memorySvc.selectForContext(userId, content, injectCap);
         } catch (e) {
           console.warn('[Turn] 记忆检索失败（不影响对话）:', e.message);
         }
+      }
+
+      // 默契度状态：进 prompt 的是"相处到哪个称号"，不是分数与规则。
+      // 失败降级 null（prompt-registry 整段跳过），绝不中断对话。
+      var affinityState = null;
+      try {
+        affinityState = affinity.getState(userId);
+      } catch (e) {
+        console.warn('[Turn] 默契度读取失败（不影响对话）:', e.message);
       }
 
       // 人格：把会话里存的 id 解析成一条可渲染的记录。
@@ -575,6 +619,9 @@ function runStreamTurn(ctx) {
         // ClassIntra 侧脱敏活动素材（可能为 null = CI 未联动 / 取不到）
         ciProfile: ciProfile,
         memories: memories,
+        // 默契度：只取状态不进规则（加分逻辑在 services/affinity.js）。
+        // 拿不到时传 null，prompt-registry 会整段跳过，不影响其它部分。
+        affinity: affinityState,
         pointsBalance: walletView.available_points,
         weeklyRemainingPoints: walletView.weekly_unlimited ? null : walletView.weekly_remaining_points
       };
@@ -587,6 +634,36 @@ function runStreamTurn(ctx) {
       var sysParts = prompts.getSystemPromptParts(promptOpts);
       var systemPrompt = sysParts.stable;
       var trailingContext = sysParts.dynamic;
+
+      // ---- 联网搜索能力探测 ----
+      // 只探一次：这一轮里"能不能搜"不该中途改变，否则同一个回答前后标准不一。
+      // 探测本身只读配置（不发请求），失败（服务文件缺失/表未建）按"不可用"处理。
+      var searchSvc = null;
+      try { searchSvc = require('./websearch'); } catch (e) { searchSvc = null; }
+      var searchReady = !!(searchSvc && searchSvc.isReady());
+      if (searchReady) {
+        // 这段说明挂在 system 的**末尾**且内容恒定 —— system 在同一会话内
+        // 必须逐字节不变，上游的前缀缓存才对历史消息生效（见上面 sysParts 的注释）。
+        // 因此这里不能写任何随时间/轮次变化的东西（比如当前日期）。
+        //
+        // 纪律写成编号条目而不是一段话：实测模型对"该搜/不该搜"的边界最容易被
+        // 长段落糊掉，编号能让它逐条比对。其中「关键词怎么写」和「引用怎么标」
+        // 直接决定学生看到的是干货还是没出处的断言。
+        systemPrompt += '\n\n【联网搜索】\n' +
+          '1) 该搜就搜：新闻、天气、价格、汇率、比分赛果、政策条文、招生/考试通知、软件版本、人物近况，' +
+          '以及任何你不确定或可能已经变化的事实 —— 先调用 web_search 查证再回答。\n' +
+          '2) 不必搜：闲聊、写作创作、解题步骤、古诗文默写、纯计算，以及学生刚发给你的原文。\n' +
+          '3) 关键词像在搜索引擎里输入：主体 + 限定词（年份/地区/机构/型号），去掉"帮我查查""请问"这类口语；' +
+          '不要拿具体网站名当检索词（"某某网"），除非学生点名要查那个站；' +
+          '需要交叉验证时用 queries 给 2 条不同说法（一条通俗说法、一条官方口径）。\n' +
+          '4) 引用：正文里用 [1][2] 标注实际用到的来源编号，不要自己另起一套编号；' +
+          '也不要在末尾再贴一遍链接清单（界面会按编号自动列出来源）。' +
+          '没有调用工具就不要声称自己"查过了"。\n' +
+          '5) 冲突：以时间更新、来源更权威的为准；仍然不一致就直说存在不同说法。\n' +
+          '6) 没查到就说没查到，不要用记忆补全，也不要编造网址。\n' +
+          '7) 不要向学生复述检索过程或失败的站点名（"某某网没查到"），直接给结论；' +
+          '时效性内容要带上信息的时间（例如"截至 10 月 19 日的预报"）。';
+      }
 
       // 输出长度硬上限：按场景定档（见 prompt-registry 的 OUTPUT_CAP）。
       // 为什么放在这里算而不是在 ai 层默认：档位取决于"这一轮的产出物本来该有多长"，
@@ -656,7 +733,7 @@ function runStreamTurn(ctx) {
         built.messages[0].content += contextNote;
       }
 
-      // ---- 10) 流式生成 ----
+      // ---- 10) 准备流式生成（占位消息 / 增量落库节流）----
       var promptText = flattenForEstimate(built.messages);
 
       // 先**预留**一条助手消息（streaming=1），边生成边把内容写进去。
@@ -713,35 +790,259 @@ function runStreamTurn(ctx) {
         if (flushTimer.unref) flushTimer.unref();
       }
 
-      // 句柄同时接到外层，供 res.on('close') 回调 abort 用
-      //（ai.js 已经实现了 abort，只是此前从没人调用它）
-      var handle = ai.chatStream(model, built.messages, {
-        // 让上游按会话复用它那一侧的上下文（详见 buildRequestOptions 里的说明）
-        conversationId: convRow.id,
-        // 用户开的「深度思考」：只有模型实测支持时 ai 层才会真的透传参数
-        thinking: thinking,
-        // 输出上界（防跑飞）。实测单轮最高 18431 token / 14.9 积分，
-        // 提示词对这类失控没有约束力，只有请求体里的 max_tokens 才有。
-        maxTokens: outputCap,
-        onDelta: function(text) {
-          accText += text;
-          sse.send('delta', { text: text });
-          scheduleFlush();
-        },
-        // 思维链单独走一条事件：正文之前那段「正在推演」要有去处，
-        // 否则推理型模型的首字延迟（实测难题可达 14 秒）全变成干等。
-        onReasoning: function(text) {
-          sse.send('reasoning', { text: text });
-        },
-        // 上游卡住不出字：告诉前端一声，让它把等待提示换成明确的失败提示。
-        // 这里不发 error 事件——真正的收尾统一走 .catch，避免发两次。
-        onStall: function() {
-          console.warn('[Turn] 模型 %s 首令牌超时（trace %s）', effectiveModelId, traceId);
-        }
-      });
-      upstreamHandle = handle;
+      // ---- 10) 流式生成（含联网搜索的工具轮次）----
+      //
+      // 为什么是「带工具直接流式」而不是「先非流式问一句要不要搜」：
+      //   后者会让**每一次**提问都先干等一次完整往返（实测 0.7~3 秒），
+      //   而绝大多数问题根本不需要联网 —— 那是拿所有人的体验去补贴少数问题。
+      //   现在不需要搜索的轮次与改造前完全一致（零额外延迟、零额外费用），
+      //   只有模型真的决定要查时，才多一轮。
+      var MAX_SEARCH_ROUNDS = 2;
+      var roundMessages = built.messages.slice();
+      var roundNo = 0;
+      var searchRounds = 0;
+      var aggUsage = null;
+      var aggReasoning = '';
+      // 本轮所有检索结果的来源清单（[n] 与回答里的引用编号一一对应）。
+      // 跨轮次连续编号：第二轮从第一轮的下一个号开始（见 websearch.formatForModel）。
+      var collectedSources = [];
+      var toolsForRound = searchReady ? [searchSvc.toolDefinition()] : null;
 
-      return handle.promise.then(function(result) {
+      function runRound() {
+        roundNo++;
+        // 句柄同时接到外层，供 res.on('close') 回调 abort 用
+        //（ai.js 已经实现了 abort，只是此前从没人调用它）
+        var handle = ai.chatStream(model, roundMessages, {
+          // 让上游按会话复用它那一侧的上下文（详见 buildRequestOptions 里的说明）
+          conversationId: convRow.id,
+          // 用户开的「深度思考」：只有模型实测支持时 ai 层才会真的透传参数
+          thinking: thinking,
+          // 输出上界（防跑飞）。实测单轮最高 18431 token / 14.9 积分，
+          // 提示词对这类失控没有约束力，只有请求体里的 max_tokens 才有。
+          maxTokens: outputCap,
+          // 工具：null 时 ai 层不会在请求体里放 tools 字段（兼容不认识它的上游）
+          tools: toolsForRound,
+          onDelta: function(text) {
+            accText += text;
+            sse.send('delta', { text: text });
+            scheduleFlush();
+          },
+          // 思维链单独走一条事件：正文之前那段「正在推演」要有去处，
+          // 否则推理型模型的首字延迟（实测难题可达 14 秒）全变成干等。
+          onReasoning: function(text) {
+            sse.send('reasoning', { text: text });
+          },
+          // 上游卡住不出字：告诉前端一声，让它把等待提示换成明确的失败提示。
+          // 这里不发 error 事件——真正的收尾统一走 .catch，避免发两次。
+          onStall: function() {
+            console.warn('[Turn] 模型 %s 首令牌超时（trace %s）', effectiveModelId, traceId);
+          }
+        });
+        upstreamHandle = handle;
+
+        return handle.promise.then(function(result) {
+          // 每一轮上游都真的计过费，必须累加（见 sumUsage）
+          aggUsage = sumUsage(aggUsage, result.usage);
+          if (result.reasoning) aggReasoning += result.reasoning;
+
+          var calls = result.toolCalls || [];
+          // 不带工具 / 模型没要工具 → 这一轮就是终态，直接收口
+          if (!toolsForRound || !calls.length) {
+            return {
+              text: accText,
+              reasoning: aggReasoning,
+              usage: aggUsage,
+              tool_rounds: searchRounds
+            };
+          }
+
+          // 协议要求：assistant 的这条消息要把 tool_calls 原样带上，
+          // 否则下一轮的 tool 消息找不到"它回应的是哪次调用"，上游会 400。
+          roundMessages.push({
+            role: 'assistant',
+            // content 用**本轮**的文本（不是 accText）：这条消息代表"模型这一轮说的话"
+            content: result.text || '',
+            tool_calls: calls.map(function(c) {
+              return {
+                id: c.id || ('call_' + Math.random().toString(36).slice(2, 10)),
+                type: 'function',
+                function: { name: c.function.name, arguments: c.function.arguments || '{}' }
+              };
+            })
+          });
+
+          // 配额用完：明确告诉模型"别搜了"，并**摘掉工具**再走一轮收口。
+          // 不摘的话它会一直请求，学生就看到一个永远在"正在联网搜索"的回答。
+          if (searchRounds >= MAX_SEARCH_ROUNDS) {
+            for (var ci = 0; ci < calls.length; ci++) {
+              roundMessages.push({
+                role: 'tool',
+                tool_call_id: calls[ci].id || ('call_' + ci),
+                content: '本轮联网搜索次数已达上限。请直接基于已有信息回答，并说明哪些内容没能查证。'
+              });
+            }
+            toolsForRound = null;
+            return runRound();
+          }
+
+          // 同一轮里模型可能连发 2 次 web_search（各一条检索词），协议上它们
+          // 是两次调用，但语义上是"同一个问题换两个说法查"。
+          // 服务端合并成**一次多路检索**：上游只打一轮、结果统一去重排序，
+          // 上下文里也只留一份结果（实测模型很爱分两次发，两条 tool 消息会白占 5~10 条结果）。
+          var searchCalls = [];
+          for (var sc = 0; sc < calls.length; sc++) {
+            var one = calls[sc];
+            var oneId = one.id || ('call_' + Math.random().toString(36).slice(2, 10));
+            if (one.function.name !== 'web_search') {
+              roundMessages.push({
+                role: 'tool',
+                tool_call_id: oneId,
+                content: '未知工具：' + one.function.name + '。请直接用你的知识回答。'
+              });
+              continue;
+            }
+            var rawQuery = '';
+            var rawQueries = [];
+            try {
+              var toolArgs = JSON.parse(one.function.arguments || '{}') || {};
+              rawQuery = String(toolArgs.query || '').trim();
+              if (Array.isArray(toolArgs.queries)) {
+                rawQueries = toolArgs.queries
+                  .map(function(x) { return String(x || '').trim(); })
+                  .filter(Boolean);
+              }
+            } catch (e) {
+              rawQuery = '';
+            }
+            // query 与 queries 合并去重：模型经常两个都填（query 写主检索词、
+            // queries 补一条官方口径），两个都丢给服务层才有意义。
+            var qs = [];
+            if (rawQuery) qs.push(rawQuery);
+            for (var qi = 0; qi < rawQueries.length; qi++) {
+              if (qs.indexOf(rawQueries[qi]) < 0) qs.push(rawQueries[qi]);
+            }
+            searchCalls.push({ id: oneId, qs: qs });
+          }
+
+          if (!searchCalls.length) {
+            // 本轮只有未知工具，直接收口
+            return runRound();
+          }
+
+          // 所有检索词汇总。
+          // 交错取（call1[0] → call2[0] → call1[1] …）而不是按调用顺序拼接：
+          // 上限是 2 条，顺序拼接会变成"两次调用里前一个的 2 条"，角度重复；
+          // 交错能保证每个调用至少贡献 1 条，正是"多角度交叉核对"想要的。
+          var mergedQs = [];
+          var maxDepth = 0;
+          for (var mc = 0; mc < searchCalls.length; mc++) {
+            if (searchCalls[mc].qs.length > maxDepth) maxDepth = searchCalls[mc].qs.length;
+          }
+          for (var depth = 0; depth < maxDepth; depth++) {
+            for (var mc2 = 0; mc2 < searchCalls.length; mc2++) {
+              var cand = searchCalls[mc2].qs[depth];
+              if (cand && mergedQs.indexOf(cand) < 0) mergedQs.push(cand);
+            }
+          }
+          // 与 websearch 内部的 MAX_QUERIES_PER_CALL 保持一致：
+          // 不截断的话 status 会显示"3 组关键词"而实际只搜 2 条，对不上。
+          var qLimit = searchSvc.MAX_QUERIES || 2;
+          if (mergedQs.length > qLimit) mergedQs = mergedQs.slice(0, qLimit);
+
+          if (!mergedQs.length) {
+            for (var ec = 0; ec < searchCalls.length; ec++) {
+              roundMessages.push({
+                role: 'tool',
+                tool_call_id: searchCalls[ec].id,
+                content: '搜索关键词为空。请给出更具体的关键词后重试。'
+              });
+            }
+            return runRound();
+          }
+
+          searchRounds++;
+          // 先告诉前端"在搜"：只发工具调用、不发正文时，界面上本来一片空白，
+          // 学生会以为卡死（这段通常持续 1~3 秒）。
+          sse.send('status', {
+            stage: 'search',
+            message: mergedQs.length > 1
+              ? ('正在联网搜索（' + mergedQs.length + ' 组关键词）…')
+              : '正在联网搜索…'
+          });
+
+          return searchSvc.search(mergedQs).then(function(payload) {
+            var n = (payload.results || []).length;
+            // 本轮编号从已有来源数开始，保证 [n] 在整轮对话里唯一
+            var sourceBase = collectedSources.length;
+
+            if (payload.ok) {
+              var results = payload.results || [];
+              for (var si = 0; si < results.length; si++) {
+                var sr = results[si];
+                if (!sr || !sr.url) continue;
+                collectedSources.push({
+                  n: sourceBase + si + 1,
+                  title: String(sr.title || '').slice(0, 120),
+                  url: String(sr.url),
+                  host: String(sr.host || ''),
+                  published: String(sr.published || ''),
+                  source_type: String(sr.source_type || ''),
+                  // 摘要跟着来源一起下发，是「参考来源」能在**不联网**的前提下自证的
+                  // 唯一依据。教室里的设备多数出不了外网（或要过 MDM 过滤），
+                  // 给了链接却打不开，等于给了个坏按钮；而这段摘要已经在检索时
+                  // 洗过模板噪声（websearch.condenseSnippet），本身就是"这页说了什么"。
+                  // 420 字是实测的实用上界：再长的展开后要滚很久，收益却很小。
+                  snippet: String(sr.snippet || '').slice(0, 420)
+                });
+              }
+            }
+
+            sse.send('status', {
+              stage: 'search',
+              message: payload.ok
+                ? ('已查到 ' + n + ' 条结果' +
+                   (mergedQs.length > 1 ? '（' + mergedQs.length + ' 组关键词交叉核对）' : '') +
+                   '，正在整理…')
+                // 给学生的话里不放上游错误码/域名/英文原因：他既看不懂也改不了，
+                // 只告诉他"这次没查到、答案可能不够新"就够了。细节留在日志里。
+                : '联网搜索暂时不可用，我先按已有知识回答',
+              count: n,
+              ok: !!payload.ok
+            });
+
+            // 协议要求每个 tool_call_id 都有一条 tool 消息：
+            // 第一条带完整结果，其余只指向它（合并执行，不重复贴 5 条）。
+            for (var rc = 0; rc < searchCalls.length; rc++) {
+              var callInfo = searchCalls[rc];
+              if (!callInfo.qs.length) {
+                roundMessages.push({
+                  role: 'tool',
+                  tool_call_id: callInfo.id,
+                  content: '搜索关键词为空。请给出更具体的关键词后重试。'
+                });
+                continue;
+              }
+              roundMessages.push({
+                role: 'tool',
+                tool_call_id: callInfo.id,
+                content: rc === 0
+                  ? searchSvc.formatForModel(payload, sourceBase)
+                  : '这次检索已与同类检索合并成一次多路搜索，结果见上一条工具返回（不要重复检索同一内容）。'
+              });
+            }
+
+            console.log('[Turn] %s 搜索「%s」→ %s（%d 条，%dms）',
+              traceId, mergedQs.join(' / '), payload.ok ? 'ok' : 'fail', n, payload.took_ms || 0);
+          }).then(function() {
+            // 搜索结束就把状态行撤掉：下一轮模型一开始推演/出字，
+            // 界面上该显示的是"它在写"，而不是一句已经完成的操作说明。
+            sse.send('status', { stage: 'search_done' });
+            return runRound();
+          });
+        });
+      }
+
+      return runRound().then(function(result) {
         // ---- 11) 错题提取（仅批改）----
         // 模型在批改结果末尾额外输出了一段 <wrong-items>JSON</wrong-items>。
         // 这里把它解出来入错题本，并从正文里剥掉——否则学生会在回复末尾看到一坨 JSON。
@@ -786,7 +1087,10 @@ function runStreamTurn(ctx) {
         // 只是**不记账** —— 口径与「零产出不记账」一致：没交付就不收费。
         // 上游已烧掉的 token 由我方承担。
         if (finalText) {
-          conv.updateMessageContent(assistantMsgId, finalText, { streaming: 0 });
+          conv.updateMessageContent(assistantMsgId, finalText, {
+            streaming: 0,
+            sources: collectedSources
+          });
         } else {
           conv.deleteMessage(assistantMsgId);
         }
@@ -902,6 +1206,9 @@ function runStreamTurn(ctx) {
           vision_mode: visionPlan.mode,
           // 批改时有意义：本次自动收录了几道错题到错题本
           wrong_added: wrongAdded,
+          // 联网搜索的来源清单（没有搜索就是空数组）。
+          // 前端的"参考来源"用它渲染，[n] 与正文里的引用编号对应。
+          sources: collectedSources,
           context: built.stats
         });
         sse.close();
@@ -923,6 +1230,15 @@ function runStreamTurn(ctx) {
         } catch (e) {
           console.warn('[Turn] 记忆提取触发失败（不影响对话）:', e.message);
         }
+
+        // ---- 15) 好感度：每日活跃与连招（发射后不管）----
+        // 同样放在 sse.close() 之后：这是纯后台事务，失败绝不影响这次对话。
+        // 规则（每日封顶、连招奖励）都在 services/affinity.js。
+        try {
+          affinity.touchDaily(userId);
+        } catch (e) {
+          console.warn('[Turn] 好感度结算失败（不影响对话）:', e.message);
+        }
       }).catch(function(err) {
         console.error('[Turn] 流式调用失败:', err.message, err.detail || '');
 
@@ -930,7 +1246,12 @@ function runStreamTurn(ctx) {
         // 这正是"不丢内容"的含义），并清掉 streaming —— 否则这条会永远显示成"生成中"，
         // 前端每次打开都会去轮询一个不会再动的会话。
         try {
-          if (accText) conv.updateMessageContent(assistantMsgId, accText, { streaming: 0 });
+          if (accText) {
+            conv.updateMessageContent(assistantMsgId, accText, {
+              streaming: 0,
+              sources: collectedSources
+            });
+          }
           else conv.deleteMessage(assistantMsgId);
         } catch (e) { /* 收尾失败不要掩盖真正的错误 */ }
 

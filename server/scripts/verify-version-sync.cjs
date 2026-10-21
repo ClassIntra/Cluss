@@ -67,3 +67,36 @@ if (distinct.length > 1) {
 }
 
 console.log('✓ 三个包版本号一致：%s', distinct[0]);
+
+// ---- 锁文件也要对得上 ----
+// 为什么单独查：package-lock.json 里有两处版本号（顶层 + packages[""]），
+// npm 既不拿它对外报版本、也不会主动提醒你它过期了 —— 于是它安静地停在
+// 0.4.0，而 package.json 已经是 1.0.0。下次谁 `npm install` 顺手把它改回来，
+// 就多出一处没人说得清来历的 diff。
+var LOCKS = ['server/package-lock.json', 'client/package-lock.json'];
+var lockFailed = 0;
+LOCKS.forEach(function(f) {
+  var full = path.join(ROOT, f);
+  if (!fs.existsSync(full)) return;
+  var lock;
+  try {
+    lock = JSON.parse(fs.readFileSync(full, 'utf8'));
+  } catch (err) {
+    console.error('  ✗ %s 不是合法 JSON：%s', f, err.message);
+    lockFailed++;
+    return;
+  }
+  var top = String(lock.version || '');
+  var inner = String(((lock.packages || {})[''] || {}).version || '');
+  if (top !== distinct[0] || inner !== distinct[0]) {
+    console.error('  ✗ %s 版本号没跟上：顶层 %j / packages[""] %j，应为 %s',
+      f, top, inner, distinct[0]);
+    lockFailed++;
+  } else {
+    console.log('  · 锁文件 %s → %s', f, top);
+  }
+});
+if (lockFailed) {
+  console.error('✗ 锁文件版本号未同步（跑 npm run bump 会一起改）');
+  process.exit(1);
+}

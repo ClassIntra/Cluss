@@ -117,6 +117,11 @@ function seed() {
       for (var i = 1; i <= 3; i++) {
         var cid = 'c_' + MARK + '_' + kind + '_' + i;
         var mode = kind === 'chat' ? 'daily' : 'study';
+        // ⚠️ 消息的 source 不是会话的 mode：/study/records 只认 source IN ('solve','grade')
+        //    （study 路由落库时写的是 'solve' / 'grade'，见 routes/study.js 第 54/84 行）。
+        //    早先这里直接写 'study'，JOIN 条件恒不成立 → 记录页一条都查不出来，
+        //    测试报「只找到 0 条测试数据」，看着像页面坏了，其实是种子造错了。
+        var msgSource = kind === 'study' ? 'solve' : kind;
         db.prepare('DELETE FROM ai_messages WHERE conversation_id = ?').run(cid);
         db.prepare('DELETE FROM ai_conversations WHERE id = ?').run(cid);
         db.prepare([
@@ -129,13 +134,13 @@ function seed() {
         db.prepare([
           'INSERT INTO ai_messages (conversation_id, role, content, model_id, created_at, attachments, source)',
           "VALUES (?, 'user', ?, 'ds-v41', ?, '[]', ?)"
-        ].join('\n')).run(cid, MARK + '问题' + i, '2026-10-03 17:00:0' + i, kind);
+        ].join('\n')).run(cid, MARK + '问题' + i, '2026-10-03 17:00:0' + i, msgSource);
         db.prepare([
           'INSERT INTO ai_messages (conversation_id, role, content, model_id, created_at, attachments, source)',
           "VALUES (?, 'assistant', ?, 'ds-v41', ?, '[]', ?)"
         ].join('\n')).run(cid,
           '## ' + MARK + '回答' + i + '\n\n唯一标记 ' + MARK.toUpperCase() + '-' + kind.toUpperCase() + '-' + i + '。',
-          '2026-10-03 17:00:1' + i, kind);
+          '2026-10-03 17:00:1' + i, msgSource);
       }
     });
     // 作文三条

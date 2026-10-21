@@ -20,6 +20,18 @@ function getMeta(key, fallback) {
   }
 }
 
+// 单调递增的版本号（assign_version / roster_version 等共用）。
+// 版本号的语义只有一件事：让节点知道「中枢那版比我装的新」。
+// 单独抽出来是因为升版本的地方不止一处（管理台改额度、节点上行名册），
+// 各自写一遍 getMeta+1+setMeta 迟早会有一处漏掉 —— 漏了的表现是
+// 「中枢改了，节点永远拉不到」，而且没有任何报错。
+function bumpMeta(key) {
+  var cur = parseInt(getMeta(key, '0'), 10) || 0;
+  var next = cur + 1;
+  setMeta(key, next);
+  return next;
+}
+
 function setMeta(key, value) {
   db.prepare(
     'INSERT INTO cluss_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
@@ -116,5 +128,6 @@ function initDatabase() {
 module.exports = {
   initDatabase: initDatabase,
   getMeta: getMeta,
+  bumpMeta: bumpMeta,
   setMeta: setMeta
 };

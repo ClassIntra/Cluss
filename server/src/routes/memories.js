@@ -9,6 +9,7 @@ var express = require('express');
 var router = express.Router();
 var auth = require('../middleware/auth');
 var memory = require('../services/memory');
+var memoryExtractor = require('../services/memory-extractor');
 
 // ============================================================
 // GET /api/memories —— 全部记忆
@@ -16,7 +17,11 @@ var memory = require('../services/memory');
 router.get('/', auth.requireAuth, function(req, res) {
   try {
     var items = memory.listMemories(req.user.user_id, { limit: req.query.limit });
-    res.json({ code: 200, message: 'ok', data: { items: items } });
+    // nextExtractIn：距下次后台整理还差几轮。
+    // 学生看得到节奏，才不会觉得"这东西是不是根本没在工作"。
+    var left = 0;
+    try { left = memoryExtractor.nextExtractIn(req.user.user_id); } catch (e) { /* 不影响列表 */ }
+    res.json({ code: 200, message: 'ok', data: { items: items, nextExtractIn: left } });
   } catch (e) {
     res.status(500).json({ code: 500, message: '获取记忆失败' });
   }

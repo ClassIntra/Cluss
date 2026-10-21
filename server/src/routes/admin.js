@@ -207,6 +207,9 @@ router.get('/users', auth.requireAuth, auth.requireAdmin, function(req, res) {
           status: r.status,
           source: r.source || 'local',
           class_no: r.class_no || '',
+          // 外班学生的上报来源（哪个班级节点）。class_no 只是展示用的班级号，
+          // 这一列才是权威归属 —— 学号可能重复，节点号不会。
+          instance_id: r.instance_id || '',
           // 前端据此标注管理员行（班管本人也在表里，见上方口径说明）
           is_admin: r.is_admin === 1 ? 1 : 0,
           allocated_yuan: config.microToYuan(r.allocated_micro).toFixed(2),
@@ -236,16 +239,36 @@ router.get('/users', auth.requireAuth, auth.requireAdmin, function(req, res) {
 //
 // 注意：这条闸门以前**根本不存在**。额度路由从来不受 requireCanEditModelConfig
 // 管，所以任何班改了都「成功」了，但改动只留在本机——就是那个静默丢数据的 bug。
-function requireCanEditQuota(req, res, next) {
-  if (config.mode !== config.MODES.NODE) return next();
+// 能不能改某个学生的额度。
+//
+// 判断粒度是**学生**而不是「整台机器」：本班学生改的是自己班的账，
+// 本班班管天然有权，不该因为没有全校席位就连自己班都不能充。
+// 只有改**外班**学生的额度才需要席位（那笔钱在别人的账本上）。
+//
+// 旧实现是「非席位班一律 403」，结果是 8 班的班管在自己机器上给本班学生
+// 充不了值 —— 而这本来是每台机器最基础的能力。
+function canEditQuotaFor(userId) {
+  if (config.mode !== config.MODES.NODE) return { ok: true };
+
+  var local = !!db.prepare('SELECT 1 FROM users WHERE user_id = ?').get(String(userId || '').trim());
+  if (local) return { ok: true };
+
   if (!syncService.isEnabled()) {
-    return res.status(403).json({ code: 403, message: '本机未接入中继，无法修改全校额度' });
+    return { ok: false, message: '本机未接入组网，无法修改其他班学生的额度' };
   }
   var st = syncService.getStatus();
   if (!st.is_seat_admin) {
-    var where = st.seat_instance ? ('本校管理员席位在 ' + st.seat_instance + ' 班，本班只能查看') : '本校还没有认领管理员席位';
-    return res.status(403).json({ code: 403, message: where + '。请到管理员班操作，或在云端完成账号绑定。' });
+    var where = st.seat_instance
+      ? ('管理员席位在 ' + st.seat_instance + ' 班')
+      : '本校还没有认领管理员席位';
+    return { ok: false, message: where + '，其他班的学生只能查看' };
   }
+  return { ok: true };
+}
+
+function requireCanEditQuota(req, res, next) {
+  var r = canEditQuotaFor(req.params.userId);
+  if (!r.ok) return res.status(403).json({ code: 403, message: r.message });
   syncService.rememberSeatUser(req.user.user_id);
   next();
 }
@@ -313,13 +336,18 @@ router.put('/users/:userId/quota', auth.requireAuth, auth.requireAdmin, requireC
       origin_instance: config.instanceId
     });
   }
+  var reason = String(req.body.reason || '') ||
+    ('本机追加充值 ' + config.microToYuan(parsed.micro).toFixed(2) + ' 元' + (remote ? '（外班 ' + (remote.class_no || '?') + ' 班）' : ''));
+
   // 外班学生：**不写本机台账**（他的账在云端，写进来就成两处口径），
   // 只把花名册镜像改成乐观值，让管理员马上看到新数字；
   // 权威值由下一轮 fetchRoster 覆盖（推送失败时靠它自愈）。
-  syncService.applyRosterAllocation(userId, newAllocated, weeklyMicro);
-
-  var reason = String(req.body.reason || '') ||
-    ('本机追加充值 ' + config.microToYuan(parsed.micro).toFixed(2) + ' 元' + (remote ? '（外班 ' + (remote.class_no || '?') + ' 班）' : ''));
+  // meta 里的 reason/operator 会记进流水 —— 否则中枢对这笔跨班充值毫无记录。
+  syncService.applyRosterAllocation(userId, newAllocated, weeklyMicro, {
+    kind: 'topup',
+    reason: reason,
+    operator_id: req.user.user_id
+  });
   var version = bumpAssignAndQueue(req, userId, newAllocated, weeklyMicro, reason);
   console.log('[Admin] 追加充值: %s (%s) +%s → %s 元 / 周限额 %s 元，操作人 %s%s',
     userId, user ? user.real_name : (remote.real_name || ''), config.microToYuan(parsed.micro).toFixed(2),
@@ -348,10 +376,14 @@ router.put('/users/:userId/quota', auth.requireAuth, auth.requireAdmin, requireC
 // 与单用户一致：quota_yuan 是「本次追加金额」，逐人在各自现有额度上累加；
 // weekly_yuan 不填则保留该用户原有周限额。
 // ============================================================
-router.post('/users/quota/batch', auth.requireAuth, auth.requireAdmin, requireCanEditQuota, function(req, res) {
+// 批量不做整请求拦截：一次批量里可能既有本班学生（随时可改）又有外班学生
+// （要席位）。整请求 403 会让「给本班充 30 人」因为夹了一个外班学号而全盘失败。
+// 改成逐条判断、失败项单独回报。
+router.post('/users/quota/batch', auth.requireAuth, auth.requireAdmin, function(req, res) {
   var items = Array.isArray(req.body.items) ? req.body.items : [];
   if (!items.length) return res.status(400).json({ code: 400, message: '没有要处理的用户' });
   if (items.length > 200) return res.status(400).json({ code: 400, message: '单次最多处理 200 个用户' });
+  syncService.rememberSeatUser(req.user.user_id);
 
   var results = [];
   var failed = [];
@@ -363,6 +395,8 @@ router.post('/users/quota/batch', auth.requireAuth, auth.requireAdmin, requireCa
       var parsed = parseYuan(it.quota_yuan, '追加金额');
 
       if (!userId) { failed.push({ user_id: userId, message: '用户ID为空' }); continue; }
+      var perm = canEditQuotaFor(userId);
+      if (!perm.ok) { failed.push({ user_id: userId, message: perm.message }); continue; }
       if (!parsed.ok) { failed.push({ user_id: userId, message: parsed.message }); continue; }
       if (parsed.micro <= 0) { failed.push({ user_id: userId, message: '追加金额需大于 0' }); continue; }
 
@@ -443,7 +477,11 @@ router.post('/users/quota/batch', auth.requireAuth, auth.requireAdmin, requireCa
       // 让推送失败时也能拿云端权威值盖回来（同单个充值）
       if (results[qi].remote) {
         syncService.applyRosterAllocation(results[qi].user_id,
-          results[qi].allocated_micro, results[qi].weekly_quota_micro);
+          results[qi].allocated_micro, results[qi].weekly_quota_micro, {
+            kind: 'topup',
+            reason: '本机批量追加',
+            operator_id: req.user.user_id
+          });
       }
     }
     version = bumpAssignVersion();
@@ -481,7 +519,11 @@ router.delete('/users/:userId/quota', auth.requireAuth, auth.requireAdmin, requi
       origin_instance: config.instanceId
     });
   }
-  syncService.applyRosterAllocation(userId, 0, 0);
+  syncService.applyRosterAllocation(userId, 0, 0, {
+    kind: 'revoke',
+    reason: String(req.body && req.body.reason || '管理员收回额度'),
+    operator_id: req.user.user_id
+  });
 
   var version = bumpAssignAndQueue(req, userId, 0, 0,
     String(req.body && req.body.reason || '管理员收回额度'));
@@ -496,10 +538,16 @@ router.get('/logs', auth.requireAuth, auth.requireAdmin, function(req, res) {
   var limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
   var userId = String(req.query.user_id || '').trim();
 
+  // 姓名要兜到 sync_roster：外班学生不在本机 users 里，只 JOIN users 会得到
+  // 空名字，前端只能回退显示学号 —— 管理台看起来就是「该显示姓名的地方显示了 ID」。
+  // 撞号（如两班管理员都叫 999999）时优先用本班 users 的口径，不影响阅读。
   var sql = [
-    'SELECT l.*, u.net_name, u.real_name',
+    'SELECT l.*,',
+    '  COALESCE(NULLIF(u.net_name, \'\'), r.net_name, \'\') AS net_name,',
+    '  COALESCE(NULLIF(u.real_name, \'\'), r.real_name, \'\') AS real_name',
     'FROM cluss_credit_log l',
-    'LEFT JOIN users u ON u.user_id = l.user_id'
+    'LEFT JOIN users u ON u.user_id = l.user_id',
+    'LEFT JOIN sync_roster r ON r.user_id = l.user_id'
   ].join('\n');
   var params = [];
   if (userId) {
@@ -707,6 +755,118 @@ router.post('/nodes/:instanceId/restore', auth.requireAuth, auth.requireAdmin, f
 });
 
 // ============================================================
+// 组网互联（mesh）：中枢自身状态与管理员席位
+// ============================================================
+//
+// 组网中枢跑在**有自己班级的机器上**（与 relay 那种专职中继不同），
+// 所以管理员第一件要知道的事是「这台机器现在是中心吗、别的班连上来了吗」。
+// 状态里刻意带上「密钥配了没」和「最近一次同步错误」—— 组网排障 90%
+// 都是这两样：密钥不一致（节点 403）或地址不通（节点一直连不上）。
+router.get('/mesh/status', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var isHub = config.mode === config.MODES.MESH || config.mode === config.MODES.RELAY;
+  var seat = String(initDb.getMeta('seat_instance', '') || '').trim() || config.instanceId;
+
+  var nodes = [];
+  var rosterCount = 0;
+  try {
+    nodes = db.prepare([
+      'SELECT instance_id, status, first_seen_at, last_seen_at, last_report_at,',
+      'last_assign_version, last_model_version, node_version, IFNULL(model_sync, 1) AS model_sync',
+      'FROM cluss_nodes ORDER BY last_seen_at DESC'
+    ].join('\n')).all();
+    rosterCount = db.prepare('SELECT COUNT(*) AS n FROM sync_roster').get().n;
+  } catch (e) {
+    // 老 schema（迁移 031 还没跑）时退回不带 model_sync 的查询，
+    // 而不是让整页节点列表空掉
+    try {
+      nodes = db.prepare([
+        'SELECT instance_id, status, first_seen_at, last_seen_at, last_report_at,',
+        'last_assign_version, last_model_version, node_version',
+        'FROM cluss_nodes ORDER BY last_seen_at DESC'
+      ].join('\n')).all();
+    } catch (e2) {
+      nodes = [];
+    }
+  }
+
+  res.json({
+    code: 200,
+    message: 'ok',
+    data: {
+      mode: config.mode,
+      is_hub: isHub,
+      instance_id: config.instanceId,
+      // 中枢地址：节点要填的就是这个。给出来是为了让管理员能直接复制，
+      // 而不是让他去翻 .env 再猜端口。
+      hub_url: isHub ? ('http://' + (process.env.PUBLIC_BASE_URL || (config.instanceId + ':9003')).replace(/^https?:\/\//, '') ) : '',
+      secret_configured: !!config.relay.secret,
+      seat_instance: seat,
+      seat_is_self: seat === config.instanceId,
+      assign_version: currentAssignVersion(),
+      model_version: parseInt(initDb.getMeta('model_config_version', '0'), 10) || 0,
+      roster_count: rosterCount,
+      nodes: nodes
+    }
+  });
+});
+
+// 移交/收回管理员席位
+// body: { instance_id } —— 传空串或本機 id 表示收回中枢自己
+//
+// 为什么允许移交：班管平时在**自己班**那台机器上操作，若席位永远在中枢，
+// 他想改全校配置就得物理走到中枢机器前。「席位在谁那」是给出去的权限，
+// 不是复制 —— 同一时刻只能有一个班握着写入权，否则两处都能改就是冲突源。
+router.post('/mesh/seat', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var isHub = config.mode === config.MODES.MESH || config.mode === config.MODES.RELAY;
+  if (!isHub) {
+    return res.status(400).json({ code: 400, message: '只有组网中枢可以分配管理员席位' });
+  }
+  var target = String(req.body.instance_id || '').trim();
+  if (target && target !== config.instanceId) {
+    var exists = db.prepare('SELECT instance_id FROM cluss_nodes WHERE instance_id = ?').get(target);
+    if (!exists) {
+      return res.status(404).json({ code: 404, message: '节点 ' + target + ' 还从来没连上来过' });
+    }
+  }
+  initDb.setMeta('seat_instance', target);
+  var seat = target || config.instanceId;
+  console.log('[Admin] 管理员席位移交给 %s（操作者 %s）', seat, req.user.user_id);
+  res.json({ code: 200, message: '席位已设为 ' + seat, data: { seat_instance: seat } });
+});
+
+// ============================================================
+// POST /admin/mesh/node-model-sync —— 某个班是否跟随中枢的模型选择
+// body: { instance_id, enabled: 0|1 }
+//
+// 关掉之后该班保留自己的渠道/Key/单价，额度与名单照常跟随。
+// 为什么按节点而不是全局：班级之间的网络条件与预算都不一样，
+// 一刀切会让「只想换自己模型」的班被迫整台断开组网。
+// ============================================================
+router.post('/mesh/node-model-sync', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var inst = String((req.body && req.body.instance_id) || '').trim();
+  if (!inst) return res.status(400).json({ code: 400, message: '缺少 instance_id' });
+
+  var raw = req.body && req.body.enabled;
+  var on = (raw === true || Number(raw) === 1) ? 1 : 0;
+
+  var row = db.prepare('SELECT instance_id FROM cluss_nodes WHERE instance_id = ?').get(inst);
+  if (!row) return res.status(404).json({ code: 404, message: '该班级节点不存在：' + inst });
+
+  try {
+    db.prepare('UPDATE cluss_nodes SET model_sync = ? WHERE instance_id = ?').run(on, inst);
+  } catch (e) {
+    return res.status(500).json({ code: 500, message: '设置失败：' + e.message });
+  }
+
+  console.log('[Admin] 节点 %s 模型同步: %s（操作者 %s）', inst, on ? '跟随中枢' : '关闭', req.user.user_id);
+  res.json({
+    code: 200,
+    message: on ? ('已设为跟随中枢，' + inst + ' 下一轮同步会拉取模型配置') : ('已关闭模型同步，' + inst + ' 会保留自己的模型配置'),
+    data: { instance_id: inst, model_sync: on }
+  });
+});
+
+// ============================================================
 // GET /admin/dashboard —— 总览（管理台首页）
 // ============================================================
 // 口径分两套，刻意不合并（2026-10-09 修正过一次真实的自相矛盾）：
@@ -717,14 +877,29 @@ router.post('/nodes/:instanceId/restore', auth.requireAuth, auth.requireAdmin, f
 // 且没有他本人（实测班管占全站消耗 76%，等于把主要成本从台账上抹掉）。
 // 现在两边统一为「钱含管理员、人数不含」，并由前端标注管理员行。
 router.get('/dashboard', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  // 统计要**含外班**：组网之后这台机器看得到别班的学生与消耗，
+  // 只数本班 users 会让「全校多少人 / 一共充了多少」少掉整整一个班。
+  // 外班学生的权威数据在 sync_roster（由它自己的班上报）。
+  // 撞号（两班都有 999999）用 NOT IN 排除，否则同一个人被数两次。
   var totals = db.prepare([
     'SELECT',
-    '  (SELECT COUNT(*) FROM users WHERE is_admin = 0) AS user_count,',
-    '  (SELECT COUNT(*) FROM users WHERE IFNULL(is_admin, 0) = 1) AS admin_count,',
+    '  (SELECT COUNT(*) FROM users WHERE is_admin = 0)',
+    '  + (SELECT COUNT(*) FROM sync_roster r WHERE r.instance_id <> \'\' AND IFNULL(r.is_admin, 0) = 0',
+    '       AND r.user_id NOT IN (SELECT user_id FROM users)) AS user_count,',
+    '  (SELECT COUNT(*) FROM users WHERE IFNULL(is_admin, 0) = 1)',
+    '  + (SELECT COUNT(*) FROM sync_roster r WHERE r.instance_id <> \'\' AND IFNULL(r.is_admin, 0) = 1',
+    '       AND r.user_id NOT IN (SELECT user_id FROM users)) AS admin_count,',
     '  (SELECT COUNT(*) FROM users WHERE CAST(user_id AS INTEGER) >= 800001 AND CAST(user_id AS INTEGER) <= 999998) AS overflow_count,',
-    '  (SELECT IFNULL(SUM(allocated_micro), 0) FROM cluss_credit) AS allocated_micro,',
+    '  (SELECT IFNULL(SUM(allocated_micro), 0) FROM cluss_credit)',
+    '  + (SELECT IFNULL(SUM(allocated_micro), 0) FROM sync_roster r WHERE r.instance_id <> \'\'',
+    '       AND r.user_id NOT IN (SELECT user_id FROM users)) AS allocated_micro,',
     '  (SELECT IFNULL(SUM(cost_micro), 0) FROM cluss_usage_log) AS used_micro,',
-    '  (SELECT COUNT(*) FROM cluss_usage_log) AS calls'
+    '  (SELECT COUNT(*) FROM cluss_usage_log) AS calls,',
+    // 让前端能说清「这些数字里有多少来自别的班」
+    '  (SELECT COUNT(*) FROM sync_roster r WHERE r.instance_id <> \'\'',
+    '       AND r.user_id NOT IN (SELECT user_id FROM users)) AS remote_user_count,',
+    '  (SELECT COUNT(DISTINCT instance_id) FROM sync_roster WHERE instance_id <> \'\') AS remote_class_count,',
+    '  (SELECT COUNT(*) FROM cluss_nodes WHERE status = \'active\') AS node_count'
   ].join('\n')).get();
 
   // 本月消耗（管理员预算视角）：按服务器本地日历月对齐（与峰谷同一面钟约定），
@@ -747,18 +922,29 @@ router.get('/dashboard', auth.requireAuth, auth.requireAdmin, function(req, res)
       '，谷时 ' + (Math.round(oc.discountBp / 100) / 10) + ' 折'
     : '未启用（全天原价）';
 
-  // 按班级聚合（class_no 为空的归到「未填班级」）
+  // 按班级聚合：本班 users ∪ 外班 sync_roster。
   //
   // 这里**数全部成员**（含管理员）：前端拿这份数据渲染「班级」下拉，并用
   // students 数当括号里的人数。若这里只数学生而下拉按它过滤，下拉会写
   // 「18 班（49 人）」而筛出来 50 行 —— 又是一处对不上的数字。
   // 「学生数」指标另算（totals.users / totals.admins），语义仍是学生。
+  //
+  // 组网之后必须并入外班：否则班级下拉里只有 18 班，管理员选不到 8 班，
+  // 「在一个班看多个班的数据」就无从下手。撞号用 NOT IN 去重。
   var byClass = db.prepare([
-    'SELECT IFNULL(NULLIF(u.class_no, \'\'), \'--\') AS class_no,',
-    '       COUNT(DISTINCT u.user_id) AS students,',
-    '       IFNULL(SUM(c.allocated_micro), 0) AS allocated_micro',
-    'FROM users u',
-    'LEFT JOIN cluss_credit c ON c.user_id = u.user_id',
+    'SELECT class_no,',
+    '       COUNT(DISTINCT user_id) AS students,',
+    '       IFNULL(SUM(allocated_micro), 0) AS allocated_micro',
+    'FROM (',
+    '  SELECT u.user_id, IFNULL(NULLIF(u.class_no, \'\'), \'--\') AS class_no,',
+    '         IFNULL(c.allocated_micro, 0) AS allocated_micro',
+    '  FROM users u LEFT JOIN cluss_credit c ON c.user_id = u.user_id',
+    '  UNION ALL',
+    '  SELECT r.user_id, IFNULL(NULLIF(r.class_no, \'\'), \'--\') AS class_no,',
+    '         IFNULL(r.allocated_micro, 0) AS allocated_micro',
+    '  FROM sync_roster r',
+    '  WHERE r.instance_id <> \'\' AND r.user_id NOT IN (SELECT user_id FROM users)',
+    ') t',
     'GROUP BY class_no',
     'ORDER BY class_no ASC'
   ].join('\n')).all();
@@ -766,12 +952,17 @@ router.get('/dashboard', auth.requireAuth, auth.requireAdmin, function(req, res)
   // 消耗排行（用于发现异常用量）。**含管理员** —— 联动部署下班管本人就是主要
   // 消耗者，滤掉他等于把最大的一笔成本藏起来；前端给管理员行加标记即可区分。
   var topUsers = db.prepare([
-    'SELECT s.user_id, u.net_name, u.real_name, IFNULL(u.is_admin, 0) AS is_admin,',
+    'SELECT s.user_id,',
+    '       COALESCE(NULLIF(u.net_name, \'\'), r.net_name, \'\') AS net_name,',
+    '       COALESCE(NULLIF(u.real_name, \'\'), r.real_name, \'\') AS real_name,',
+    '       IFNULL(u.is_admin, r.is_admin) AS is_admin,',
     '       s.used_micro, s.calls,',
-    '       IFNULL(c.allocated_micro, 0) AS allocated_micro',
+    '       IFNULL(c.allocated_micro, 0) AS allocated_micro,',
+    '       COALESCE(NULLIF(u.class_no, \'\'), r.class_no, \'\') AS class_no',
     'FROM (SELECT user_id, SUM(cost_micro) AS used_micro, COUNT(*) AS calls',
     '      FROM cluss_usage_log GROUP BY user_id) s',
     'LEFT JOIN users u ON u.user_id = s.user_id',
+    'LEFT JOIN sync_roster r ON r.user_id = s.user_id',
     'LEFT JOIN cluss_credit c ON c.user_id = s.user_id',
     'ORDER BY s.used_micro DESC LIMIT 10'
   ].join('\n')).all();
@@ -810,7 +1001,12 @@ router.get('/dashboard', auth.requireAuth, auth.requireAdmin, function(req, res)
         allocated_yuan: config.microToYuan(totals.allocated_micro).toFixed(2),
         used_yuan: config.microToYuan(totals.used_micro).toFixed(2),
         remaining_yuan: config.microToYuan(Math.max(0, totals.allocated_micro - totals.used_micro)).toFixed(2),
-        calls: totals.calls
+        calls: totals.calls,
+        // 上面这些数字里有多少来自别的班 —— 不标出来，管理员会以为
+        // 「全校 103 人」都是自己这台机器上的
+        remote_users: totals.remote_user_count,
+        remote_classes: totals.remote_class_count,
+        active_nodes: totals.node_count
       },
       by_class: byClass.map(function(r) {
         return {
@@ -866,9 +1062,15 @@ function computeAnomalies() {
   var SPIKE_RATIO = 3;
 
   var topRows = db.prepare([
-    'SELECT l.user_id, u.net_name, u.real_name, u.class_no, IFNULL(u.is_admin, 0) AS is_admin,',
+    'SELECT l.user_id,',
+    '       COALESCE(NULLIF(u.net_name, \'\'), r.net_name, \'\') AS net_name,',
+    '       COALESCE(NULLIF(u.real_name, \'\'), r.real_name, \'\') AS real_name,',
+    '       COALESCE(NULLIF(u.class_no, \'\'), r.class_no, \'\') AS class_no,',
+    '       COALESCE(u.is_admin, r.is_admin, 0) AS is_admin,',
     '       SUM(l.cost_micro) AS cost_micro, COUNT(*) AS calls',
-    'FROM cluss_usage_log l LEFT JOIN users u ON u.user_id = l.user_id',
+    'FROM cluss_usage_log l',
+    'LEFT JOIN users u ON u.user_id = l.user_id',
+    'LEFT JOIN sync_roster r ON r.user_id = l.user_id',
     'WHERE l.created_at >= ?',
     'GROUP BY l.user_id ORDER BY cost_micro DESC LIMIT 10'
   ].join('\n')).all(time.utcBeforeDays(7));
@@ -890,7 +1092,11 @@ function computeAnomalies() {
     var cur = Number(last24[uid].cost_micro || 0);
     var base = Number(prev[uid] || 0) / 7;   // 前 7 天日均
     if (cur >= MIN_SPIKE_YUAN * 1e6 && base > 0 && cur >= base * SPIKE_RATIO) {
+      // 外班学生不在本机 users 里，查不到名字就会让异常榜显示成一串学号
       var u = db.prepare('SELECT net_name, real_name, class_no, is_admin FROM users WHERE user_id = ?').get(uid);
+      if (!u) {
+        u = db.prepare('SELECT net_name, real_name, class_no, is_admin FROM sync_roster WHERE user_id = ?').get(uid);
+      }
       spikes.push({
         user_id: uid,
         name: (u && (u.real_name || u.net_name)) || uid,
@@ -931,19 +1137,31 @@ router.get('/usage/anomalies', auth.requireAuth, auth.requireAdmin, function(req
 // 含管理员，并单列一列标记：对账表漏掉管理员就等于漏掉真实发生过的支出
 // （班管本人就是主要消耗者）。is_admin=0 的过滤曾经让这张表与页面上的金额对不上。
 // ============================================================
+// 导出必须含**外班**：组网之后本机看得到别的班的学生，导出的账本却只有本班，
+// 对账时就对不上。外班行带上「来源班级」一列，便于分清这个学号属于哪个节点。
 router.get('/snapshot', auth.requireAuth, auth.requireAdmin, function(req, res) {
   var rows = db.prepare([
     'SELECT u.user_id, u.net_name, u.real_name, u.class_no, IFNULL(u.is_admin, 0) AS is_admin,',
     '       IFNULL(c.allocated_micro, 0) AS allocated,',
-    '       IFNULL(s.used_micro, 0) AS used',
+    '       IFNULL(s.used_micro, 0) AS used,',
+    '       \'\' AS instance_id',
     'FROM users u',
     'LEFT JOIN cluss_credit c ON c.user_id = u.user_id',
     'LEFT JOIN (SELECT user_id, SUM(cost_micro) AS used_micro FROM cluss_usage_log GROUP BY user_id) s ON s.user_id = u.user_id',
     'WHERE (IFNULL(c.allocated_micro, 0) > 0 OR IFNULL(s.used_micro, 0) > 0)',
+    'UNION ALL',
+    'SELECT r.user_id, r.net_name, r.real_name, r.class_no, IFNULL(r.is_admin, 0) AS is_admin,',
+    '       IFNULL(r.allocated_micro, 0) AS allocated,',
+    '       IFNULL(s2.used_micro, 0) AS used,',
+    '       r.instance_id',
+    'FROM sync_roster r',
+    'LEFT JOIN (SELECT user_id, SUM(cost_micro) AS used_micro FROM cluss_usage_log GROUP BY user_id) s2 ON s2.user_id = r.user_id',
+    'WHERE r.instance_id <> \'\' AND r.user_id NOT IN (SELECT user_id FROM users)',
+    '  AND (IFNULL(r.allocated_micro, 0) > 0 OR IFNULL(s2.used_micro, 0) > 0)',
     'ORDER BY allocated DESC'
   ].join('\n')).all();
 
-  var lines = ['用户ID,用户名,姓名,班级,是否管理员,已分配(元),已消耗(元),余额(元)'];
+  var lines = ['用户ID,用户名,姓名,班级,是否管理员,已分配(元),已消耗(元),余额(元),来源班级'];
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
     lines.push([
@@ -954,7 +1172,8 @@ router.get('/snapshot', auth.requireAuth, auth.requireAdmin, function(req, res) 
       r.is_admin === 1 ? '是' : '否',
       config.microToYuan(r.allocated).toFixed(2),
       config.microToYuan(r.used).toFixed(2),
-      config.microToYuan(r.allocated - r.used).toFixed(2)
+      config.microToYuan(r.allocated - r.used).toFixed(2),
+      String(r.instance_id || '本班')
     ].join(','));
   }
 
@@ -1838,6 +2057,86 @@ router.post('/vision/test', auth.requireAuth, auth.requireAdmin, function(req, r
 // ============================================================
 // 全站用量统计
 // ============================================================
+// ================= 联网搜索 =================
+//
+// 与 /vision 同一套形态：GET 读配置（Key 只回脱敏后的形状）、PUT 改配置、
+// POST /test 用一句真实查询验证"到底能不能搜到"。
+//
+// 为什么要有 test：搜索这类外部依赖坏起来是**静默**的（Key 过期、额度用完、
+// 域名被拦），不实测的话表现只是"AI 回答里没有来源"，老师根本无从判断。
+router.get('/search', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var search = require('../services/websearch');
+  res.json({ code: 200, message: 'ok', data: search.statusForAdmin() });
+});
+
+router.put('/search', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
+  var search = require('../services/websearch');
+  var b = req.body || {};
+  var patch = {};
+
+  if (b.enabled !== undefined) patch.enabled = !!b.enabled;
+  if (b.provider !== undefined) patch.provider = b.provider;
+  if (b.max_results !== undefined) patch.max_results = b.max_results;
+  if (b.timeout_ms !== undefined) patch.timeout_ms = b.timeout_ms;
+  if (b.depth !== undefined) patch.depth = b.depth;
+
+  // Key 的三态语义（与模型配置一致）：
+  //   不传        → 保持原 Key 不变（老师只勾了个开关，不该把 Key 清掉）
+  //   传空字符串  → 明确清空（换服务商时要能删）
+  //   传新值      → 覆盖
+  if (b.clear_key === true) patch.api_key = '';
+  else if (b.api_key !== undefined && String(b.api_key).trim() !== '') {
+    patch.api_key = String(b.api_key).trim();
+  }
+
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ code: 400, message: '没有要修改的配置' });
+  }
+
+  try {
+    search.saveSearchConfig(patch);
+  } catch (e) {
+    return res.status(e.status || 500).json({ code: e.status || 500, message: e.message });
+  }
+
+  // 刻意不动 bumpModelAndQueue：搜索配置是**节点本地**能力，
+  // 与云端下发的模型/视觉配置无关，提交给中继只会让别的班跟着变。
+  console.log('[Admin] 联网搜索配置更新 by %s: %j',
+    req.user.user_id,
+    { enabled: patch.enabled, provider: patch.provider, key_changed: patch.api_key !== undefined });
+
+  res.json({ code: 200, message: '已保存', data: search.statusForAdmin() });
+});
+
+router.post('/search/test', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var search = require('../services/websearch');
+  var q = String((req.body && req.body.query) || '').trim();
+  var cfg = search.getSearchConfig();
+
+  if (!cfg.enabled) return res.status(400).json({ code: 400, message: '联网搜索还没启用' });
+  if (!cfg.apiKey) return res.status(400).json({ code: 400, message: '还没填 API Key' });
+  if (!q) q = '今天的新闻';
+
+  search.search(q).then(function(payload) {
+    res.json({
+      code: 200,
+      message: payload.ok ? '搜索成功' : (payload.error || '搜索失败'),
+      data: {
+        ok: !!payload.ok,
+        error: payload.error || '',
+        provider: payload.provider,
+        query: payload.query,
+        // 多路检索是本轮加强的重点，管理台要能看出"这次到底搜了几组、上游给了多少条"
+        queries: payload.queries || [payload.query],
+        total_before_rank: payload.total_before_rank || (payload.results || []).length,
+        took_ms: payload.took_ms || 0,
+        cached: !!payload.cached,
+        results: (payload.results || []).slice(0, 5)
+      }
+    });
+  });
+});
+
 router.get('/usage/summary', auth.requireAuth, auth.requireAdmin, function(req, res) {
   var stats = require('../services/usage-stats');
   var win = stats.resolveWindow(req.query);
@@ -1909,16 +2208,53 @@ router.get('/usage/export.csv', auth.requireAuth, auth.requireAdmin, function(re
 //   { question: '...' } 在同一份数据底座上回答管理员的具体问题
 // ============================================================
 
-// 挑一个真正可用的模型：管理台自己的分析不能因为「默认模型没配 Key」就整个不可用。
-// 逐个 enabled 模型试 resolveModel（ready = 地址与 Key 都配齐了），取第一个能用的。
-function pickInsightModel() {
+// 洞察这一步用哪个模型，可以由管理员显式指定（question 之外再带 model_id）。
+//
+// 为什么必须能选：同样的台账，便宜模型给出的是套话，强模型才看得出「哪个班的
+// 消耗曲线是异常形状」。管理员需要「平时用便宜的、月底用强的」这种自由；
+// 而默认行为保持不变 —— 不传 model_id 时仍然是「第一个可用的模型」，老前端不受影响。
+//
+// 指定了就**绝不回退**：静默换模型会让「我选的是 X」变成一句谎话，管理员对比
+// 两次分析的结论时会把差异归因到模型上，实际却换了另一只。宁可 400 说清楚。
+function pickInsightModel(preferredId) {
   var ai = require('../services/ai');
+  var want = String(preferredId || '').trim();
+
+  if (want) {
+    var picked = ai.resolveModel(want);
+    if (!picked) return { mc: null, error: '所选模型不存在或已停用，请在「模型与单价」里确认' };
+    if (!picked.ready) return { mc: null, error: '所选模型还没配好地址与 Key，换一个模型或先去「模型与单价」补齐' };
+    return { mc: picked, error: '' };
+  }
+
+  // 自动模式：管理台自己的分析不能因为「默认模型没配 Key」就整个不可用。
+  // 逐个 enabled 模型试 resolveModel（ready = 地址与 Key 都配齐了），取第一个能用的。
   var rows = ai.getEnabledModels();
   for (var i = 0; i < rows.length; i++) {
     var mc = ai.resolveModel(rows[i].id);
-    if (mc && mc.ready) return mc;
+    if (mc && mc.ready) return { mc: mc, error: '' };
   }
-  return null;
+  return { mc: null, error: '' };
+}
+
+// 前端下拉要的清单：只列 enabled 的模型，ready 交给前端置灰（而不是隐藏）——
+// 管理员需要看见「这个模型在这儿，但还不能用」，隐藏会让人以为模型丢了。
+function insightModelOptions() {
+  var ai = require('../services/ai');
+  var rows = ai.getEnabledModels();
+  var dft = ai.getDefaultModelId();
+  var out = [];
+  for (var i = 0; i < rows.length; i++) {
+    var mc = ai.resolveModel(rows[i].id);
+    if (!mc) continue;
+    out.push({
+      id: String(mc.id),
+      label: mc.label || String(mc.id),
+      ready: !!mc.ready,
+      is_default: String(mc.id) === String(dft)
+    });
+  }
+  return out;
 }
 
 // 组装给模型看的数据底座。
@@ -2092,14 +2428,32 @@ var INSIGHT_SYSTEM = [
   '   说清改哪一项、改成什么、预计省多少；不要只说「优化模型选择」这类空话。'
 ].join('\n');
 
+// 下拉清单。放在 POST 之前，前端切到「AI 洞察」时先拉一次（零模型调用，只是读配置）。
+router.get('/ai/insight/models', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var auto = pickInsightModel();
+  res.json({
+    code: 200,
+    message: 'ok',
+    data: {
+      models: insightModelOptions(),
+      // 「自动」这一项到底会落到哪只模型，必须让管理员看得见：
+      // 否则「自动」是个黑盒，出了问题也无从判断是不是选错模型导致的。
+      auto_id: auto.mc ? String(auto.mc.id) : '',
+      auto_label: auto.mc ? (auto.mc.label || String(auto.mc.id)) : ''
+    }
+  });
+});
+
 router.post('/ai/insight', auth.requireAuth, auth.requireAdmin, function(req, res) {
   var question = String((req.body && req.body.question) || '').trim().slice(0, 500);
+  var wantedModelId = String((req.body && req.body.model_id) || '').trim();
 
-  var mc = pickInsightModel();
+  var picked = pickInsightModel(wantedModelId);
+  var mc = picked.mc;
   if (!mc) {
     return res.status(400).json({
       code: 400,
-      message: '当前没有可用的模型 —— 需要先在「模型与单价」里给至少一个模型配好地址与 Key'
+      message: picked.error || '当前没有可用的模型 —— 需要先在「模型与单价」里给至少一个模型配好地址与 Key'
     });
   }
 
@@ -2135,6 +2489,7 @@ router.post('/ai/insight', auth.requireAuth, auth.requireAdmin, function(req, re
         ok: true,
         answer: answer,
         model: mc.label || mc.id,
+        model_id: String(mc.id),
         elapsed_ms: Date.now() - started,
         context: snapshot.facts
       }

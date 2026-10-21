@@ -34,7 +34,19 @@ function ok(name, cond, extra) {
 }
 function group(t) { console.log('\n== ' + t + ' =='); }
 
-var REAL_DB = path.resolve(__dirname, '..', 'database', 'cluss.db');
+// 源库：默认是仓库内的真实库，但**允许用 DB_PATH 换掉**。
+// 为什么：这个脚本只做「复制一份出来改」，源库是什么不影响结论；而直接钉死真实库
+// 会让门禁依赖「本机生产库恰好配了默认模型」这种外部状态 —— 换台机器、清过配置就红灯，
+// 红的原因还跟被测代码毫无关系。CI / 临时库上跑就该指到临时库。
+var REAL_DB = (function() {
+  var envPath = String(process.env.DB_PATH || '').trim();
+  if (envPath) {
+    var resolved = path.isAbsolute(envPath) ? envPath : path.resolve(__dirname, '..', envPath);
+    if (fs.existsSync(resolved)) return resolved;
+    console.warn('[verify] DB_PATH 指向的库不存在，回落到仓库内数据库：' + envPath);
+  }
+  return path.resolve(__dirname, '..', 'database', 'cluss.db');
+})();
 var TMP_DB = path.join(os.tmpdir(), 'cluss-verify-assembly-' + process.pid + '.db');
 var FAKE_PORT = 18099;
 

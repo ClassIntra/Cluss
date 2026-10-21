@@ -65,9 +65,15 @@ var SENSITIVE_RES = [
   /(微信号?|qq号?|wechat|weixin|vx)\s*[:：]?\s*[a-z0-9_-]{5,}/i
 ];
 
+// 上游把空集合 JSON 化成字符串传过来时（实测 post_tags = ["[]"]），
+// 不过滤就会在界面上出现「常写：[]」这种一眼假的内容 —— 学生看到只会觉得
+// 系统在糊弄他。这类占位值在任何字段里都没有信息量，统一在入口挡掉。
+var PLACEHOLDER_RE = /^(\[\]|\{\}|null|undefined|none|n\/a|-+|—+|\?+|无|空)$/i;
+
 function clean(v, max) {
   var s = String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
   if (!s) return '';
+  if (PLACEHOLDER_RE.test(s)) return '';
   for (var i = 0; i < SENSITIVE_RES.length; i++) {
     if (SENSITIVE_RES[i].test(s)) return '';
   }
@@ -220,7 +226,7 @@ function buildCommunity(ci) {
 function buildGames(ci) {
   var g = (ci && ci.games) || {};
   var bits = [];
-  if (Number(g.chess) > 0) bits.push('国际象棋 ' + Number(g.chess) + ' 局');
+  if (Number(g.chess) > 0) bits.push('象棋 ' + Number(g.chess) + ' 局');
   if (Number(g.gomoku) > 0) bits.push('五子棋 ' + Number(g.gomoku) + ' 局');
   return bits.length ? bits.join('、') : null;
 }

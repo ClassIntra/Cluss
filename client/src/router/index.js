@@ -1,6 +1,7 @@
 import Vue from 'vue';
 import VueRouter from 'vue-router';
 import store from '@/store';
+import { readHomePage } from '@/utils/home-page';
 
 Vue.use(VueRouter);
 
@@ -82,10 +83,26 @@ var router = new VueRouter({
   routes: routes
 });
 
+// 「默认打开页」只认**本次打开的第一次导航**。
+//
+// 为什么放在这里：已登录的学生再打开应用根本不经过登录页，早先把生效点
+// 只放在"登录成功那一刻"，于是设置里改了却永远不生效（实测反馈）。
+// 只在落到根路径时接管 —— 深链（#/study 这类）是明确意图，绝不抢；
+// 刷新在 /notes 上也不该被拽走。
+var bootNavPending = true;
+
 router.beforeEach(function(to, from, next) {
   // auth 模块是 namespaced，getter 必须带命名空间前缀；
   // 写成 store.getters.isLoggedIn 会恒为 undefined，导致登录后仍被弹回登录页
   var loggedIn = store.getters['auth/isLoggedIn'];
+
+  if (bootNavPending) {
+    bootNavPending = false;
+    if (to.path === '/' && loggedIn) {
+      var home = readHomePage();
+      if (home !== '/') return next(home);
+    }
+  }
 
   if (to.meta.requiresAuth && !loggedIn) {
     return next({ name: 'Login', query: { redirect: to.fullPath } });
@@ -97,9 +114,9 @@ router.beforeEach(function(to, from, next) {
     }
   }
 
-  // 已登录时不再进登录/注册页
+  // 已登录时不再进登录/注册页 —— 落到他自己的默认打开页，而不是硬编码对话页
   if (to.meta.guest && loggedIn) {
-    return next({ name: 'Chat' });
+    return next(readHomePage());
   }
 
   next();
@@ -111,6 +128,40 @@ router.beforeEach(function(to, from, next) {
 // 这里刷新一次拿新的 index.html 即可。
 var CHUNK_ERROR = /Loading chunk|Loading CSS chunk|Failed to fetch dynamically imported module|Importing a module script failed/i;
 var CHUNK_RELOAD_KEY = 'cluss_chunk_reload_at';
+
+// 好感度「探索」上报：到过一个功能页就记一次（幂等，每个功能一生只加一次分）。
+//
+// 为什么放路由层而不是每个页面里写：探索的定义就是"来过这里"，
+// 在 afterEach 一处映射，新增页面只要往表里加一行，不会漏。
+// 为什么用原生 fetch 而不是 utils/api：api.js 本身就 import 了 router，
+// 这里再引回去就是循环依赖（组件还没挂载时 router 先执行，prototype 上还没有 $http）。
+var EXPLORE_MAP = {
+  '/': 'chat',
+  '/study': 'study',
+  '/writing': 'writing',
+  '/notes': 'notes',
+  '/wrong-book': 'wrongbook',
+  '/cloud': 'cloud'
+};
+
+// 同一浏览器会话内已上报过的功能不再重复发 —— 路由层每次切页都会走到这里，
+// 去重只是少几次无谓请求（服务端本来也幂等）。
+var EXPLORED_SENT = {};
+
+router.afterEach(function(to) {
+  var feature = EXPLORE_MAP[to.path];
+  if (!feature || EXPLORED_SENT[feature]) return;
+  EXPLORED_SENT[feature] = true;
+  try {
+    var token = store.state.auth.token;
+    if (!token) return;
+    fetch('/api/affinity/explore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({ feature: feature })
+    }).catch(function() { /* 探索加分是增强项，失败静默 */ });
+  } catch (e) { /* 同上 */ }
+});
 
 router.onError(function(err) {
   var msg = (err && err.message) || '';

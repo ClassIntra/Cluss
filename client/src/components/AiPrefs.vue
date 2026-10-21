@@ -70,7 +70,7 @@
         <!-- ============ 通用 ============ -->
         <template v-else-if="tab === 'general'">
           <div class="note tiny muted">
-            只影响下次登录后的落地页 —— 改完不会把你从当前正在看的页面弹走。
+            下次打开 Cluss 时生效 —— 改完不会把你从当前正在看的页面弹走。
           </div>
 
           <div class="sec-head">默认打开页</div>
@@ -126,14 +126,9 @@
             >{{ s }}</button>
           </div>
 
-          <button
-            type="button"
-            class="pref-toggle"
-            :class="{ on: prefs.useRecords }"
-            role="switch"
-            :aria-checked="prefs.useRecords ? 'true' : 'false'"
-            @click="toggleRecords"
-          >
+          <!-- 整行可点：用 <label> 而不是 <button> ——
+               开关本身是 checkbox，把 input 嵌进 button 是非法嵌套（点击会双触发）。 -->
+          <label class="pref-toggle" :class="{ on: prefs.useRecords }">
             <span class="pref-toggle-main">
               <span class="pref-toggle-title">参考我的历史数据</span>
               <span class="pref-toggle-desc tiny muted">
@@ -141,8 +136,82 @@
                 关闭后，每次只依据当前这段对话，系统也不再读取这些数据。
               </span>
             </span>
-            <span class="switch" :class="{ on: prefs.useRecords }" aria-hidden="true"></span>
-          </button>
+            <ToggleSwitch
+              :checked="prefs.useRecords"
+              label="参考我的历史数据"
+              @change="toggleRecords"
+            />
+          </label>
+
+          <!-- 默契度：回答「AI 和我熟不熟」。
+               放在「通用」是因为它跟上面的开关一样，是跨页面生效的长期状态。
+               规则全部服务端结算（每日封顶、探索一次性），这里只展示。 -->
+          <div class="sec-head">默契度</div>
+          <div v-if="affinityLoading" class="empty tiny muted">读取中…</div>
+          <div v-else-if="affinity" class="affinity-card">
+            <div class="affinity-head">
+              <span class="affinity-title">Lv{{ affinity.level }} · {{ affinity.title }}</span>
+              <span class="tiny muted">{{ affinity.points }} 分</span>
+            </div>
+            <div class="affinity-bar">
+              <div class="affinity-bar-fill" :style="{ width: Math.round(affinity.progress * 100) + '%' }"></div>
+            </div>
+            <div v-if="affinity.nextTitle" class="tiny muted">
+              距「{{ affinity.nextTitle }}」还差 {{ affinity.nextPoints - affinity.points }} 分
+              <span v-if="affinity.streakDays >= 2"> · 已连续活跃 {{ affinity.streakDays }} 天</span>
+            </div>
+            <div v-else class="tiny muted">已是最高默契度，谢谢你一直都在。</div>
+            <div class="affinity-rules tiny muted">
+              每天来聊聊 +2；连续活跃 3 天起每天 +1、7 天起 +2；
+              AI 记住你一件新事 +3；第一次用新功能 +2。每天最多 8 分 ——
+              默契度不刷分，靠日子堆出来。等级越高，AI 越记得你的事。
+            </div>
+          </div>
+
+          <!-- 隐私：一份密码管两处（隐藏的对话 + 笔记的隐私空间）。
+               放在「通用」而不是新开 tab：它就是长期状态，与上面两个开关同族；
+               且入口必须好找 —— 学生想不起密码时第一个找的地方就是设置。 -->
+          <div class="sec-head">隐私</div>
+          <div class="note tiny muted">
+            一个密码同时保护两处：对话侧栏里「隐藏的对话」和笔记里的「隐私空间」。
+            解锁后 30 分钟内不用再输；重启 Cluss 会重新锁上。
+          </div>
+
+          <div v-if="lockLoading" class="empty tiny muted">读取中…</div>
+          <template v-else>
+            <div class="lock-state-row">
+              <span
+                class="lock-state-tag"
+                :class="lockStatus.hasPassword ? (lockStatus.unlocked ? 'is-on' : 'is-off') : 'is-none'"
+              >{{ lockStatus.hasPassword ? (lockStatus.unlocked ? '已解锁' : '已锁定') : '未设置' }}</span>
+              <span class="tiny muted">
+                {{ lockStatus.hasPassword ? '隐藏的内容现在' + (lockStatus.unlocked ? '可以查看' : '被藏起来了') : '还没有隐藏的内容' }}
+              </span>
+            </div>
+
+            <div class="lock-btn-row">
+              <button v-if="!lockStatus.hasPassword" type="button" class="mini-btn is-primary" @click="onSetupLock">设置密码</button>
+              <template v-else>
+                <button v-if="!lockStatus.unlocked" type="button" class="mini-btn is-primary" @click="onUnlockLock">解锁</button>
+                <button v-else type="button" class="mini-btn" @click="onLockNow">立即上锁</button>
+                <button type="button" class="mini-btn" @click="changingLock = !changingLock">修改密码</button>
+                <button type="button" class="mini-btn is-danger" @click="onRemoveLock">移除密码</button>
+              </template>
+            </div>
+
+            <!-- 改密码：就地展开，不另开弹窗 —— 三个输入框的小事不值得一层浮层 -->
+            <div v-if="changingLock" class="lock-change-form">
+              <input v-model="lockOldPwd" class="input" type="password" maxlength="32" placeholder="原密码" />
+              <input v-model="lockNewPwd" class="input" type="password" maxlength="32" placeholder="新密码（4~32 位）" />
+              <input v-model="lockNewPwd2" class="input" type="password" maxlength="32" placeholder="再输一遍新密码" />
+              <div class="lock-btn-row">
+                <button type="button" class="mini-btn is-primary" :disabled="lockBusy" @click="onChangeLock">
+                  {{ lockBusy ? '请稍候…' : '确认修改' }}
+                </button>
+                <button type="button" class="mini-btn" @click="changingLock = false">取消</button>
+              </div>
+            </div>
+          </template>
         </template>
 
         <!-- ============ 人格 ============ -->
@@ -231,12 +300,13 @@
         <template v-else>
           <div class="note tiny muted">
             这些是 AI 在和你聊天的过程中自己记下来的，只存在你自己的账号里。
+            每聊满 4 轮它会整理一次<span v-if="typeof memoriesLeft === 'number'">（再聊 {{ memoriesLeft }} 轮就会更新）</span>。
             如果哪条记错了、或者你不想让它记，直接删掉 —— 删了它就真的忘了。
           </div>
 
           <div v-if="loadingMemories" class="empty tiny muted">读取中…</div>
           <div v-else-if="!memories.length" class="empty tiny muted">
-            还没记住什么。多聊一会儿，它会记住你的偏好、习惯和在意的事。
+            还没记住什么。每聊满 4 轮它会整理一次——多聊聊，它会记住你的偏好、习惯和在意的事。
           </div>
 
           <div v-else class="list">
@@ -273,6 +343,8 @@
 
 import modalEsc from '@/mixins/modal-esc';
 import CampusContext from '@/components/CampusContext.vue';
+// 开关外观与服务/校园面板共用同一个组件（此前两边各一套，尺寸配色都不同）
+import ToggleSwitch from '@/components/ToggleSwitch.vue';
 // 外观两档的取值直接来自 theme store —— 不在这里再列一份，避免与 store 漂移
 import { THEMES as THEME_VALUES } from '@/store/theme';
 // 学习偏好的选项与读写：与对话页 / 学习页共用同一份口径（见该模块顶部说明）
@@ -283,25 +355,9 @@ import {
   writeStudentPrefs
 } from '@/utils/student-prefs';
 
-// 「默认打开页」四选一：值就是路由路径（与 Login.vue 登录后的跳转目标对应）。
-// 读取/校验在需要处就近 try/catch（本项目约定：不为这点小事新建 utils 文件）。
-var HOME_PAGES = [
-  { value: '/', label: '对话' },
-  { value: '/study', label: '学习' },
-  { value: '/wrong-book', label: '错题本' },
-  { value: '/notes', label: '笔记' }
-];
-var HOME_PAGE_KEY = 'cluss_home_page';
-
-function readHomePage() {
-  try {
-    var v = localStorage.getItem(HOME_PAGE_KEY);
-    for (var i = 0; i < HOME_PAGES.length; i++) {
-      if (HOME_PAGES[i].value === v) return v;
-    }
-  } catch (e) { /* 隐私模式拿不到 localStorage，忽略 */ }
-  return '/'; // 未设置 → 保持现状：落对话页
-}
+// 「默认打开页」四选一：读/写/校验都收敛在 utils/home-page 里 ——
+// 生效点有两个（登录后落地、已登录再打开），必须是同一份实现。
+import { HOME_PAGES, readHomePage, writeHomePage } from '@/utils/home-page';
 
 var THEME_LABELS = { light: '浅色', dark: '深色' };
 var APPEARANCE = THEME_VALUES.map(function(v) {
@@ -315,7 +371,7 @@ export default {
   name: 'AiPrefs',
   // Esc 关闭（组件由 v-if 控制，存在即打开，见 mixin 说明）
   mixins: [modalEsc],
-  components: { CampusContext },
+  components: { CampusContext, ToggleSwitch },
   props: {
     // 打开时定在哪个 tab：'appearance' | 'general' | 'persona' | 'memory' | 'campus'
     initialTab: { type: String, default: 'persona' }
@@ -328,6 +384,13 @@ export default {
       memories: [],
       loadingMemories: false,
       memoriesLoaded: false,
+      // 距下次后台整理还差几轮（服务端 nextExtractIn）。
+      // 旧服务端没这个字段时保持 undefined，模板里的提示句自动不显示。
+      memoriesLeft: undefined,
+      // 默契度（GET /api/affinity）。加载失败保持 null，卡片整块不显示 ——
+      // 它是展示项，不该因为读不到就在设置里摆一个报错。
+      affinity: null,
+      affinityLoading: false,
       editingId: '',
       form: { name: '', prompt: '' },
       busy: false,
@@ -343,13 +406,26 @@ export default {
       prefs: readStudentPrefs(),
       // 是否接入 ClassIntra：决定"校园" tab 出不出来。
       // 独立部署下它是 false，整块功能等于不存在（独立性要求）。
-      campusLinked: false
+      campusLinked: false,
+      // ---- 隐私锁（统一密码）----
+      // 状态以 store/lock 为准（三个页面共用一份），这里只放交互用的临时字段。
+      lockLoading: false,
+      changingLock: false,
+      lockOldPwd: '',
+      lockNewPwd: '',
+      lockNewPwd2: '',
+      lockBusy: false
     };
   },
   computed: {
     // 当前主题：读法与 AppNav 一致，都走 theme store 的 getter
     theme: function() {
       return this.$store.getters['theme/theme'];
+    },
+    // 隐私锁状态镜像（store/lock 是唯一真相源）
+    lockStatus: function() {
+      var s = this.$store.state.lock;
+      return { hasPassword: s.hasPassword, unlocked: s.unlocked };
     },
     builtins: function() {
       return this.personas.filter(function(p) { return p.builtin === 1; });
@@ -378,8 +454,95 @@ export default {
   mounted: function() {
     this.loadPersonas();
     this.probeCampus();
+    this.loadAffinity();
+    this.loadLock();
   },
   methods: {
+    // ---- 隐私锁 ----
+    // 打开弹窗时读一次服务端状态。失败不打扰：lock 的 refresh 自己兜底成
+    // "没密码、没解锁"，最坏情况是这一块显示「未设置」，不影响别的 tab。
+    loadLock: function() {
+      var self = this;
+      this.lockLoading = true;
+      return this.$store.dispatch('lock/refresh').then(function() {
+        self.lockLoading = false;
+      });
+    },
+    onSetupLock: function() {
+      var self = this;
+      this.$store.dispatch('lock/promptSetup').then(function(ok) {
+        if (!ok) return;
+        self.$store.dispatch('toast', { message: '密码已设置', type: 'success' });
+      });
+    },
+    onUnlockLock: function() {
+      var self = this;
+      this.$store.dispatch('lock/promptUnlock').then(function(ok) {
+        if (ok) self.$store.dispatch('toast', { message: '已解锁 30 分钟', type: 'success' });
+      });
+    },
+    onLockNow: function() {
+      var self = this;
+      this.$store.dispatch('lock/lock').then(function() {
+        self.$store.dispatch('toast', { message: '已上锁', type: 'info' });
+      });
+    },
+    onChangeLock: function() {
+      var self = this;
+      if (this.lockNewPwd.length < 4 || this.lockNewPwd.length > 32) {
+        this.$store.dispatch('toast', { message: '新密码长度 4~32 位', type: 'error' });
+        return;
+      }
+      if (this.lockNewPwd !== this.lockNewPwd2) {
+        this.$store.dispatch('toast', { message: '两次输入不一致', type: 'error' });
+        return;
+      }
+      this.lockBusy = true;
+      this.$store.dispatch('lock/change', { oldPassword: this.lockOldPwd, newPassword: this.lockNewPwd })
+        .then(function(r) {
+          self.lockBusy = false;
+          if (!r.ok) {
+            self.$store.dispatch('toast', { message: r.message, type: 'error' });
+            return;
+          }
+          self.changingLock = false;
+          self.lockOldPwd = '';
+          self.lockNewPwd = '';
+          self.lockNewPwd2 = '';
+          self.$store.dispatch('toast', { message: '密码已修改', type: 'success' });
+        });
+    },
+    onRemoveLock: function() {
+      var self = this;
+      this.$store.dispatch('confirm', {
+        title: '移除隐藏密码',
+        message: '移除后，已隐藏的对话和笔记里的隐私空间都不再受密码保护。还有隐藏内容时会自动阻止。确定移除吗？',
+        danger: true,
+        confirmText: '移除'
+      }).then(function(ok) {
+        if (!ok) return;
+        self.$store.dispatch('lock/remove').then(function(r) {
+          if (!r.ok) {
+            self.$store.dispatch('toast', { message: r.message, type: 'error' });
+            return;
+          }
+          self.changingLock = false;
+          self.$store.dispatch('toast', { message: '密码已移除', type: 'success' });
+        });
+      });
+    },
+    // 默契度：打开弹窗时读一次。只读展示，不做任何写入。
+    loadAffinity: function() {
+      var self = this;
+      this.affinityLoading = true;
+      return this.$http.get('/affinity').then(function(r) {
+        if (r.data.code === 200 && r.data.data) self.affinity = r.data.data;
+      }).catch(function() {
+        self.affinity = null;
+      }).then(function() {
+        self.affinityLoading = false;
+      });
+    },
     // 探测是否接入 ClassIntra。**只读缓存、绝不触发 CI 请求** ——
     // 这个弹窗一打开就打一次 CI 的话，CI 慢的时候"打开设置"会跟着卡住。
     // 失败即当作未联动（校园 tab 不出现），不影响弹窗其它部分。
@@ -399,11 +562,11 @@ export default {
       this.$store.dispatch('theme/setTheme', value);
     },
 
-    // 选默认打开页：就地记住 + 落 localStorage，仅在下次登录成功后生效
+    // 选默认打开页：就地记住 + 落 localStorage，**下次打开应用**时生效
+    //（早先只写在"下次登录后生效"，而已登录的人再打开根本不经过登录页 → 永远不生效）
     setHomePage: function(value) {
       this.homePage = value;
-      // 读取/生效点分散（本弹窗 + Login.vue），按约定不新建 utils 文件，就近 try/catch
-      try { localStorage.setItem(HOME_PAGE_KEY, value); } catch (e) { /* 隐私模式忽略 */ }
+      writeHomePage(value);
     },
 
     // 打开记忆 tab 时才拉 —— 没点进去就不必多打一次接口
@@ -428,8 +591,10 @@ export default {
       writeStudentPrefs(this.prefs);
     },
 
-    toggleRecords: function() {
-      this.prefs.useRecords = !this.prefs.useRecords;
+    // next 由开关组件给出（它的 checkbox 已经点过了），这里不自己取反：
+    // 自取反会和组件的受控回写打架
+    toggleRecords: function(next) {
+      this.prefs.useRecords = !!next;
       writeStudentPrefs(this.prefs);
     },
 
@@ -451,6 +616,7 @@ export default {
       return this.$http.get('/memories', { params: { limit: 100 } }).then(function(r) {
         if (r.data.code !== 200) return;
         self.memories = (r.data.data && r.data.data.items) || [];
+        self.memoriesLeft = r.data.data ? r.data.data.nextExtractIn : undefined;
         self.memoriesLoaded = true;
       }).catch(function() {
         self.error = '记忆读取失败，请稍后重试';
@@ -646,6 +812,116 @@ html.no-flex-gap .tabs > * + * {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+/* 默契度卡片：与 pref-toggle 完全同族（同底色同描边），保持设置弹窗里的视觉一致性 */
+.affinity-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 12px;
+  border: 1px solid var(--ink-3);
+  border-radius: var(--radius-md);
+  background: var(--ink-1);
+}
+
+.affinity-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.affinity-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.affinity-bar {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--ink-4);
+  overflow: hidden;
+}
+
+.affinity-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  /* 宽度由 Vue 内联样式给出；这里只负责过渡。transition 只写 transform/opacity
+     之外的 width 是例外：进度条就那一个元素，重排代价可忽略 */
+  transition: width var(--duration-normal) var(--ease-standard);
+}
+
+.affinity-rules {
+  line-height: 1.6;
+}
+
+/* ---------- 隐私（统一密码） ---------- */
+/* mini-btn 的主色调变体：淡色系里"该点这个"的指引。
+   只改描边和字色不填实底 —— 这个弹窗里没有第二处实底按钮，
+   突然出现一个会抢走整页的视觉重心。 */
+.mini-btn.is-primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.lock-state-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+html.no-flex-gap .lock-state-row > * + * {
+  margin-left: 8px;
+}
+
+/* 状态章：三态一眼可辨，但都不刺眼 —— 它是信息不是警告 */
+.lock-state-tag {
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--ink-3);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.lock-state-tag.is-on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.lock-state-tag.is-off {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.lock-btn-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+html.no-flex-gap .lock-btn-row > * + * {
+  margin-left: 8px;
+}
+
+.lock-change-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--ink-3);
+  border-radius: var(--radius-md);
+  background: var(--ink-1);
+}
+html.no-flex-gap .lock-change-form > * + * {
+  margin-top: 8px;
+}
+
+.lock-change-form .input {
+  width: 100%;
+  height: 40px;
 }
 
 .sec-hint {
@@ -856,37 +1132,6 @@ html.no-flex-gap .pref-toggle > * + * {
   display: block;
   margin-top: 3px;
   line-height: 1.5;
-}
-
-.switch {
-  position: relative;
-  flex-shrink: 0;
-  width: 38px;
-  height: 22px;
-  border-radius: var(--radius-pill);
-  background: var(--ink-4);
-  transition: background var(--transition);
-}
-
-.switch::after {
-  content: '';
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .25);
-  transition: transform var(--transition);
-}
-
-.switch.on {
-  background: var(--accent);
-}
-
-.switch.on::after {
-  transform: translateX(16px);
 }
 
 .mini-btn {
