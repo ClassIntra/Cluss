@@ -15,6 +15,7 @@
 //
 // 只改 version 字段，其余内容与缩进原样保留（逐行改写，不重新序列化 JSON），
 // 避免把整个文件重排成另一种缩进、制造出几百行无意义 diff。
+// 两个 package-lock.json 的顶层版本号也一起改（见 LOCK_FILES）。
 'use strict';
 
 var path = require('path');
@@ -26,6 +27,15 @@ var FILES = [
   'package.json',
   'server/package.json',
   'client/package.json'
+];
+
+// 锁文件里也有版本号（顶层 `version` + `packages[""].version` 两处）。
+// 不管它们的话，package.json 已经是 1.0.0、锁文件还写着 0.4.0 —— 下次谁
+// `npm install` 都会把它改回来，凭空多出一处「谁改的、为什么改」的 diff。
+// npm ci 也会因为版本不一致给出噪音警告。
+var LOCK_FILES = [
+  'server/package-lock.json',
+  'client/package-lock.json'
 ];
 
 var KIND = { patch: 1, minor: 1, major: 1 };
@@ -42,6 +52,29 @@ function readCurrent() {
     process.exit(1);
   }
   return v.split('.').map(Number);
+}
+
+// 锁文件里的两处版本号都在文件头部，缩进分别是 2 和 6 个空格：
+//   { "version": "x" ...  "packages": { "": { "version": "x" ...
+// 逐行改写、只认这两个缩进，避免误伤依赖项各自的 version 字段（那有几千处）。
+function writeLockVersion(file, next) {
+  var full = path.join(ROOT, file);
+  if (!fs.existsSync(full)) return;
+  var lines = fs.readFileSync(full, 'utf8').split(/\r?\n/);
+  var re = /^( {2}| {6})"version"\s*:\s*"([^"]*)"(.*)$/;
+  var hit = 0;
+  for (var i = 0; i < lines.length && hit < 2; i++) {
+    var m = lines[i].match(re);
+    if (!m) continue;
+    lines[i] = m[1] + '"version": "' + next + '"' + m[3];
+    hit++;
+  }
+  if (!hit) {
+    console.error('%s 里没找到版本号字段，未改动', file);
+    process.exit(1);
+  }
+  fs.writeFileSync(full, lines.join('\n'));
+  console.log('  · %s → %s（%d 处）', file, next, hit);
 }
 
 function writeVersion(file, next) {
@@ -89,6 +122,7 @@ if (KIND[arg]) {
 
 console.log('%s.%s.%s → %s（三个包同步改）', cur[0], cur[1], cur[2], next);
 FILES.forEach(function(f) { writeVersion(f, next); });
+LOCK_FILES.forEach(function(f) { writeLockVersion(f, next); });
 
 console.log('');
 console.log('已改完。提交前建议跑一次：npm run verify:version');
