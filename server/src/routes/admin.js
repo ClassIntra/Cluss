@@ -1259,6 +1259,9 @@ function serializeModelForAdmin(r, sourcesMap) {
     free_active: freeActive ? 1 : 0,
     is_free: r.is_free === 1 ? 1 : 0,
     enabled: r.enabled === 1 ? 1 : 0,
+    // 迁移 032：「本机可用」与「下发到各班」是两件事。关掉后本机照常用，
+    // 只是不进入节点快照。列不存在时按「发」处理（= 老行为）。
+    sync_enabled: r.sync_enabled === 0 ? 0 : 1,
     is_default: r.is_default === 1 ? 1 : 0,
     // ---- 峰谷（迁移 022：逐模型声明，不再是全局一刀切）----
     has_offpeak: r.has_offpeak === 1 ? 1 : 0,
@@ -1289,6 +1292,8 @@ function serializeSourceForAdmin(s) {
     has_api_key: !!s.api_key,
     api_style: s.api_style || 'openai',
     enabled: s.enabled === 1 ? 1 : 0,
+    // 迁移 032：源关闭下发时，挂在它上面的模型会级联不再下发
+    sync_enabled: s.sync_enabled === 0 ? 0 : 1,
     sort_order: s.sort_order || 0,
     // 有几个模型挂在这个源上：删除前要提示影响面
     model_count: used
@@ -1330,6 +1335,25 @@ router.get('/models', auth.requireAuth, auth.requireAdmin, function(req, res) {
       models: rows.map(function(r) { return serializeModelForAdmin(r, sourcesMap); }),
       // 模型源清单（源可选；模型可挂源共享地址/密钥，也可自带连接信息）
       sources: ai.listSources().map(serializeSourceForAdmin),
+      // 下发范围汇总（迁移 032）：前端据此解释「为什么某个模型在班里看不到」，
+      // 也用来决定要不要显示「下发」这一列 —— 一个班都没接入时它是噪音。
+      sync_scope: (function() {
+        var c = modelConfig.syncScopeCounts();
+        var nodes = { total: 0, following: 0 };
+        try {
+          var list = db.prepare("SELECT IFNULL(model_sync, 1) AS s FROM cluss_nodes WHERE status != 'revoked'").all();
+          nodes.total = list.length;
+          for (var i = 0; i < list.length; i++) if (Number(list[i].s) !== 0) nodes.following++;
+        } catch (e) { /* 老 schema / 单机：没有已接入的班 */ }
+        return {
+          models: c.models,
+          synced_models: c.synced_models,
+          sources: c.sources,
+          synced_sources: c.synced_sources,
+          nodes_total: nodes.total,
+          nodes_following: nodes.following
+        };
+      })(),
       default_model: (function() {
         var d = db.prepare('SELECT id FROM ai_models WHERE is_default = 1 LIMIT 1').get();
         return d ? d.id : '';
@@ -1600,14 +1624,89 @@ router.post('/models/:id/set-default', auth.requireAuth, auth.requireAdmin, requ
   var tx = db.transaction(function() {
     db.prepare('UPDATE ai_models SET is_default = 0').run();
     // 默认模型是全站计费基准（×1.00）：换默认时必须把它的倍率归一，
-    // 否则基准自己带着倍率，所有模型（含它自己）的账单会整体漂移
-    db.prepare('UPDATE ai_models SET is_default = 1, price_multiplier_bp = 10000 WHERE id = ?').run(id);
+    // 否则基准自己带着倍率，所有模型（含它自己）的账单会整体漂移。
+    //
+    // 同时强制打开下发（迁移 032）：默认模型是各班的计费参照，缺了它节点上
+    // 所有倍率都没有基准，界面会冒出一句「尚未设置默认模型单价」。
+    // 这里选择顺手打开并说明，而不是拒绝 —— 管理员的意图很明确是「换基准」。
+    db.prepare('UPDATE ai_models SET is_default = 1, price_multiplier_bp = 10000, sync_enabled = 1 WHERE id = ?').run(id);
   });
   tx();
 
-  console.log('[Admin] 默认模型改为: %s（倍率已重置为 ×1.00）by %s', id, req.user.user_id);
+  var forcedSync = row.sync_enabled === 0;
+  console.log('[Admin] 默认模型改为: %s（倍率已重置为 ×1.00%s）by %s',
+    id, forcedSync ? '，并恢复下发' : '', req.user.user_id);
   bumpModelAndQueue(req);
-  res.json({ code: 200, message: '已设为默认模型（计费基准，倍率已重置为 ×1.00）', data: { default_model: id } });
+  res.json({
+    code: 200,
+    message: '已设为默认模型（计费基准，倍率已重置为 ×1.00）'
+      + (forcedSync ? '；它原本不下发，已一并加入下发范围' : ''),
+    data: { default_model: id, sync_enabled: 1 }
+  });
+});
+
+// ============================================================
+// POST /admin/models/:id/sync —— 这个模型是否下发到各班（迁移 032）
+// body: { enabled: 0|1 }
+//
+// 与「启用 / 禁用」是两件事，两个都需要：
+//   enabled       = 本机用不用；
+//   sync_enabled  = 发不发到别的班。
+// 想让一个模型先在本机试跑、暂时不给学生班看到，就该是「启用但不下发」。
+// 合成一个开关的话，要么本机用不了，要么全校被迫同步。
+// ============================================================
+router.post('/models/:id/sync', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
+  var raw = req.body && req.body.enabled;
+  var on = (raw === true || Number(raw) === 1) ? 1 : 0;
+
+  // 护栏（默认模型必须下发）在 service 里，和快照过滤用同一份判断 ——
+  // 见 model-config.setModelSync 的注释
+  var r = modelConfig.setModelSync(req.params.id, on);
+  if (!r.ok) return res.status(r.code || 400).json({ code: r.code || 400, message: r.message });
+
+  console.log('[Admin] 模型下发范围: %s → %s by %s', r.id, on ? '下发' : '仅本机', req.user.user_id);
+  var mv = bumpModelAndQueue(req);
+  res.json({
+    code: 200,
+    message: on
+      ? ('「' + r.name + '」将下发到各班（配置 v' + mv + '，节点 1 分钟内自动同步）')
+      : ('「' + r.name + '」只保留在本机，各班的模型列表里会移除它（配置 v' + mv + '）'),
+    data: { id: r.id, sync_enabled: on, model_config_version: mv }
+  });
+});
+
+// ============================================================
+// POST /admin/sources/:id/sync —— 这个模型源是否下发到各班
+// body: { enabled: 0|1 }
+//
+// 源关闭时它挂着的模型会**级联**不再下发（见 model-config 的 SYNCED_MODEL_WHERE）：
+// 只发模型不发源，节点会收到一个指向不存在源的模型，界面上写「源已失效」——
+// 提示与事实相反，管理员根本猜不到是中枢少发了源。
+// ============================================================
+router.post('/sources/:id/sync', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
+  var raw = req.body && req.body.enabled;
+  var on = (raw === true || Number(raw) === 1) ? 1 : 0;
+
+  // 护栏（源上的默认模型不能被级联带走）在 service 里，见 model-config.setSourceSync
+  var r = modelConfig.setSourceSync(req.params.id, on);
+  if (!r.ok) return res.status(r.code || 400).json({ code: r.code || 400, message: r.message });
+
+  console.log('[Admin] 模型源下发范围: %s → %s（挂载 %d 个模型）by %s',
+    r.id, on ? '下发' : '仅本机', r.affected_models, req.user.user_id);
+  var mv = bumpModelAndQueue(req);
+  res.json({
+    code: 200,
+    message: on
+      ? ('源「' + r.name + '」将下发到各班（配置 v' + mv + '）')
+      : ('源「' + r.name + '」不再下发，挂在它上面的 '
+        + r.affected_models + ' 个模型会一并停止下发（配置 v' + mv + '）'),
+    data: {
+      id: r.id,
+      sync_enabled: on,
+      affected_models: r.affected_models,
+      model_config_version: mv
+    }
+  });
 });
 
 // 连通性测试：发一条最小请求，验证地址与 Key 是否可用

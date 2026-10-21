@@ -304,6 +304,10 @@
 
         <section class="panel glass">
           <h2 class="panel-title">已接入的班级</h2>
+          <p class="panel-sub tiny muted">
+            节点接入后默认跟随中枢。只想让它少拿几个模型，用「模型与单价」里的「下发」列筛；
+            要它完全自己维护模型，才关掉下面的跟随开关。
+          </p>
           <div v-if="meshLoading" class="tiny muted">读取中…</div>
           <div v-else-if="!meshStatus || !meshStatus.nodes.length" class="tiny muted">
             还没有班级连上来。节点侧需要三件事：<code>CLUSS_MODE=node</code>、
@@ -336,7 +340,7 @@
               </div>
               <div class="mesh-node-actions">
                 <button v-if="meshStatus.seat_instance !== n.instance_id" class="btn btn-sm btn-ghost" @click="setSeat(n.instance_id)">设为管理员班</button>
-                <button class="btn btn-sm btn-ghost" @click="toggleModelSync(n)">
+                <button class="btn btn-sm btn-ghost" @click="toggleNodeModelSync(n)">
                   {{ n.model_sync === 0 ? '改为跟随中枢模型' : '改为本班自选模型' }}
                 </button>
               </div>
@@ -471,6 +475,16 @@
                 改动即时生效。尚未设置默认模型单价，各模型暂按自身单价计费——
                 请先在默认模型的编辑页配置基准单价。
               </p>
+              <!-- 下发范围：一句话说清「哪些会到各班、几个班在跟」。
+                   没有这一句时，管理员只能靠「班里看不到那个模型」去倒推 ——
+                   而看不到的原因既可能是没下发，也可能是那个班改成了自选模型。 -->
+              <p class="panel-sub tiny muted sync-scope-line" v-if="showSyncColumn && syncScope">
+                <strong>下发范围</strong>：
+                {{ syncScope.synced_models }} / {{ syncScope.models }} 个模型、
+                {{ syncScope.synced_sources }} / {{ syncScope.sources }} 个模型源会发到各班。
+                <template v-if="syncScope.nodes_following">全校 {{ syncScope.nodes_following }} 个班跟随中枢。</template>
+                <template v-if="syncScope.nodes_total > syncScope.nodes_following">另有 {{ syncScope.nodes_total - syncScope.nodes_following }} 个班自选模型，收不到这些配置。</template>
+              </p>
             </div>
             <div class="panel-actions">
               <button class="btn btn-sm btn-ghost" @click="loadModels">刷新</button>
@@ -496,6 +510,7 @@
                   <th>峰谷</th>
                   <th>能力</th>
                   <th>状态</th>
+                  <th v-if="showSyncColumn" class="col-sync" title="关掉后只留在本机，不发到各班">下发</th>
                   <th class="col-op-wide">操作</th>
                 </tr>
               </thead>
@@ -538,6 +553,19 @@
                     <span v-else-if="m.source_missing" class="badge badge-danger">源失效</span>
                     <span v-else-if="!m.has_api_key" class="badge badge-danger">缺 Key</span>
                     <span v-else-if="!m.is_default" class="badge badge-success">可用</span>
+                  </td>
+                  <td v-if="showSyncColumn" class="col-sync">
+                    <ToggleSwitch
+                      :checked="isModelSynced(m)"
+                      :disabled="modelReadOnly || isSourceSyncOff(m)"
+                      :label="'下发「' + m.label + '」到各班'"
+                      @change="setModelSync(m, $event)"
+                    />
+                    <span
+                      v-if="isSourceSyncOff(m)"
+                      class="tiny muted sync-hint"
+                      title="它挂的模型源已停止下发，模型会跟着不发"
+                    >随源</span>
                   </td>
                   <td class="col-op-wide">
                     <button class="btn btn-sm btn-ghost" @click="openModelForm(m)" :disabled="modelReadOnly">编辑</button>
@@ -582,6 +610,7 @@
                   <th>API 地址</th>
                   <th class="num">挂载模型</th>
                   <th>状态</th>
+                  <th v-if="showSyncColumn" class="col-sync" title="关掉后这个源及它挂的模型都不发到各班">下发</th>
                   <th class="col-op-wide">操作</th>
                 </tr>
               </thead>
@@ -599,6 +628,14 @@
                     <span v-if="!s.enabled" class="badge badge-danger">已停用</span>
                     <span v-else-if="!s.has_api_key" class="badge badge-danger">缺 Key</span>
                     <span v-else class="badge badge-success">可用</span>
+                  </td>
+                  <td v-if="showSyncColumn" class="col-sync">
+                    <ToggleSwitch
+                      :checked="s.sync_enabled !== 0"
+                      :disabled="modelReadOnly"
+                      :label="'下发模型源「' + (s.label || s.id) + '」到各班'"
+                      @change="setSourceSync(s, $event)"
+                    />
                   </td>
                   <td class="col-op-wide">
                     <button class="btn btn-sm btn-ghost" @click="openSourceForm(s)" :disabled="modelReadOnly">编辑</button>
@@ -1173,6 +1210,7 @@ import Segmented from '@/components/Segmented.vue';
 import UsageChart from '@/components/UsageChart.vue';
 import ModelForm from '@/components/ModelForm.vue';
 import SourceForm from '@/components/SourceForm.vue';
+import ToggleSwitch from '@/components/ToggleSwitch.vue';
 // AI 洞察的结果是 markdown（列表 / 加粗 / 表格）。复用全站同一个渲染入口，
 // 不在这里另造一套 —— 它已内含 DOMPurify 净化，v-html 是安全的。
 import { renderMarkdown } from '@/utils/markdown';
@@ -1183,7 +1221,7 @@ var SOURCE_LABELS = {
 
 export default {
   name: 'AdminView',
-  components: { AppNav, Segmented, UsageChart, ModelForm, SourceForm },
+  components: { AppNav, Segmented, UsageChart, ModelForm, SourceForm, ToggleSwitch },
   data: function() {
     return {
       tab: 'overview',
@@ -1228,6 +1266,9 @@ export default {
       modelReadOnly: false,
       modelReadOnlyReason: '',
       modelWritesToSchool: false,
+      // 下发范围汇总（迁移 032）：{ models, synced_models, sources, synced_sources,
+      // nodes_total, nodes_following }。为 null 表示还没读到，别渲染占位数字。
+      syncScope: null,
       modelFormOpen: false,
       editingModel: null,
       sourceFormOpen: false,
@@ -1317,6 +1358,12 @@ export default {
     };
   },
   computed: {
+    // 「下发」这一列什么时候值得出现：
+    //   只读的班（席位不在本机）改了也没用，列出来只会让人以为坏了；
+    //   能改的机器上，哪怕暂时没有班接入，也要能提前把范围配好。
+    showSyncColumn: function() {
+      return !this.modelReadOnly;
+    },
     // 当前登录的学号：账号绑定面板要显示「这台电脑上的我是谁」。
     // 直接读本地存储，和 store/auth 保持同一份来源，但不去动那个模块
     meUserId: function() {
@@ -1537,25 +1584,110 @@ export default {
     // 切换某个班「是否跟随中枢的模型选择」。
     // 关掉之后该班保留自己的渠道/Key/单价，额度与名单照常跟随 ——
     // 比让它整台断开组网要好。
-    toggleModelSync: function(node) {
+    //
+    // 确认走全局自定义弹窗而不是 window.confirm：原生弹窗在 Android WebView 里
+    // 是一块与界面无关的系统灰底，既打断玻璃拟态，也没法标出危险等级
+    // （这里的「关闭跟随」会让那个班从此不再收到中枢的模型）。
+    toggleNodeModelSync: function(node) {
       var self = this;
       var next = (node.model_sync === 0) ? 1 : 0;
-      var tip = next === 0
-        ? ('关闭后 ' + node.instance_id + ' 会保留自己的模型配置，额度与名单照常同步')
-        : ('开启后 ' + node.instance_id + ' 下一轮同步会拉取中枢的模型配置，覆盖它自己的');
-      if (!window.confirm(tip + '。确定继续？')) return;
-      this.$http.post('/admin/mesh/node-model-sync', {
-        instance_id: node.instance_id,
-        enabled: next
-      }).then(function(r) {
-        if (r.data.code === 200) {
-          self.$store.commit('SHOW_TOAST', { message: r.data.message, type: 'success' });
-          self.loadMeshStatus();
-        }
-      }).catch(function(e) {
-        var msg = (e && e.response && e.data && e.data.message) || '操作失败';
-        self.$store.commit('SHOW_TOAST', { message: msg, type: 'error' });
+      this.$store.dispatch('confirm', {
+        title: next === 0 ? '让这个班自己选模型？' : '让这个班跟随中枢模型？',
+        message: next === 0
+          ? ('关闭后 ' + node.instance_id + ' 会保留自己现有的模型配置，不再收到中枢的任何模型；'
+            + '额度与名单照常同步。')
+          : ('开启后 ' + node.instance_id + ' 下一轮同步会拉取中枢的模型配置，'
+            + '覆盖它自己的（只含勾了「下发」的模型与源）。'),
+        confirmText: next === 0 ? '改为自选' : '跟随中枢',
+        danger: next === 0
+      }).then(function(ok) {
+        if (!ok) return;
+        self.$http.post('/admin/mesh/node-model-sync', {
+          instance_id: node.instance_id,
+          enabled: next
+        }).then(function(r) {
+          if (r.data.code === 200) {
+            self.$store.commit('SHOW_TOAST', { message: r.data.message, type: 'success' });
+            self.loadMeshStatus();
+          }
+        }).catch(function(e) {
+          var msg = (e && e.response && e.response.data && e.response.data.message) || '操作失败';
+          self.$store.commit('SHOW_TOAST', { message: msg, type: 'error' });
+        });
       });
+    },
+
+    // ---------- 下发范围（迁移 032）----------
+    //
+    // 别和上面的「启用 / 禁用」混了：enabled 是本机用不用，
+    // sync_enabled 是发不发到别的班。一个模型完全可以「本机启用、暂不下发」。
+    isSourceSyncOff: function(m) {
+      if (!m || !m.source_id) return false;
+      var sid = m.source_id;
+      var s = (this.sources || []).filter(function(x) { return x.id === sid; })[0];
+      return !!(s && s.sync_enabled === 0);
+    },
+
+    // 表格里那一列显示的「实际会不会发出去」：源关了，模型跟着不发
+    isModelSynced: function(m) {
+      if (this.isSourceSyncOff(m)) return false;
+      return m.sync_enabled !== 0;
+    },
+
+    setModelSync: function(m, next) {
+      var self = this;
+      var run = function() {
+        self.$http.post('/admin/models/' + m.id + '/sync', { enabled: next ? 1 : 0 })
+          .then(function(r) {
+            if (r.data.code !== 200) throw new Error(r.data.message || '操作失败');
+            self.$store.commit('SHOW_TOAST', { message: r.data.message, type: 'success' });
+            self.loadModels();
+          })
+          .catch(function(e) {
+            var msg = (e && e.response && e.response.data && e.response.data.message)
+              || (e && e.message) || '操作失败';
+            // 失败时开关会自己弹回原位（ToggleSwitch 按 prop 对齐），
+            // 所以这里只需要把原因说清楚
+            self.$store.commit('SHOW_TOAST', { message: msg, type: 'error' });
+          });
+      };
+      if (next) return run();
+      this.$store.dispatch('confirm', {
+        title: '停止下发？',
+        message: '「' + m.label + '」会保留在本机，但各班的模型列表里将不再出现它。'
+          + '已在各班进行中的会话不受影响，下一轮同步（1 分钟内）生效。',
+        confirmText: '停止下发',
+        danger: true
+      }).then(function(ok) { if (ok) run(); });
+    },
+
+    setSourceSync: function(s, next) {
+      var self = this;
+      var run = function() {
+        self.$http.post('/admin/sources/' + s.id + '/sync', { enabled: next ? 1 : 0 })
+          .then(function(r) {
+            if (r.data.code !== 200) throw new Error(r.data.message || '操作失败');
+            self.$store.commit('SHOW_TOAST', { message: r.data.message, type: 'success' });
+            self.loadModels();
+          })
+          .catch(function(e) {
+            var msg = (e && e.response && e.response.data && e.response.data.message)
+              || (e && e.message) || '操作失败';
+            self.$store.commit('SHOW_TOAST', { message: msg, type: 'error' });
+          });
+      };
+      if (next) return run();
+      // 级联影响必须说清楚：关掉一个源等于同时关掉它下面所有模型，
+      // 而源表格里只有一列「挂载模型」的数量，不说的话没人会联想到这一层
+      var count = Number(s.model_count || 0);
+      this.$store.dispatch('confirm', {
+        title: '停止下发这个源？',
+        message: '源「' + (s.label || s.id) + '」不再发到各班'
+          + (count ? ('，挂在它上面的 ' + count + ' 个模型也会一并不再下发') : '')
+          + '。本机照常使用，下一轮同步（1 分钟内）生效。',
+        confirmText: '停止下发',
+        danger: true
+      }).then(function(ok) { if (ok) run(); });
     },
 
     sourceLabel: function(s) { return SOURCE_LABELS[s] || s || '对话'; },
@@ -1844,6 +1976,7 @@ export default {
           self.modelReadOnly = !!r.data.data.read_only;
           self.modelReadOnlyReason = r.data.data.read_only_reason || '';
           self.modelWritesToSchool = !!r.data.data.writes_to_school;
+          self.syncScope = r.data.data.sync_scope || null;
         }
       }).catch(function(err) {
         self.error = err.message || '模型列表加载失败';
@@ -2755,6 +2888,23 @@ html.no-flex-gap .filters > * + * {
 .col-op-wide {
   width: 200px;
   text-align: right;
+}
+
+/* 下发开关列：只放一个 38px 开关（关闭级联时多一行「随源」小字）。
+   给 74px 而不是撑满，是为了不把「操作」列挤到需要横向滚动。 */
+.col-sync {
+  width: 74px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.col-sync .sync-hint {
+  display: block;
+  margin-top: 2px;
+}
+
+.sync-scope-line {
+  margin-top: 4px;
 }
 
 /* .empty-cell 已提到 styles/global.css（表格空态，两处逐字相同） */

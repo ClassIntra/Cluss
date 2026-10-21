@@ -247,10 +247,14 @@ router.get('/assignments', function(req, res) {
 // ============================================================
 // GET /sync/model-config —— 模型配置快照（§5.2）
 // ai_models + ai_sources + 视觉/峰谷 meta，整表替换语义。
-// 全网同一份（v1 语义）：上游地址与 Key 由中枢运营者维护，不分校。
+// 上游地址与 Key 由中枢运营者维护，不分校；但**下发范围可以勾**（迁移 032）。
 // ============================================================
 router.get('/model-config', function(req, res) {
-  var snap = modelConfig.snapshot();
+  // 按请求方决定范围：席位班拿全量 —— 它自己就是配置的编辑者，
+  // 「这条不下发」只约束别的班，不该反过来把它本机上的模型删掉。
+  // 普通节点只拿勾了下发的条目（源没勾时它挂的模型一并排除，见 model-config）。
+  var inst = nodeInstanceId(req);
+  var snap = modelConfig.snapshot({ scope: isSeatNode(inst) ? 'all' : 'synced' });
   res.json({
     code: 200,
     message: 'ok',

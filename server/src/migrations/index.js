@@ -39,5 +39,6 @@ module.exports = [
   require('./028_affinity'),
   require('./029_conversation_hidden'),
   require('./030_roster_hub_quota'),
-  require('./031_node_model_sync')
+  require('./031_node_model_sync'),
+  require('./032_model_sync_scope')
 ];
