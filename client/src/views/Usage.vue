@@ -135,6 +135,7 @@ import AppNav from '@/components/AppNav.vue';
 import ErrorBanner from '@/components/ErrorBanner.vue';
 import Segmented from '@/components/Segmented.vue';
 import UsageChart from '@/components/UsageChart.vue';
+import { apiUrl } from '@/utils/base-path';
 
 export default {
   name: 'UsageView',
@@ -176,7 +177,7 @@ export default {
     },
     exportUrl: function() {
       var token = this.$store.state.auth.token;
-      return '/api/usage/export.csv?days=' + this.days + '&token=' + encodeURIComponent(token);
+      return apiUrl('usage/export.csv?days=' + this.days + '&token=' + encodeURIComponent(token));
     }
   },
   watch: {

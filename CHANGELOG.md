@@ -8,6 +8,27 @@
 
 ## [未发布]
 
+### 新增（同一份构建同时支持根部署与子路径挂载）
+
+ClassIntra 开 HTTPS 后，浏览器把 HTTPS 页面里的 HTTP 子资源一律按混合内容拦截，
+iframe 内嵌 Cluss（9003）直接失败。ClassIntra 侧用同源反代把 Cluss 挂到
+`/cluss-app/` 下；Cluss 这边配合做两件事，让同一份产物两种挂法都能用：
+
+- `vite.config.js` 的 `base` 改为 `'./'`：构建产物里的 js/css/字体全部走相对路径。
+  写死 `/` 时，挂在子路径下页面会去要 `/assets/...` —— 那是宿主的路径，白屏。
+- 新增 `client/src/utils/base-path.js`：从 `location.pathname` 推导部署前缀，
+  导出 `basePath` / `apiBase` / `apiUrl()`。**所有** API 请求与文件地址改为经它拼接，
+  清掉 29 处裸 `'/api'` 字面量。裸字面量在子路径下会打到宿主的接口上 ——
+  那种故障的样子特别具有误导性：页面正常渲染、请求也 200，只是内容全是 CI 的数据。
+- `VueRouter` 的 `base` 改为跟随 `basePath`：hash 模式下 base 拼在 `#` 之前，
+  固定 `'/'` 会让 iframe 里一切换页地址就掉回宿主根目录，整个 Cluss 被宿主的
+  SPA 兜底接管，界面「凭空消失」。
+- `index.html` 的 Font Awesome 改为相对路径；`router` 里探索加分的 `fetch` 一并改用 `apiUrl`。
+- 新增守卫 `server/scripts/verify-no-magic-api.cjs`（并纳入 `verify:all`）：
+  扫 `client/src` 里残留的裸 `/api` 字面量，报错即失败，防止回归。
+
+根部署（`http://<host>:9003/`）行为完全不变：此时推导结果就是 `/` 与 `/api`。
+
 ### 新增（按条目选择下发范围：哪些模型 / 源同步到各班）
 
 原来模型配置只有「整表替换」一种语义：中枢上有什么，每个班就有什么。想给某个班

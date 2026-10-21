@@ -1,6 +1,7 @@
 import Vue from 'vue';
 import axios from 'axios';
 import api from '@/utils/api';
+import { apiUrl } from '@/utils/base-path';
 
 // 受限 WebView（智熄网应用壳内嵌环境）里 window.localStorage 可能拿不到对象（为 null），
 // 直接访问会抛 TypeError。而本模块的初始 state 就在**模块求值期**读存储 ——
@@ -119,7 +120,7 @@ var actions = {
   // 401 拦截器（logout + 跳登录页），把「回滚原会话」的善后逻辑整个绕掉；
   // 且 token 校验失败时不该动任何已有登录态。
   acceptExternalToken: function(context, token) {
-    return axios.get('/api/auth/check-status', {
+    return axios.get(apiUrl('auth/check-status'), {
       headers: { Authorization: 'Bearer ' + token },
       timeout: 15000
     }).then(function(resp) {

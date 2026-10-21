@@ -1211,6 +1211,7 @@ import UsageChart from '@/components/UsageChart.vue';
 import ModelForm from '@/components/ModelForm.vue';
 import SourceForm from '@/components/SourceForm.vue';
 import ToggleSwitch from '@/components/ToggleSwitch.vue';
+import { apiUrl } from '@/utils/base-path';
 // AI 洞察的结果是 markdown（列表 / 加粗 / 表格）。复用全站同一个渲染入口，
 // 不在这里另造一套 —— 它已内含 DOMPurify 净化，v-html 是安全的。
 import { renderMarkdown } from '@/utils/markdown';
@@ -2401,11 +2402,11 @@ export default {
     },
 
     exportSnapshot: function() {
-      this.download('/api/admin/snapshot', 'cluss-snapshot.csv');
+      this.download(apiUrl('admin/snapshot'), 'cluss-snapshot.csv');
     },
 
     exportUsage: function() {
-      this.download('/api/admin/usage/export.csv?days=' + this.usageDays, 'cluss-usage.csv');
+      this.download(apiUrl('admin/usage/export.csv?days=' + this.usageDays), 'cluss-usage.csv');
     }
   }
 };

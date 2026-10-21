@@ -394,10 +394,10 @@
                       <img
                         v-if="a.kind === 'image'"
                         class="mini-attach-img"
-                        :src="'/api/cloud/files/' + a.hash + '?thumb=1'"
+                        :src="apiBase + '/cloud/files/' + a.hash + '?thumb=1'"
                         :alt="a.name"
                         loading="lazy"
-                        @click="previewUrl = '/api/cloud/files/' + a.hash"
+                        @click="previewUrl = apiBase + '/cloud/files/' + a.hash"
                       />
                       <span v-else class="mini-attach-txt">TXT</span>
                     </div>
@@ -700,6 +700,7 @@ import ModelSelect from '@/components/ModelSelect.vue';
 import AiPrefs from '@/components/AiPrefs.vue';
 import ContextRing from '@/components/ContextRing.vue';
 import { renderMarkdown, renderStream, ensureKatexIdle, onKatexReady } from '@/utils/markdown';
+import { apiBase, apiUrl } from '@/utils/base-path';
 // 流式增量渲染（冻结已稳定的前缀，每帧只重渲染尾巴）——见 utils/stream-paint
 import { createStreamPainter } from '@/utils/stream-paint';
 import { appendStreamCaret } from '@/utils/stream-caret';
@@ -727,6 +728,9 @@ export default {
   mixins: [waiting, streamFrame, orientation, noteRefs, mermaidCharts],
   data: function() {
     return {
+      // 模板里拼图片/文件地址用：根部署是 /api，被 CI 以 /cluss 反代时是 /cluss/api。
+      // 不放 computed：基址在页面生命周期内恒定，没有重新计算的必要。
+      apiBase: apiBase,
       conversations: [],
       // 是否在列表里显示已隐藏的会话。默认 false ——
       // 「解锁」与「显示」分成两步是故意的：解锁只代表"认得你"，
@@ -2216,7 +2220,7 @@ export default {
       var token = this.$store.state.auth.token;
       if (token) headers['Authorization'] = 'Bearer ' + token;
 
-      fetch('/api/chat/stream', {
+      fetch(apiUrl('chat/stream'), {
         method: 'POST',
         headers: headers,
         credentials: 'same-origin',

@@ -95,6 +95,7 @@
 import AppNav from '@/components/AppNav.vue';
 import ErrorBanner from '@/components/ErrorBanner.vue';
 import Segmented from '@/components/Segmented.vue';
+import { apiUrl } from '@/utils/base-path';
 
 // 云盘视图记忆的 localStorage 键：记住上次选的分类（全部/图片/文本），
 // 切页或刷新后不再落回默认「全部」（写法参考 Notes.vue 的持久化）。
@@ -276,8 +277,8 @@ export default {
     retry: function(f) {
       this.$delete(this.failed, f.hash);
       var bust = '_t=' + Date.now();
-      f.thumb_url = '/api/cloud/files/' + f.hash + '?thumb=1&' + bust;
-      f.url = '/api/cloud/files/' + f.hash + '?' + bust;
+      f.thumb_url = apiUrl('cloud/files/' + f.hash + '?thumb=1&' + bust);
+      f.url = apiUrl('cloud/files/' + f.hash + '?' + bust);
     },
 
     preview: function(f) {

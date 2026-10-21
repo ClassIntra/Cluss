@@ -312,6 +312,7 @@ import AppNav from '@/components/AppNav.vue';
 import ErrorBanner from '@/components/ErrorBanner.vue';
 import Segmented from '@/components/Segmented.vue';
 import { renderMarkdown, ensureKatexIdle, onKatexReady } from '@/utils/markdown';
+import { apiUrl } from '@/utils/base-path';
 import mermaidCharts from '@/mixins/mermaid';
 
 export default {
@@ -688,7 +689,7 @@ export default {
     },
 
     exportCsv: function() {
-      this.download('/api/wrong-book/export.csv', 'cluss-wrong-book.csv');
+      this.download(apiUrl('wrong-book/export.csv'), 'cluss-wrong-book.csv');
     },
 
     download: function(url, filename) {

@@ -6,6 +6,12 @@ import path from 'path';
 // Chrome 80 / Android 9 平板 / 微信 X5 内核都能跑，所以不做过于激进的语法降级
 export default defineConfig({
   plugins: [vue()],
+  // 资源全部走相对路径，让**同一份构建产物**既能挂在域根（http://<host>:9003/），
+  // 也能被 ClassIntra 的 HTTPS 站点以 /cluss/ 反代挂载。
+  // 若写死 '/'，反代到子路径时 index.html 会去要 /assets/... —— 那是宿主
+  // （ClassIntra）自己的资源路径，Cluss 的 js/css 全部 404，页面白屏。
+  // 代价：深路径下的相对解析会变，而 Cluss 用 hash 路由（路径恒定），不受影响。
+  base: './',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, 'src'),

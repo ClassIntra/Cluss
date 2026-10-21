@@ -168,6 +168,20 @@ CI_BRIDGE_SECRET=<与 ClassIntra 的 RELAY_SECRET 一致>
 CI_JWT_SECRET=<与 ClassIntra 的 JWT_SECRET 一致>   # 填了才支持 token 互认免登
 ```
 
+**ClassIntra 开 HTTPS 之后**：浏览器把 HTTPS 页面里的 HTTP 子资源一律按混合内容
+拦截，iframe 内嵌 `http://<CI>:9003` 会直接失败。ClassIntra 侧用**同源反代**解决
+（`/cluss-app/*` → `127.0.0.1:9003`），Cluss 这边无需任何配置；但必须满足两条，
+否则反代过去也是白屏：
+
+1. **前端资源是相对路径**（`vite.config.js` 的 `base: './'`）—— 写死 `/` 的话，
+   页面会去要 `/assets/...`，那是宿主自己的路径；
+2. **API 前缀跟着页面路径走**（`client/src/utils/base-path.js`）—— 裸写 `/api`
+   会打到宿主的接口上，表现为「页面起来了但一发请求就是 CI 的数据 / 401」。
+
+路由用 hash 模式，因此同一份构建产物同时支持根部署（`http://<host>:9003/`）与
+子路径挂载（`https://<host>/cluss-app/`），不需要构建两份。新增的请求一律经
+`apiUrl()` 拼接，不要再出现 `/api` 字面量（`verify-no-magic-api.cjs` 会把关）。
+
 ---
 
 ## 功能地图

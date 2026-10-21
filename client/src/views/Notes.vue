@@ -1215,6 +1215,7 @@ import mermaid from 'mermaid';
 import 'highlight.js/styles/github-dark.min.css';
 import 'katex/dist/katex.min.css';
 import AppNav from '@/components/AppNav.vue';
+import { apiUrl } from '@/utils/base-path';
 import DrawCanvas from '@/components/DrawCanvas.vue';
 import CloudImagePicker from '@/components/CloudImagePicker.vue';
 import Segmented from '@/components/Segmented.vue';
@@ -2476,14 +2477,14 @@ showFileMenuModal: false,
       self.showCloudPicker = false;
       if (!file || !(file.hash || file.name)) return;
       // URL 附加扩展名，便于渲染器识别媒体类型
-      var baseUrl = file.url || ('/api/cloud/files/' + encodeURIComponent(file.hash || file.name));
+      var baseUrl = file.url || apiUrl('cloud/files/' + encodeURIComponent(file.hash || file.name));
       var displayName = file.display_name || file.name;
       var ext = '';
       var dotIdx = displayName.lastIndexOf('.');
       if (dotIdx > -1) ext = displayName.substring(dotIdx);
       var url = baseUrl.indexOf('.') === -1 ? baseUrl + ext : baseUrl;
       // 图片附加缩放参数，加快加载
-      if (url.indexOf('/api/cloud/files/') > -1 && url.indexOf('?w=') === -1) url += '?w=800';
+      if (url.indexOf(apiUrl('cloud/files/')) > -1 && url.indexOf('?w=') === -1) url += '?w=800';
       // 按文件类型分支：图片用 ![]()，音视频用 []()（customRenderer.link 渲染播放器）
       var type = self.getCloudFileType(file);
       var md = type === 'image' ? '![' + displayName + '](' + url + ')' : '[' + displayName + '](' + url + ')';
@@ -3006,7 +3007,7 @@ showFileMenuModal: false,
       var controller = new AbortController();
       this._assistAbort = controller;
 
-      postStream('/api/notes/assist', this.$store.state.auth.token, {
+      postStream(apiUrl('notes/assist'), this.$store.state.auth.token, {
         action: action,
         // 传当前笔记的真实 id：服务端靠它把"正在编辑的这一篇"从相关历史笔记里排除。
         // 之前硬编码 0，等于没排除 —— 模型会把自己正在写的这篇当参照物读回来。

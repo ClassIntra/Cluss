@@ -218,6 +218,7 @@
 
 <script>
 import AppNav from '@/components/AppNav.vue';
+import { apiBase, apiUrl } from '@/utils/base-path';
 import Segmented from '@/components/Segmented.vue';
 import AttachmentChips from '@/components/AttachmentChips.vue';
 import CloudPicker from '@/components/CloudPicker.vue';
@@ -431,7 +432,7 @@ export default {
         // 点开历史作文就会"看起来没切换"（曾经的真实 bug）
         self.setResult(p.mode === 'grade' ? p.feedback : p.content);
         self.attachments = (p.image_hashes || []).map(function(h) {
-          return { hash: h, name: h.slice(0, 8), kind: 'image', url: '/api/cloud/files/' + h, thumb_url: '/api/cloud/files/' + h + '?thumb=1' };
+          return { hash: h, name: h.slice(0, 8), kind: 'image', url: apiBase + '/cloud/files/' + h, thumb_url: apiBase + '/cloud/files/' + h + '?thumb=1' };
         });
         self.saved = true;
         self.streamError = '';
@@ -468,8 +469,8 @@ export default {
       this.attachments = files.slice(0, 4).map(function(f) {
         return {
           hash: f.hash, name: f.name, size: f.size, kind: 'image',
-          url: f.url || ('/api/cloud/files/' + f.hash),
-          thumb_url: f.thumb_url || ('/api/cloud/files/' + f.hash + '?thumb=1')
+          url: f.url || (apiBase + '/cloud/files/' + f.hash),
+          thumb_url: f.thumb_url || (apiBase + '/cloud/files/' + f.hash + '?thumb=1')
         };
       });
       void self;
@@ -499,8 +500,8 @@ export default {
         if (self.attachments.length >= 4) throw new Error('最多 4 张');
         self.attachments.push({
           hash: f.hash, name: f.name, size: f.size, kind: 'image',
-          url: f.url || ('/api/cloud/files/' + f.hash),
-          thumb_url: f.thumb_url || ('/api/cloud/files/' + f.hash + '?thumb=1')
+          url: f.url || (apiBase + '/cloud/files/' + f.hash),
+          thumb_url: f.thumb_url || (apiBase + '/cloud/files/' + f.hash + '?thumb=1')
         });
         self.$store.dispatch('toast', { message: '已拍照', type: 'success' });
       }).catch(function(err) {
@@ -622,7 +623,7 @@ export default {
       streamSession.begin('writing', { conversationId: this.conversationId });
       streamSession.setController(controller);
 
-      var url = '/api/writing/' + this.mode + '/stream';
+      var url = apiUrl('writing/' + this.mode + '/stream');
       var body = {
         conversation_id: this.conversationId || '',
         model_id: this.modelId || '',

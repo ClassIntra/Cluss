@@ -110,10 +110,10 @@
                        同一处的对话页一直是这么做的（?thumb=1 + 点击看原图）。 -->
                   <img
                     class="img-preview"
-                    :src="a.thumb_url || ('/api/cloud/files/' + a.hash + '?thumb=1')"
+                    :src="a.thumb_url || (apiBase + '/cloud/files/' + a.hash + '?thumb=1')"
                     :alt="a.name"
                     loading="lazy"
-                    @click="preview = a.url || ('/api/cloud/files/' + a.hash)"
+                    @click="preview = a.url || (apiBase + '/cloud/files/' + a.hash)"
                   />
                   <span class="img-name tiny">{{ a.name }}</span>
                   <button class="img-remove" title="移除" @click="removeAttachment(a.hash)">×</button>
@@ -250,6 +250,7 @@
 
 <script>
 import AppNav from '@/components/AppNav.vue';
+import { apiBase, apiUrl } from '@/utils/base-path';
 import Segmented from '@/components/Segmented.vue';
 import CloudPicker from '@/components/CloudPicker.vue';
 import NotePicker from '@/components/NotePicker.vue';
@@ -274,6 +275,8 @@ export default {
   mixins: [waiting, streamFrame, orientation, noteRefs, mermaidCharts],
   data: function() {
     return {
+      // 模板里拼云盘文件地址用（根部署 /api，被 CI 反代时 /cluss/api），见 utils/base-path.js
+      apiBase: apiBase,
       // 点击题图放大时显示的原图 URL（空 = 不显示遮罩）
       preview: '',
       taskKind: 'solve',
@@ -538,8 +541,8 @@ export default {
             self.attachments = msgs[j].attachments.map(function(a) {
               return {
                 hash: a.hash, name: a.name, size: a.size, kind: a.kind,
-                url: '/api/cloud/files/' + a.hash,
-                thumb_url: '/api/cloud/files/' + a.hash + '?thumb=1'
+                url: apiBase + '/cloud/files/' + a.hash,
+                thumb_url: apiBase + '/cloud/files/' + a.hash + '?thumb=1'
               };
             });
             break;
@@ -583,8 +586,8 @@ export default {
       this.attachments = files.slice(0, this.capability.max_images || 4).map(function(f) {
         return {
           hash: f.hash, name: f.name, size: f.size, kind: 'image',
-          url: f.url || ('/api/cloud/files/' + f.hash),
-          thumb_url: f.thumb_url || ('/api/cloud/files/' + f.hash + '?thumb=1')
+          url: f.url || (apiBase + '/cloud/files/' + f.hash),
+          thumb_url: f.thumb_url || (apiBase + '/cloud/files/' + f.hash + '?thumb=1')
         };
       });
       // 换图即换题，与拍照路径保持一致
@@ -620,8 +623,8 @@ export default {
 
         var item = {
           hash: f.hash, name: f.name, size: f.size, kind: 'image',
-          url: f.url || ('/api/cloud/files/' + f.hash),
-          thumb_url: f.thumb_url || ('/api/cloud/files/' + f.hash + '?thumb=1')
+          url: f.url || (apiBase + '/cloud/files/' + f.hash),
+          thumb_url: f.thumb_url || (apiBase + '/cloud/files/' + f.hash + '?thumb=1')
         };
 
         // 跨页题常要连拍多张，所以拍照是「追加」而非「替换」；
@@ -824,7 +827,7 @@ export default {
       streamSession.setController(controller);
 
       var isGrade = this.taskKind === 'grade';
-      var url = isGrade ? '/api/study/grade/stream' : '/api/study/solve/stream';
+      var url = isGrade ? apiUrl('study/grade/stream') : apiUrl('study/solve/stream');
       // 学习偏好：每次发送时现读（学生在设置里改完立刻生效）
       var prefs = readStudentPrefs();
       var body = isGrade

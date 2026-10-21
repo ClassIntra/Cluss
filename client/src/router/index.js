@@ -2,6 +2,8 @@ import Vue from 'vue';
 import VueRouter from 'vue-router';
 import store from '@/store';
 import { readHomePage } from '@/utils/home-page';
+import { apiUrl } from '@/utils/base-path';
+import { basePath } from '@/utils/base-path';
 
 Vue.use(VueRouter);
 
@@ -78,8 +80,14 @@ var routes = [
   }
 ];
 
+// base 必须跟部署路径走，不能写死 '/'：
+//   hash 模式下 VueRouter 会把 base 拼在 `#` 之前（地址形如 /cluss/#/study）。
+//   若 base 固定为 '/'，iframe 挂在 /cluss/ 下时一切换页地址就变成
+//   https://<宿主>/#/study —— 路径掉回宿主根目录，整个 iframe 被宿主的
+//   SPA 兜底接管，Cluss 界面"凭空消失"。根部署时 basePath 就是 '/'，行为不变。
 var router = new VueRouter({
   mode: 'hash',
+  base: basePath,
   routes: routes
 });
 
@@ -155,7 +163,7 @@ router.afterEach(function(to) {
   try {
     var token = store.state.auth.token;
     if (!token) return;
-    fetch('/api/affinity/explore', {
+    fetch(apiUrl('affinity/explore'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
       body: JSON.stringify({ feature: feature })

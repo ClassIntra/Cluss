@@ -1,11 +1,15 @@
 import axios from 'axios';
 import store from '@/store';
 import router from '@/router';
+import { apiBase } from '@/utils/base-path';
 
 // 统一 API 封装
 // 约定（与后端一致）：HTTP 200 + body.code 表达业务结果，401 才代表登录态失效
+// baseURL 不带死 '/api'：Cluss 既可能部署在根（9003 直连），也可能被
+// ClassIntra 的 HTTPS 站点以 /cluss/ 同源反代挂载，前缀必须跟着页面路径走。
+// 见 utils/base-path.js 的说明。
 var api = axios.create({
-  baseURL: '/api',
+  baseURL: apiBase,
   timeout: 30000,
   withCredentials: true
 });

@@ -118,8 +118,9 @@
     </div>
   </div>
   <!-- Font Awesome：笔记 / 画板 / AppNavBar 等「从 ClassIntra 照搬」的组件依赖 fa 图标。
-       静态资源在本地 public/fontawesome（局域网离线可用），不引入 npm 依赖。 -->
-  <link rel="stylesheet" href="/fontawesome/css/all.min.css" />
+       静态资源在本地 public/fontawesome（局域网离线可用），不引入 npm 依赖。
+       相对路径：与 vite base:'./' 配套，反代挂到 /cluss/ 时也能取到本目录下的资源。 -->
+  <link rel="stylesheet" href="./fontawesome/css/all.min.css" />
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>
