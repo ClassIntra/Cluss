@@ -122,6 +122,28 @@ function applySnapshot(snap) {
     : [];
   var meta = snap.meta && typeof snap.meta === 'object' ? snap.meta : {};
 
+  // ---- 空快照护栏（2026-10-21 生产事故后加）----
+  //
+  // 整表替换的代价是：一份 models 为空的快照落地，全校立刻没有任何可用模型，
+  // 而这条路径**不会**留下「删除了几个模型」这类可读日志 —— 事后只能靠翻库
+  // 才知道发生过什么（10-21 就是这么丢的，10-12 已经丢过一次）。
+  //
+  // 所以：「把本机现有的模型清成 0」必须是一个**显式**决定（allowEmpty），
+  // 不能是上游漏传字段、空数组、脚本传错参数顺手造成的结果。
+  // 本机本来就是 0 条时不受影响 —— 那时空快照没有破坏性。
+  if (models.length === 0 && snap.allowEmpty !== true) {
+    var localCount = 0;
+    try {
+      localCount = db.prepare('SELECT COUNT(*) AS c FROM ai_models').get().c;
+    } catch (e) { /* 表还不存在（首次建库）：没有可保护的东西 */ }
+    if (localCount > 0) {
+      var guardErr = new Error('拒绝用空快照替换本机 ' + localCount + ' 个模型：'
+        + '一旦落地全校将没有可用模型。确需清空请显式传 allowEmpty=true。');
+      guardErr.code = 'EMPTY_SNAPSHOT';
+      throw guardErr;
+    }
+  }
+
   var tx = db.transaction(function() {
     db.exec('DELETE FROM ai_models');
     db.exec('DELETE FROM ai_sources');

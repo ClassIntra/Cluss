@@ -378,6 +378,11 @@ router.post('/policy', function(req, res) {
     res.json({ code: 200, message: 'ok', data: { model_config_version: next } });
   } catch (err) {
     console.error('[Sync] 模型配置落地失败:', err.message);
+    // 空快照不是"服务端故障"，是调用方传错了 —— 用 400 把原因说清楚，
+    // 别让管理员看到笼统的 500 再去猜（10-21 那次丢配置就没人知道该看哪）。
+    if (err && err.code === 'EMPTY_SNAPSHOT') {
+      return res.status(400).json({ code: 400, message: err.message });
+    }
     res.status(500).json({ code: 500, message: '配置落地失败' });
   }
 });
