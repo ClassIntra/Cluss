@@ -179,7 +179,8 @@ CI_JWT_SECRET=<与 ClassIntra 的 JWT_SECRET 一致>   # 填了才支持 token �
    会打到宿主的接口上，表现为「页面起来了但一发请求就是 CI 的数据 / 401」。
 
 路由用 hash 模式，因此同一份构建产物同时支持根部署（`http://<host>:9003/`）与
-子路径挂载（`https://<host>/cluss-app/`），不需要构建两份。新增的请求一律经
+子路径挂载（`https://<host>:<HTTPS_PORT>/cluss-app/`，CI 侧默认 `HTTPS_PORT=9443`，
+因为机器的 443 归别的服务用），不需要构建两份。新增的请求一律经
 `apiUrl()` 拼接，不要再出现 `/api` 字面量（`verify-no-magic-api.cjs` 会把关）。
 
 ---
