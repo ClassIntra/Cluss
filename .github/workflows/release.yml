@@ -1,0 +1,66 @@
+name: Release
+
+# 推一个 v* 标签就自动发版：构建前端 → 打包「服务端源码 + 前端产物」→ 建 Release。
+#
+# 为什么产物是这两个包：
+#   server/src   —— 服务端全是源码，原生模块（better-sqlite3 / sharp）必须由部署方
+#                   在自己机器上 npm ci 编译，所以只发源码，不发 node_modules。
+#   client/dist  —— vite 构建产物，服务端直接静态托管，开箱即用。
+# 部署方拿到的用法：
+#   tar -xzf cluss-server-src-vX.Y.Z.tar.gz        # 覆盖到 <repo>/server/src
+#   tar -xzf cluss-client-dist-vX.Y.Z.tar.gz       # 覆盖到 <repo>/client/dist
+#   cd server && npm ci && npm start               # 或 PM2 托管
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 锁文件即事实：npm ci 严格按 lock 装，装不上直接失败，
+      # 好过「本机能跑、runner 上静默缺包」。
+      - name: 安装前端依赖
+        run: npm ci
+        working-directory: client
+
+      - name: 构建前端
+        run: npm run build
+        working-directory: client
+
+      # 产物指纹写进日志：万一哪天构建出来的 index.html 引用的是旧资产，
+      # 这里能对着发布记录查出来，不用等部署后白屏才知道。
+      - name: 记录产物指纹
+        shell: bash
+        run: |
+          echo "::group::dist 指纹"
+          grep -oE 'src="[^"]+"|href="[^"]+\.css"' client/dist/index.html || true
+          echo "dist 文件数: $(find client/dist -type f | wc -l)"
+          echo "::endgroup::"
+
+      - name: 打包服务端源码与前端产物
+        shell: bash
+        run: |
+          set -e
+          VER="${GITHUB_REF_NAME}"
+          tar -czf "cluss-server-src-${VER}.tar.gz" -C server src
+          tar -czf "cluss-client-dist-${VER}.tar.gz" -C client/dist .
+          ls -lh cluss-*.tar.gz
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            cluss-server-src-*.tar.gz
+            cluss-client-dist-*.tar.gz

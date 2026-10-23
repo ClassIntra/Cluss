@@ -1,0 +1,38 @@
+name: CI
+
+# 每次 push / PR 都跑两项零依赖检查：
+#   1. 版本号一致性 —— 本仓单仓三包，历史上出现过 root 0.2.0 / server 0.3.0 的
+#      分裂，而服务端只读自己的 package.json 报版本，线上排查极具误导。
+#   2. 语法检查 —— 所有服务端脚本与探针 node --check 过一遍。
+# 不装依赖、不跑测试：原生模块（better-sqlite3 / sharp）编译留给部署方与本机，
+# runner 上编不过会制造「代码没问题但 CI 红」的噪音。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  static:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 版本号一致性（三包 + 两锁）
+        run: node server/scripts/verify-version-sync.cjs
+
+      - name: 服务端语法检查
+        shell: bash
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            node --check "$f" || { echo "::error file=$f::语法错误"; fail=1; }
+          done < <(find server/src scripts -name '*.js' -o -name '*.cjs' | grep -v node_modules)
+          while IFS= read -r f; do
+            node --check "$f" || { echo "::error file=$f::语法错误"; fail=1; }
+          done < <(find qa -name '*.cjs' 2>/dev/null || true)
+          exit $fail
