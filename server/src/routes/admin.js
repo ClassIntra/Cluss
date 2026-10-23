@@ -59,6 +59,17 @@ function requireCanEditModelConfig(req, res, next) {
     return res.status(403).json({ code: 403, message: '本机未接入中继，无法修改全校配置' });
   }
   var st = syncService.getStatus();
+
+  // 「本班自选」与「完全不同步」两档：本机就是这份配置的主人，改动只在
+  // 本机生效、不回传中枢，所以不需要席位。这正是 2026-10-22 用户要的那一档 ——
+  // 以前只有「跟随（只读）」和「断开」，8 班想换个自己的 Key 只能整台脱网。
+  // 放在席位判断**之前**：档位是中枢按节点下发的授权，优先级高于席位。
+  var mode = Number(st.model_sync);
+  if (mode === 0 || mode === 2) {
+    syncService.rememberSeatUser(req.user.user_id);
+    return next();
+  }
+
   if (!st.is_seat_admin) {
     var where = st.seat_instance ? ('本校管理员席位在 ' + st.seat_instance + ' 班，本班只能查看') : '本校还没有认领管理员席位';
     return res.status(403).json({ code: 403, message: where + '。请到管理员班操作，或在云端完成账号绑定。' });
@@ -68,15 +79,59 @@ function requireCanEditModelConfig(req, res, next) {
   next();
 }
 
+// 「本班自选」档（model_sync=2）下，本班动过的那一条就归本班管：
+// 成功写入后把它标成 origin='local'，中枢后续的下发不再覆盖它。
+//
+// 为什么挂在中间件而不是写进 9 个处理函数：少挂一处就少一条「不跟随」，
+// 而这种漏法只在「中枢后来改了同名模型」时才暴露 —— 管理员会以为自己的
+// 修改被系统吞了，很难联想到是某一处路由忘了标记。
+//
+// 只读档（跟随中枢）不标记：那一档的语义就是「以中枢为准」，标记会让
+// 本班悄悄脱离管理。切回跟随中枢时整表替换会把标记一起清掉。
+function markLocalOverride(table) {
+  return function(req, res, next) {
+    if (config.mode !== config.MODES.NODE) return next();
+    if (Number(syncService.getStatus().model_sync) !== 2) return next();
+
+    var id = String((req.params && req.params.id) || (req.body && req.body.id) || '').trim();
+    if (!id) return next();
+
+    var realJson = res.json.bind(res);
+    res.json = function(payload) {
+      // 只在写成功时标记：失败的请求不该让这一条悄悄脱离中枢
+      if (payload && (payload.code === 200 || payload.code === undefined)) {
+        try {
+          db.prepare('UPDATE ' + table + " SET origin = 'local' WHERE id = ?").run(id);
+        } catch (e) { /* 迁移未跑：退回旧行为，不阻断写入 */ }
+      }
+      return realJson(payload);
+    };
+    next();
+  };
+}
+
 // 模型/源/视觉/峰谷改完之后统一走这里：升版本 + 标脏待上行。
 // 分散在 9 处重复写「bumpModelVersion + markPolicyDirty」迟早会漏一处，
 // 漏了的表现就是「那个设置改了但同步不到全校」，很难查。
 function bumpModelAndQueue(req) {
   syncService.rememberSeatUser(req.user.user_id);
   syncService.markPolicyDirty();
-  var v = modelConfig.bumpModelVersion();
+
+  // 节点在「本班自选（2）/ 完全不同步（0）」档下**不改写本机的 model_config_version**。
+  //
+  // 这个数字在节点上的含义是「我从中枢跟到第几版」，不是「本机改过几次」。
+  // 2026-10-22 实测踩到：8 班改了一次模型 → 本机版本 +1 → 中枢随后也 +1 到同一个数
+  // → 节点轮询时 remoteModel === localModelVersion，判定「已经是最新的」，**静默漏掉
+  // 一次下发**（8 班看不到中枢新配的模型，日志里一句错都没有）。版本号是两套账，
+  // 混用一次就再也对不上。
+  var st = syncService.getStatus();
+  var localOnly = config.mode === config.MODES.NODE && Number(st.model_sync) !== 1;
+  var v = localOnly ? modelConfig.currentModelVersion() : modelConfig.bumpModelVersion();
+
   // 立刻推一次，不等下个轮询周期 —— 班管改完希望马上看到「已同步全校」。
   // 推失败不阻塞本次写操作（学生要用），队列留在内存下轮重试。
+  // 自选/不同步两档不会真发出去（pushModelConfig 会直接返回），
+  // 走一遍是为了把 pending_policy 清掉，避免面板一直显示「待上行」。
   if (syncService.isEnabled()) {
     syncService.pushPending(req.user.user_id).catch(function() {});
   }
@@ -247,11 +302,38 @@ router.get('/users', auth.requireAuth, auth.requireAdmin, function(req, res) {
 //
 // 旧实现是「非席位班一律 403」，结果是 8 班的班管在自己机器上给本班学生
 // 充不了值 —— 而这本来是每台机器最基础的能力。
+// 6 位学号（YYCCNN）里的 CC 就是班号 —— 这是「本班」唯一的权威来源。
+//
+// 为什么不看 users 表里有没有这行：花名册同步是按**登录者学号**推本班的，
+// 用别班管理员账号登录过一次，就会把他全班的人写进本机 users（真实踩过：
+// 18 班管登 8 班，8 班凭空多出 50 个 18 班学生）。于是"外班学生"在权限判断
+// 里被当成本班，非席位班也能改别人班学生的额度 —— 闸门形同虚设。
+function classNoOfUser(userId) {
+  var m = /^(\d{2})(\d{2})\d{2}$/.exec(String(userId || '').trim());
+  return m ? m[2] : '';
+}
+
+function localClassNo() {
+  var m = /^class-(\d+)$/.exec(String(config.instanceId || ''));
+  return m ? m[1] : '';
+}
+
+// 解析不出班级的账号（开发号 / 非常规学号）一律按本班处理：
+// 宁可让本机管理员能改自己的测试账号，也不能因为学号格式不合规就把他锁死。
+function isLocalStudent(userId) {
+  var uid = String(userId || '').trim();
+  if (uid && uid === String((config.admin && config.admin.userId) || '')) return true;
+  var cc = classNoOfUser(uid);
+  var mine = localClassNo();
+  if (!cc || !mine) return true;
+  return cc === mine;
+}
+
 function canEditQuotaFor(userId) {
   if (config.mode !== config.MODES.NODE) return { ok: true };
 
-  var local = !!db.prepare('SELECT 1 FROM users WHERE user_id = ?').get(String(userId || '').trim());
-  if (local) return { ok: true };
+  // 本班学号：本班班管天然有权（学生可能还没建档，照样允许 —— 充值会顺带建账本）
+  if (isLocalStudent(userId)) return { ok: true };
 
   if (!syncService.isEnabled()) {
     return { ok: false, message: '本机未接入组网，无法修改其他班学生的额度' };
@@ -592,7 +674,13 @@ router.get('/logs', auth.requireAuth, auth.requireAdmin, function(req, res) {
 //     不发身份头、不进注册表，但只要报过用量就还能在这里看到一行）。
 // 分配额 vs 上报消耗 = 各班余额推算，分钟级延迟（上报间隔 300s）。
 // ============================================================
-var NODE_ONLINE_WINDOW_SEC = 600; // 心跳新鲜度阈值：同步间隔 60s 的 10 倍宽限
+// 心跳新鲜度阈值。同步间隔 60s，取 3 分钟 = 连丢三轮才判定离线：
+// 一次网络抖动就标红会让管理员去排查一个根本没坏的东西。
+//
+// 这个值必须是**全项目唯一定义**。以前两侧各有一套（这里 600s、管理台前端
+// 180s），同一时刻同一节点在接口里算在线、在页面上算离线 —— 谁都对不了账。
+// /nodes 与 /mesh/status 共用它，前端不再自己掐表，改阈值只改这一处。
+var NODE_ONLINE_WINDOW_SEC = 180;
 
 router.get('/nodes', auth.requireAuth, auth.requireAdmin, function(req, res) {
   var nowLocal = new Date();
@@ -789,6 +877,16 @@ router.get('/mesh/status', auth.requireAuth, auth.requireAdmin, function(req, re
     }
   }
 
+  // 在线判定放在服务端：last_seen_at 存的是**不带时区标记的 UTC 字符串**
+  // （见 utils/time.js 的约定），让前端自己掐表就得先知道这个约定再补 'Z'，
+  // 少一个字符就会把「刚刚」判成「8 小时前」—— 调试时真的这么误判过一次。
+  // 阈值统一走 NODE_ONLINE_WINDOW_SEC，前端只负责把这个 boolean 渲染出来。
+  var onlineCutoff2 = time.fmtUtc(new Date(Date.now() - NODE_ONLINE_WINDOW_SEC * 1000));
+  nodes = nodes.map(function(n) {
+    n.online = !!n.last_seen_at && String(n.last_seen_at) >= onlineCutoff2;
+    return n;
+  });
+
   res.json({
     code: 200,
     message: 'ok',
@@ -805,6 +903,8 @@ router.get('/mesh/status', auth.requireAuth, auth.requireAdmin, function(req, re
       assign_version: currentAssignVersion(),
       model_version: parseInt(initDb.getMeta('model_config_version', '0'), 10) || 0,
       roster_count: rosterCount,
+      // 这个值给前端显示「几分钟内没心跳算离线」用，省得两边各写一套文案
+      online_window_sec: NODE_ONLINE_WINDOW_SEC,
       nodes: nodes
     }
   });
@@ -835,34 +935,55 @@ router.post('/mesh/seat', auth.requireAuth, auth.requireAdmin, function(req, res
 });
 
 // ============================================================
-// POST /admin/mesh/node-model-sync —— 某个班是否跟随中枢的模型选择
-// body: { instance_id, enabled: 0|1 }
+// POST /admin/mesh/node-model-sync —— 某个班的模型同步档位
+// body: { instance_id, mode: 0|1|2 }（也接受 'follow'|'local'|'off'）
 //
-// 关掉之后该班保留自己的渠道/Key/单价，额度与名单照常跟随。
+//   1 跟随中枢   —— 全量替换下发，该班模型页只读
+//   2 本班自选   —— 下发按来源合并（中枢的照常落地，本班自建保留），
+//                  该班可改模型与源，改动不回传中枢
+//   0 完全不同步 —— 不拉也不推
+//
 // 为什么按节点而不是全局：班级之间的网络条件与预算都不一样，
 // 一刀切会让「只想换自己模型」的班被迫整台断开组网。
+// 中间那档（2）是 2026-10-22 补的：只给「跟/不跟」两个选项时，
+// 想要「继续收到中枢新模型、但自己能改」的班无路可走。
 // ============================================================
 router.post('/mesh/node-model-sync', auth.requireAuth, auth.requireAdmin, function(req, res) {
   var inst = String((req.body && req.body.instance_id) || '').trim();
   if (!inst) return res.status(400).json({ code: 400, message: '缺少 instance_id' });
 
-  var raw = req.body && req.body.enabled;
-  var on = (raw === true || Number(raw) === 1) ? 1 : 0;
+  // 兼容两种写法：新前端传 mode，老前端传 enabled（0/1）
+  var raw = req.body && req.body.mode;
+  if (raw === undefined || raw === null || raw === '') {
+    raw = req.body && req.body.enabled;
+  }
+  var mode;
+  if (raw === 'follow' || raw === 'local' || raw === 'off') {
+    mode = raw === 'follow' ? 1 : (raw === 'local' ? 2 : 0);
+  } else {
+    var n = Number(raw);
+    mode = (n === 0 || n === 2) ? n : 1;
+  }
 
   var row = db.prepare('SELECT instance_id FROM cluss_nodes WHERE instance_id = ?').get(inst);
   if (!row) return res.status(404).json({ code: 404, message: '该班级节点不存在：' + inst });
 
   try {
-    db.prepare('UPDATE cluss_nodes SET model_sync = ? WHERE instance_id = ?').run(on, inst);
+    db.prepare('UPDATE cluss_nodes SET model_sync = ? WHERE instance_id = ?').run(mode, inst);
   } catch (e) {
     return res.status(500).json({ code: 500, message: '设置失败：' + e.message });
   }
 
-  console.log('[Admin] 节点 %s 模型同步: %s（操作者 %s）', inst, on ? '跟随中枢' : '关闭', req.user.user_id);
+  var msgMap = {
+    1: '已设为跟随中枢，' + inst + ' 下一轮同步会拉取模型配置（该班只读）',
+    2: '已设为本班自选，' + inst + ' 可以修改模型与模型源，改动不会回传中枢；中枢新配的模型仍会下发',
+    0: '已设为完全不同步，' + inst + ' 保留自己的模型配置，中枢既不下发也不覆盖'
+  };
+  console.log('[Admin] 节点 %s 模型同步档位: %d（操作者 %s）', inst, mode, req.user.user_id);
   res.json({
     code: 200,
-    message: on ? ('已设为跟随中枢，' + inst + ' 下一轮同步会拉取模型配置') : ('已关闭模型同步，' + inst + ' 会保留自己的模型配置'),
-    data: { instance_id: inst, model_sync: on }
+    message: msgMap[mode],
+    data: { instance_id: inst, model_sync: mode }
   });
 });
 
@@ -1229,6 +1350,11 @@ function serializeModelForAdmin(r, sourcesMap) {
   }
   var offpeakBp = Number(r.offpeak_discount_bp || 0);
 
+  // 与中枢那一版差在哪几个字段（迁移 034 的字段级合并）。
+  // 管理台需要这个数：档位写「本班自选」而徽标不写清「哪几项偏离中枢」，
+  // 管理员就没法判断「我改了单价，到底会不会被中枢的调价覆盖」。
+  var dh = modelConfig.diffAgainstHub(r, 'ai_models');
+
   return {
     id: r.id,
     label: r.label,
@@ -1241,6 +1367,15 @@ function serializeModelForAdmin(r, sourcesMap) {
     source_label: useSource ? (src.label || src.id) : '',
     // 挂了源但源不存在/已停用：表格要给出警示（否则显示成"未配置地址"很误导）
     source_missing: !!(sourceId && !useSource),
+    // 这一条从哪来（迁移 033）：'hub' = 中枢下发，'local' = 本机自建或被本班接管。
+    // 「本班自选」档下管理员需要分清「哪条会跟着中枢变、哪条是我自己的」——
+    // 这个差别直接决定他改完之后会不会被下一次下发覆盖。
+    origin: String(r.origin || 'local'),
+    // 字段级偏离（迁移 034）：local_fields 是「本班改过、中枢的后续更新不会覆盖」
+    // 的那几列。空数组 = 整行跟着中枢走（哪怕 origin 是 local，也只是历史标记）。
+    local_fields: dh.fields,
+    local_change_count: dh.fields.length,
+    has_hub_base: dh.has_base,
     model_name: r.model_name || '',
     api_style: resolvedStyle,
     supports_stream: r.supports_stream !== 0 ? 1 : 0,
@@ -1284,6 +1419,7 @@ function serializeSourceForAdmin(s) {
   try {
     used = db.prepare('SELECT COUNT(*) AS c FROM ai_models WHERE source_id = ?').get(s.id).c;
   } catch (e) { used = 0; }
+  var dh = modelConfig.diffAgainstHub(s, 'ai_sources');
   return {
     id: s.id,
     label: s.label || '',
@@ -1294,6 +1430,12 @@ function serializeSourceForAdmin(s) {
     enabled: s.enabled === 1 ? 1 : 0,
     // 迁移 032：源关闭下发时，挂在它上面的模型会级联不再下发
     sync_enabled: s.sync_enabled === 0 ? 0 : 1,
+    // 迁移 033：'hub' = 中枢下发，'local' = 本机自建或被本班接管
+    origin: String(s.origin || 'local'),
+    // 迁移 034：字段级偏离（结构与模型一致，见 serializeModelForAdmin）
+    local_fields: dh.fields,
+    local_change_count: dh.fields.length,
+    has_hub_base: dh.has_base,
     sort_order: s.sort_order || 0,
     // 有几个模型挂在这个源上：删除前要提示影响面
     model_count: used
@@ -1321,17 +1463,57 @@ router.get('/models', auth.requireAuth, auth.requireAdmin, function(req, res) {
     data: {
       // node 模式下模型由云端统一下发。持有管理员席位的班可以改（改动上行同步
       // 全校），非席位班只读 —— 前端据此禁用按钮并说明原因。
-      read_only: config.mode === config.MODES.NODE && !(syncService.getStatus().is_seat_admin),
+      // 本班的模型同步档位（迁移 033）：1 跟随 / 2 本班自选 / 0 不同步。
+      // 前端与探针都靠它区分「为什么能改 / 不能改」，比从 read_only 反推可靠。
+      model_sync: (config.mode === config.MODES.NODE)
+        ? Number(syncService.getStatus().model_sync) : 1,
+      // 只读的判据是「跟随中枢 + 非席位」：跟随档下本班改了也会被下次下发
+      // 覆盖，白改还容易让人以为生效了。「本班自选 / 不同步」两档本机就是主人，
+      // 可写（且不回传），所以不受席位限制。
+      read_only: (function() {
+        if (config.mode !== config.MODES.NODE) return false;
+        var st = syncService.getStatus();
+        return Number(st.model_sync) === 1 && !st.is_seat_admin;
+      })(),
       read_only_reason: (function() {
         if (config.mode !== config.MODES.NODE) return '';
         var st = syncService.getStatus();
         if (st.is_seat_admin) return '';
+        // 可写的两档不进只读通道，它们的说明在 local_only_hint 里 ——
+        // 塞进 read_only_reason 会被前端当成「只读原因」渲染，反而像不能改。
+        if (Number(st.model_sync) !== 1) return '';
         if (!st.seat_instance) {
           return '本机已接入 Cluss-Cloud，但本校还没有认领管理员席位。认领后本班班管就能在这里改配置，改动会同步到全校所有班。';
         }
         return '本校管理员席位在 ' + st.seat_instance + ' 班，本班只能查看。请到管理员班修改，或在云端解绑后由本班认领。';
       })(),
-      writes_to_school: config.mode === config.MODES.NODE && !!syncService.getStatus().is_seat_admin,
+      // 「本班自选 / 不同步」两档的说明：能改，但要说清改动去哪儿了。
+      // 尤其是 merge 档下「与中枢同名的模型会被覆盖」这条 —— 不说的话，
+      // 管理员改了中枢下发的那个模型，下一轮同步悄悄回滚，看起来像保存失败。
+      local_only: (function() {
+        if (config.mode !== config.MODES.NODE) return false;
+        return Number(syncService.getStatus().model_sync) !== 1;
+      })(),
+      local_only_hint: (function() {
+        if (config.mode !== config.MODES.NODE) return '';
+        var st = syncService.getStatus();
+        var mode = Number(st.model_sync);
+        if (mode === 2) {
+          return '本班模型为「本班自选」：可以修改模型与模型源，改动只在本机生效、不会同步回管理员班。'
+            + '中枢新配的模型仍会下发；同一条模型逐字段跟随 —— 你改过的字段保留本班的值，'
+            + '没改过的（含单价、倍率、峰谷、Key）继续跟中枢更新走。'
+            + '想让某一条整行回到中枢版本，点该行的「恢复跟随中枢」。'
+            + '删掉中枢下发的模型时注意：中枢下次有更新，它会被重新加回来。';
+        }
+        if (mode === 0) {
+          return '本班模型为「完全不同步」：中枢不再下发、也不会覆盖，本班可以自由增删改。'
+            + '改动同样不会回传管理员班。要让中枢重新接管，请让管理员班把本班改回「跟随中枢」。';
+        }
+        return '';
+      })(),
+      writes_to_school: config.mode === config.MODES.NODE
+        && Number(syncService.getStatus().model_sync) === 1
+        && !!syncService.getStatus().is_seat_admin,
       models: rows.map(function(r) { return serializeModelForAdmin(r, sourcesMap); }),
       // 模型源清单（源可选；模型可挂源共享地址/密钥，也可自带连接信息）
       sources: ai.listSources().map(serializeSourceForAdmin),
@@ -1501,7 +1683,7 @@ function validateModelInput(body, isCreate) {
   return { ok: true, data: out };
 }
 
-router.post('/models', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
+router.post('/models', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, markLocalOverride('ai_models'), function(req, res) {
   var v = validateModelInput(req.body, true);
   if (!v.ok) return res.status(400).json({ code: 400, message: v.message });
 
@@ -1541,7 +1723,7 @@ router.post('/models', auth.requireAuth, auth.requireAdmin, requireCanEditModelC
   res.json({ code: 200, message: '已添加，模型配置版本 ' + mv + '（各班节点将在 1 分钟内自动同步）', data: serializeModelForAdmin(row) });
 });
 
-router.put('/models/:id', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
+router.put('/models/:id', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, markLocalOverride('ai_models'), function(req, res) {
   var id = String(req.params.id || '');
   var row = db.prepare('SELECT * FROM ai_models WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ code: 404, message: '模型不存在' });
@@ -1584,7 +1766,7 @@ router.put('/models/:id', auth.requireAuth, auth.requireAdmin, requireCanEditMod
 
 // 删除：若已被会话引用则改为软禁用
 // 硬删会让历史会话的 model_id 指向不存在的模型，管理台的用量统计就 JOIN 不出名字了
-router.delete('/models/:id', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
+router.delete('/models/:id', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, markLocalOverride('ai_models'), function(req, res) {
   var id = String(req.params.id || '');
   var row = db.prepare('SELECT * FROM ai_models WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ code: 404, message: '模型不存在' });
@@ -1615,7 +1797,7 @@ router.delete('/models/:id', auth.requireAuth, auth.requireAdmin, requireCanEdit
   res.json({ code: 200, message: '已删除', data: { soft_disabled: false } });
 });
 
-router.post('/models/:id/set-default', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
+router.post('/models/:id/set-default', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, markLocalOverride('ai_models'), function(req, res) {
   var id = String(req.params.id || '');
   var row = db.prepare('SELECT * FROM ai_models WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ code: 404, message: '模型不存在' });
@@ -1709,6 +1891,134 @@ router.post('/sources/:id/sync', auth.requireAuth, auth.requireAdmin, requireCan
   });
 });
 
+// ============================================================
+// POST /admin/models/:id/follow 、 /admin/sources/:id/follow
+//   恢复跟随中枢 —— 清掉「本班改过」的字段级覆盖
+//
+// 为什么需要这个按钮（迁移 034 的配套）：
+//   字段级合并下，本班改过的**那个字段**会一直保留本班的值（这是有意的 ——
+//   管理员在本机改的价不该被一次轮询抹掉）。但副作用是「我改错过一个单价，
+//   之后就永远收不到中枢对这个字段的调整」。没有恢复入口的话，唯一的解法是
+//   整班切回「跟随中枢」再切回来，那会把本班所有自建模型一起清掉。
+//
+// 语义：把基线置成空哨兵 → 下一轮快照整行按中枢刷新。本机自建的模型
+// （中枢没有同 id）不受影响，因为它本来就不会出现在快照里。
+// ============================================================
+function followHubHandler(table, typeLabel) {
+  return function(req, res) {
+    // 中枢本机没有「中枢版本」可回退 —— 它自己就是那份权威配置。
+    // 放行的话只会把本机的 origin 标成 'hub'，日后切模式时被当成「别人下发的」。
+    if (config.mode !== config.MODES.NODE) {
+      return res.status(400).json({
+        code: 400,
+        message: '本机就是中枢，模型配置以本机为准，没有可回退的上游版本'
+      });
+    }
+
+    var id = String(req.params.id || '');
+    var tableName = table === 'ai_sources' ? 'ai_sources' : 'ai_models';
+    var row = db.prepare('SELECT id, label FROM ' + tableName + ' WHERE id = ?').get(id);
+    if (!row) return res.status(404).json({ code: 404, message: typeLabel + '不存在' });
+
+    var r = modelConfig.markFollowHub(table, id);
+    if (!r.ok) {
+      // 'local_created'：中枢没有这一条，「恢复跟随」无处可跟。
+      // 不能含糊地报错了事 —— 管理员的理解会是「按钮坏了」，于是去反复点，
+      // 或者直接重建一遍。真正的答案是「这条本来就是你自己的」。
+      if (r.reason === 'local_created') {
+        return res.status(400).json({
+          code: 400,
+          message: '「' + (row.label || row.id) + '」是本班自建的' + typeLabel + '，'
+            + '中枢没有同名配置，没有可恢复的中枢版本。'
+            + '它是本班私有的，不会被中枢下发覆盖；要让它消失请直接删除。'
+        });
+      }
+      return res.status(404).json({ code: 404, message: typeLabel + '不存在' });
+    }
+
+    console.log('[Admin] %s 恢复跟随中枢: %s by %s', typeLabel, id, req.user.user_id);
+
+    // 立刻拉一次，管理员点完不用等 60 秒轮询 —— 否则会以为按钮没生效又点一遍
+    var hint = '';
+    if (config.mode === config.MODES.NODE) {
+      if (Number(syncService.getStatus().model_sync) === 0) {
+        hint = '（本班模型同步档位是「完全不同步」，中枢配置不会下发，恢复要先把档位改回跟随或自选）';
+      } else if (syncService.isEnabled()) {
+        // 先把「跟到第几版」清掉再做这次立即拉取：这一拉若因隧道/网络失败，
+        // 下一轮轮询还会重试；否则版本号已对齐，永远不会再拉，这一行就停在
+        // 「基线空哨兵 + 本班旧值」的中间态（2026-10-23 实测）。
+        syncService.markModelStale();
+        syncService.pollOnce(true).catch(function() { /* 拉取失败下轮自动重试 */ });
+      }
+    }
+
+    res.json({
+      code: 200,
+      message: '「' + (row.label || row.id) + '」已恢复跟随中枢' + hint,
+      data: { id: id, following: true }
+    });
+  };
+}
+
+router.post('/models/:id/follow', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig,
+  followHubHandler('ai_models', '模型'));
+router.post('/sources/:id/follow', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig,
+  followHubHandler('ai_sources', '模型源'));
+
+// 一次性把所有「本班改过」的行恢复跟随。逐条点太琐碎，而班管一旦怀疑
+// 自己把配置改乱了，最想要的就是这个「一键回到中枢版本」。
+router.post('/model-config/follow-all', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig,
+  function(req, res) {
+    if (config.mode !== config.MODES.NODE) {
+      return res.status(400).json({
+        code: 400,
+        message: '本机就是中枢，模型配置以本机为准，没有可回退的上游版本'
+      });
+    }
+
+    // 只挑「有中枢基线」的行。本班自建的那些（hub_base 为空）必须留着：
+    // 标成 hub 之后，下一轮下发会把快照里没有的 hub 行全部删掉 —— 一行 UPDATE
+    // 就能让本班私有配置集体消失（2026-10-23 探针实测）。
+    var pick = modelConfig.HAS_HUB_BASE_SQL;
+    var updateStmt = function(tableName) {
+      return db.prepare('UPDATE ' + tableName + " SET origin = 'hub', hub_base = '{}' WHERE " + pick);
+    };
+    // 剩余的本班自建条目数要在 UPDATE **之前**数：改完之后它们与「还没来得及
+    // 收到基线的行」混在一起，没法用一个条件区分。
+    var LOCAL_ONLY_SQL = "IFNULL(origin, 'local') = 'local' AND (hub_base IS NULL OR hub_base = '')";
+    var skippedM = db.prepare('SELECT COUNT(*) AS c FROM ai_models WHERE ' + LOCAL_ONLY_SQL).get().c;
+    var skippedS = db.prepare('SELECT COUNT(*) AS c FROM ai_sources WHERE ' + LOCAL_ONLY_SQL).get().c;
+
+    var m = updateStmt('ai_models').run();
+    var s = updateStmt('ai_sources').run();
+
+    console.log('[Admin] 全部恢复跟随中枢: 模型 %d 条、源 %d 条 by %s',
+      m.changes, s.changes, req.user.user_id);
+
+    if (config.mode === config.MODES.NODE && syncService.isEnabled()
+      && Number(syncService.getStatus().model_sync) !== 0) {
+      // 同上：先清版本号，保证这一批「恢复跟随」在拉取失败时下一轮还会重试
+      syncService.markModelStale();
+      syncService.pollOnce(true).catch(function() {});
+    }
+
+    var total = m.changes + s.changes;
+    res.json({
+      code: 200,
+      message: total === 0
+        ? '没有需要恢复的条目：模型与模型源都没有被本班改过（本班自建的条目不参与恢复）'
+        : '已恢复跟随中枢：模型 ' + m.changes + ' 条、模型源 ' + s.changes
+          + ' 条将在下一次同步时按中枢版本刷新；本班自建的 '
+          + (skippedM + skippedS) + ' 条保持不变',
+      data: {
+        models: m.changes,
+        sources: s.changes,
+        kept_local_models: skippedM,
+        kept_local_sources: skippedS
+      }
+    });
+  });
+
 // 连通性测试：发一条最小请求，验证地址与 Key 是否可用
 router.post('/models/:id/test', auth.requireAuth, auth.requireAdmin, function(req, res) {
   var id = String(req.params.id || '');
@@ -1789,7 +2099,7 @@ router.get('/sources', auth.requireAuth, auth.requireAdmin, function(req, res) {
   res.json({ code: 200, message: 'ok', data: { sources: rows.map(serializeSourceForAdmin) } });
 });
 
-router.post('/sources', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
+router.post('/sources', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, markLocalOverride('ai_sources'), function(req, res) {
   var v = validateSourceInput(req.body, true);
   if (!v.ok) return res.status(400).json({ code: 400, message: v.message });
 
@@ -1815,7 +2125,7 @@ router.post('/sources', auth.requireAuth, auth.requireAdmin, requireCanEditModel
   });
 });
 
-router.put('/sources/:id', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
+router.put('/sources/:id', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, markLocalOverride('ai_sources'), function(req, res) {
   var id = String(req.params.id || '');
   var row = db.prepare('SELECT * FROM ai_sources WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ code: 404, message: '模型源不存在' });
@@ -1851,7 +2161,7 @@ router.put('/sources/:id', auth.requireAuth, auth.requireAdmin, requireCanEditMo
 
 // 删除源：仍被模型引用时先拦一次（避免一次误点把 N 个模型悄悄变成不可用）；
 // 带 ?force=1 再确认，则把这些模型回退到「自带地址/密钥」后删除源。
-router.delete('/sources/:id', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, function(req, res) {
+router.delete('/sources/:id', auth.requireAuth, auth.requireAdmin, requireCanEditModelConfig, markLocalOverride('ai_sources'), function(req, res) {
   var id = String(req.params.id || '');
   var row = db.prepare('SELECT * FROM ai_sources WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ code: 404, message: '模型源不存在' });

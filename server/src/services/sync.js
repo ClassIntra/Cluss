@@ -43,6 +43,12 @@ var status = {
   pulled_at: null,
   model_version: 0,
   model_pulled_at: null,
+  // 模型同步档位（迁移 031 两态 → 2026-10-22 扩成三态）：
+  //   1 = 跟随中枢（全量替换，非席位班只读）
+  //   2 = 本班自选（中枢的下发按来源合并，本班可改、改动不回传）
+  //   0 = 完全不同步（不拉也不推，纯本地）
+  // 由中枢在 /sync/version 里按节点下发；本机只读它，无权自封。
+  model_sync: 1,
   reported_total: 0,
   pending_usage: 0,
   // 云端服务器时间与本机时间的差值（毫秒）。教室机常年不校时，
@@ -89,6 +95,26 @@ var pendingPolicy = false;
 
 function isEnabled() {
   return config.mode === config.MODES.NODE && !!(config.relay.url && config.relay.secret);
+}
+
+// 模型同步档位归一化：1 跟随中枢 / 2 本班自选（不回传） / 0 完全不同步。
+//
+// 未知值（老中枢没这字段、或将来又加档）一律按「跟随」—— 跟随是配置以中枢为准
+// 的那一档，退回它不会让某个班悄悄脱离管理；反过来把未知值当成「不跟」，
+// 中枢一次升级就可能让全班停在旧模型上，而界面上看不出来。
+function parseModelSyncMode(v) {
+  if (v === undefined || v === null || v === '') return 1;
+  var n = Number(v);
+  if (n === 0) return 0;
+  if (n === 2) return 2;
+  return 1;
+}
+
+function modelSyncLabel(mode) {
+  var n = parseModelSyncMode(mode);
+  if (n === 0) return '不同步（完全本班自管）';
+  if (n === 2) return '本班自选（可修改，改动不回传）';
+  return '跟随中枢';
 }
 
 // 本机是不是「中枢」（mesh 组网中心 / relay 专职中继）
@@ -202,7 +228,8 @@ function fetchAssignments() {
 }
 
 // ---- 拉取模型配置快照并整表替换（§5：不做增量）----
-function fetchModelConfig() {
+function fetchModelConfig(mode) {
+  var syncMode = parseModelSyncMode(mode === undefined ? status.model_sync : mode);
   return axios.get(config.relay.url + '/api/sync/model-config', {
     timeout: TIMEOUT_MS, headers: headers()
   }).then(function(resp) {
@@ -237,13 +264,15 @@ function fetchModelConfig() {
       return { version: version, models: localModels ? localModels.c : 0, skipped: true };
     }
 
-    // 全量快照直接落地；重复拉同一版本无害（整表替换幂等）
-    var result = modelConfig.applySnapshot(data);
+    // 全量快照直接落地；重复拉同一版本无害（替换/合并都幂等）。
+    // 「本班自选」走 merge：只重建来自中枢的那些行，本班自建的保留。
+    var result = modelConfig.applySnapshot(data, { mode: syncMode === 2 ? 'merge' : 'replace' });
     initDb.setMeta('model_config_version', version);
     status.model_version = version;
     status.model_pulled_at = time.nowUtc();
-    console.log('[Sync] 已拉取模型配置: 版本 %s，模型 %d 条，源 %d 条',
-      version, result.applied, result.sources);
+    console.log('[Sync] 已拉取模型配置（%s）: 版本 %s，模型 %d 条，源 %d 条，本班接管跳过 %d 条',
+      syncMode === 2 ? '合并，保留本班自建' : '全量替换', version, result.applied, result.sources,
+      result.skipped === undefined ? 0 : result.skipped);
     return { version: version, models: result.applied };
   });
 }
@@ -287,13 +316,14 @@ function doPoll(force) {
     var boot = [
       fetchAssignments().catch(function(err) { markError(err); return null; })
     ];
-    // 「不跟随中枢模型选择」的班，重启后也不能被覆盖一次 ——
-    // status 是内存态，这里从 meta 读上一轮记下的开关。
-    var bootModelSync = parseInt(initDb.getMeta('model_sync', '1'), 10) !== 0;
-    if (bootModelSync) {
-      boot.push(fetchModelConfig().catch(function(err) { markError(err); return null; }));
+    // 「不同步」的班，重启后也不能被覆盖一次 —— status 是内存态，
+    // 这里从 meta 读上一轮记下的档位。
+    var bootModelSync = parseModelSyncMode(initDb.getMeta('model_sync', '1'));
+    status.model_sync = bootModelSync;
+    if (bootModelSync !== 0) {
+      boot.push(fetchModelConfig(bootModelSync).catch(function(err) { markError(err); return null; }));
     } else {
-      console.log('[Sync] 本班已关闭模型同步，启动时保留本机模型配置');
+      console.log('[Sync] 本班模型已设为「不同步」，启动时保留本机模型配置');
     }
     // 启动时还不知道本班是不是席位（那要等下面那次轮询告诉咱们），
     // 所以用「以前拉到过花名册」当旁证：拉到过 = 曾经是席位，先补一次。
@@ -312,20 +342,22 @@ function doPoll(force) {
     var remoteAssign = remote.assign_version || 0;
     var remoteModel = remote.model_config_version || 0;
 
-    // 中枢可以按节点关掉模型同步（迁移 031）。关掉后：
-    //   · 不拉模型配置（本班保留自己的渠道/Key/单价）
-    //   · 也不更新本机记的版本号 —— 中枢靠节点上报的 last_model_version 判断
-    //     「跟到第几版」，写成中枢版本会让管理台显示成「已跟上」，实际没跟。
-    var modelSync = (remote.model_sync === undefined)
-      ? 1 : (Number(remote.model_sync) === 0 ? 0 : 1);
+    // 中枢可以按节点设模型同步档位（迁移 031 两态 → 迁移 033 扩成三态）：
+    //   1 跟随中枢   —— 拉取并全量替换，本班只读
+    //   2 本班自选   —— 拉取但按来源合并（本班自建的保留），本班可改、改动不回传
+    //   0 完全不同步 —— 不拉也不推，纯本地
+    // 「不拉」的两档都**不更新本机记的版本号** —— 中枢靠节点上报的
+    // last_model_version 判断「跟到第几版」，写成中枢版本会让管理台
+    // 显示成「已跟上」，实际没跟。
+    var modelSync = parseModelSyncMode(remote.model_sync);
     if (status.model_sync !== modelSync) {
       status.model_sync = modelSync;
       try { initDb.setMeta('model_sync', String(modelSync)); } catch (e) { /* 读不到就下轮再写 */ }
-      console.log('[Sync] 模型同步: %s', modelSync ? '跟随中枢' : '已关闭，保留本机配置');
+      console.log('[Sync] 模型同步档位: %s', modelSyncLabel(modelSync));
     }
 
     status.assign_version = remoteAssign;
-    if (modelSync === 1) status.model_version = remoteModel;
+    if (modelSync !== 0) status.model_version = remoteModel;
 
     // 云端也回自己的时间。用它校正本机时钟偏移——教室电脑常年不校时，
     // 而用量记账按时间戳跨月统计，时间偏了账就偏了。
@@ -351,7 +383,7 @@ function doPoll(force) {
 
     var jobs = [];
     if (remoteAssign !== localAssignVersion()) jobs.push(fetchAssignments());
-    if (modelSync === 1 && remoteModel !== localModelVersion()) jobs.push(fetchModelConfig());
+    if (modelSync !== 0 && remoteModel !== localModelVersion()) jobs.push(fetchModelConfig(modelSync));
 
     // 全校花名册：只有席位班才拉（云端对非席位班一律 403）。
     // 两个触发条件缺一不可 —— 只看版本号会漏掉「本机刚推完、云端同轮又被
@@ -483,6 +515,20 @@ function queueAllocation(userId, allocatedMicro, weeklyMicro, reason, classUserI
 // 把本机的模型配置快照推给云端
 function pushModelConfig(classUserId) {
   if (!pendingPolicy) return Promise.resolve({ pushed: 0 });
+
+  // 「本班自选」与「完全不同步」两档都**不回传** —— 这不是权限，是这两档的定义。
+  // 8 班换了自己的 Key / 加了自己的源，18 班不该被牵连；反过来 18 班也不该
+  // 因为 8 班的一次保存就把整校配置重刷一遍。
+  var mode = parseModelSyncMode(status.model_sync);
+  if (mode !== 1) {
+    // 置位要清掉：留着会每轮都重试一个永远不该发的包，
+    // 面板上也会一直挂着一条「上次推送失败」的错觉。
+    pendingPolicy = false;
+    status.pending_policy = false;
+    status.last_push_policy_error = '本班模型为「' + modelSyncLabel(mode) + '」，改动只在本机生效，不会同步到管理员班';
+    return Promise.resolve({ pushed: 0, localOnly: true });
+  }
+
   if (!status.is_seat_admin) {
     // 不是席位班：这不是错误，只是本班没有写入权。别刷错误日志，
     // 但要让面板能显示「本班改的不会同步全校」。
@@ -883,6 +929,19 @@ function stop() {
   timers = [];
 }
 
+// 把本机记录的「模型配置跟到第几版」清掉，让下一轮轮询必然判定「中枢比我新」并重拉。
+//
+// 起因（2026-10-23 实测踩到）：8 班点「恢复跟随中枢」时反向隧道正好断了，
+// 那次立即拉取失败；可版本号在上一轮已经等于中枢，之后**再也不会重拉** ——
+// 那一行就永久停在「基线是空哨兵、值还是本班旧值」的中间态，而且界面上连徽标
+// 都不显示（空基线算不出偏离），看起来像按钮没生效。
+//
+// 只改本地版本号，不碰中枢：下一轮 pollOnce 的 remote !== local 判断就会命中。
+function markModelStale() {
+  try { initDb.setMeta('model_config_version', '0'); } catch (e) { /* 库不可写就靠 force 拉取 */ }
+  status.model_version = 0;
+}
+
 function getStatus() {
   var localAssign = localAssignVersion();
   var localModel = localModelVersion();
@@ -917,8 +976,8 @@ function getStatus() {
     is_seat_admin: status.is_seat_admin,
     seat_instance: status.seat_instance,
     seat_admin_at: status.seat_admin_at,
-    // 是否跟随中枢的模型选择（迁移 031）。0 = 本班用自己的模型配置，
-    // 额度与名单照常同步。面板要能回答「我这个班为什么模型没变」。
+    // 模型同步档位（迁移 033）：1 跟随 / 2 本班自选 / 0 不同步。
+    // 面板要能回答「我这个班为什么模型没变」以及「我改了会不会影响全校」。
     model_sync: (status.model_sync === undefined) ? 1 : status.model_sync,
     self_pushed_model_version: status.self_pushed_model_version,
     self_pushed_assign_version: status.self_pushed_assign_version,
@@ -955,5 +1014,6 @@ module.exports = {
   listRoster: listRoster,
   getRosterRow: getRosterRow,
   applyRosterAllocation: applyRosterAllocation,
-  rosterSummary: rosterSummary
+  rosterSummary: rosterSummary,
+  markModelStale: markModelStale
 };

@@ -40,5 +40,7 @@ module.exports = [
   require('./029_conversation_hidden'),
   require('./030_roster_hub_quota'),
   require('./031_node_model_sync'),
-  require('./032_model_sync_scope')
+  require('./032_model_sync_scope'),
+  require('./033_local_model_origin'),
+  require('./034_model_hub_base')
 ];

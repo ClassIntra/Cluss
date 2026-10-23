@@ -334,15 +334,23 @@
                 <!-- 模型是否跟随中枢：关掉的班会保留自己的渠道/Key/单价，
                      额度与名单照常跟随。放在状态行里，管理员一眼能看出「这个班没跟」是
                      有意为之还是卡住了 -->
-                <span class="badge" :class="n.model_sync === 0 ? 'badge-accent' : ''">
-                  {{ n.model_sync === 0 ? '模型本班自选' : '模型跟随中枢' }}
+                <!-- 模型同步档位（迁移 033 三态）：跟随 / 本班自选（可改不回传）/ 不同步。
+                     三档的差别是「能不能改」和「改了去哪」，光看「跟没跟」看不出中间那档 -->
+                <span class="badge" :class="n.model_sync === 1 ? '' : 'badge-accent'">
+                  {{ nodeModelSyncLabel(n.model_sync) }}
                 </span>
               </div>
               <div class="mesh-node-actions">
                 <button v-if="meshStatus.seat_instance !== n.instance_id" class="btn btn-sm btn-ghost" @click="setSeat(n.instance_id)">设为管理员班</button>
-                <button class="btn btn-sm btn-ghost" @click="toggleNodeModelSync(n)">
-                  {{ n.model_sync === 0 ? '改为跟随中枢模型' : '改为本班自选模型' }}
-                </button>
+                <select
+                  class="input mesh-node-select"
+                  :value="String(n.model_sync)"
+                  @change="onNodeModelSyncChange(n, $event)"
+                >
+                  <option value="1">跟随中枢模型</option>
+                  <option value="2">本班自选（可改·不回传）</option>
+                  <option value="0">完全不同步</option>
+                </select>
               </div>
             </div>
             <div v-if="!meshStatus.seat_is_self" class="mesh-node-actions">
@@ -483,10 +491,16 @@
                 {{ syncScope.synced_models }} / {{ syncScope.models }} 个模型、
                 {{ syncScope.synced_sources }} / {{ syncScope.sources }} 个模型源会发到各班。
                 <template v-if="syncScope.nodes_following">全校 {{ syncScope.nodes_following }} 个班跟随中枢。</template>
-                <template v-if="syncScope.nodes_total > syncScope.nodes_following">另有 {{ syncScope.nodes_total - syncScope.nodes_following }} 个班自选模型，收不到这些配置。</template>
+                <template v-if="syncScope.nodes_total > syncScope.nodes_following">另有 {{ syncScope.nodes_total - syncScope.nodes_following }} 个班完全断开了模型同步，收不到这些配置。</template>
               </p>
             </div>
             <div class="panel-actions">
+              <button
+                v-if="modelLocalOnly && localChangeTotal"
+                class="btn btn-sm btn-ghost"
+                title="把所有「本班改过」的模型与源整行恢复成中枢版本（本班自建的条目不受影响）"
+                @click="followHubAll"
+              >全部恢复跟随中枢（{{ localChangeTotal }}）</button>
               <button class="btn btn-sm btn-ghost" @click="loadModels">刷新</button>
               <button class="btn btn-sm btn-primary" @click="openModelForm(null)" :disabled="modelReadOnly">新增模型</button>
             </div>
@@ -497,6 +511,12 @@
           </div>
           <div v-else-if="modelReadOnly" class="alert alert-info model-ro-notice">
             {{ modelReadOnlyReason }}
+          </div>
+          <!-- 「本班自选 / 不同步」两档：可写，但必须说清改动只在本机生效。
+               尤其是「与中枢同名的模型会被下次下发覆盖」这条 —— 不说的话，
+               管理员改完发现自动回滚，会以为保存失败。 -->
+          <div v-else-if="modelLocalOnly" class="alert alert-info model-ro-notice">
+            {{ modelLocalOnlyHint }}
           </div>
 
           <div class="table-wrap">
@@ -520,6 +540,28 @@
                     <div class="model-cell">
                       <span class="model-name">{{ m.label }}</span>
                       <span class="tiny muted mono">{{ m.id }}</span>
+                      <!-- 「本班自选 / 不同步」档下才需要区分来源：跟随档里全是中枢下发的，
+                           标出来只是噪音。迁移 034 起是**逐字段**跟随，所以徽标要说清
+                           「哪几项偏离中枢」—— 这决定了中枢下次调价会不会覆盖它。 -->
+                      <span
+                        v-if="modelLocalOnly && m.local_change_count"
+                        class="badge badge-warning"
+                        :title="'本班改过这些字段，中枢的后续更新不会覆盖它们：' + localFieldNames(m) + '。其余字段仍跟随中枢；要整行回到中枢版本，点操作列的「恢复跟随」'"
+                      >本班改过 {{ m.local_change_count }} 项</span>
+                      <span
+                        v-else-if="modelLocalOnly && m.origin === 'hub'"
+                        class="badge"
+                        title="整行跟随中枢：中枢改单价、倍率、Key 都会自动下发到本班"
+                      >中枢下发</span>
+                      <!-- 本班自建：中枢从来没有同名配置，既不会被下发覆盖，也
+                           不会被下发删掉。「本班改过」「中枢下发」两个分支都轮不到它
+                           —— 少了这一条，管理员新增完模型后看到的是一行裸配置，
+                           无从判断它和中枢是什么关系。 -->
+                      <span
+                        v-else-if="modelLocalOnly && !m.has_hub_base"
+                        class="badge badge-accent"
+                        title="本班自建：中枢没有同名配置，永远不会被中枢下发改动或删除。它没有「中枢版本」可回退，所以没有「恢复跟随」这项操作；要去掉请直接删除"
+                      >本班自建</span>
                     </div>
                   </td>
                   <td class="tiny">
@@ -569,6 +611,14 @@
                   </td>
                   <td class="col-op-wide">
                     <button class="btn btn-sm btn-ghost" @click="openModelForm(m)" :disabled="modelReadOnly">编辑</button>
+                    <!-- 恢复跟随：只在「本班改过」时出现。它是字段级合并的必需出口 ——
+                         否则改错一个单价就再也收不到中枢对这个字段的调整。 -->
+                    <button
+                      v-if="modelLocalOnly && m.local_change_count"
+                      class="btn btn-sm btn-ghost"
+                      title="整行按中枢当前版本刷新：本班对这一条的修改会被覆盖"
+                      @click="followHubModel(m)"
+                    >恢复跟随</button>
                     <button
                       v-if="!m.is_default && m.enabled"
                       class="btn btn-sm btn-ghost"
@@ -620,6 +670,22 @@
                     <div class="model-cell">
                       <span class="model-name">{{ s.label || s.id }}</span>
                       <span class="tiny muted mono">{{ s.id }}</span>
+                      <!-- 与模型行同一套语义（迁移 034）：源上的地址/Key 也能逐字段跟随 -->
+                      <span
+                        v-if="modelLocalOnly && s.local_change_count"
+                        class="badge badge-warning"
+                        :title="'本班改过这些字段，中枢的后续更新不会覆盖它们：' + localFieldNames(s) + '。其余字段（含地址与 Key）仍跟随中枢'"
+                      >本班改过 {{ s.local_change_count }} 项</span>
+                      <span
+                        v-else-if="modelLocalOnly && s.origin === 'hub'"
+                        class="badge"
+                        title="整行跟随中枢：中枢换地址、换 Key 都会自动下发到本班"
+                      >中枢下发</span>
+                      <span
+                        v-else-if="modelLocalOnly && !s.has_hub_base"
+                        class="badge badge-accent"
+                        title="本班自建：中枢没有同名配置，永远不会被中枢下发改动或删除。它没有「中枢版本」可回退，所以没有「恢复跟随」这项操作；要去掉请直接删除"
+                      >本班自建</span>
                     </div>
                   </td>
                   <td class="tiny muted addr-cell" :title="s.api_url">{{ s.api_url || '未配置' }}</td>
@@ -639,6 +705,12 @@
                   </td>
                   <td class="col-op-wide">
                     <button class="btn btn-sm btn-ghost" @click="openSourceForm(s)" :disabled="modelReadOnly">编辑</button>
+                    <button
+                      v-if="modelLocalOnly && s.local_change_count"
+                      class="btn btn-sm btn-ghost"
+                      title="整行按中枢当前版本刷新：本班对这个源的修改会被覆盖"
+                      @click="followHubSource(s)"
+                    >恢复跟随</button>
                     <button class="btn btn-sm btn-ghost danger-text" @click="deleteSource(s)" :disabled="modelReadOnly">删除</button>
                   </td>
                 </tr>
@@ -1264,8 +1336,17 @@ export default {
       // node 模式：模型由云端统一下发。**持有管理员席位的班可以改**，改完上行
       // 推给云端、同步全校；非席位班只读（改了既同步不了，也会被下次下发覆盖）。
       // 后端在 GET /admin/models 里给 read_only + 原因，这里只负责呈现。
-      modelReadOnly: false,
+      //
+      // 初值必须是 true：权限是**问后端才知道**的，默认可写会出现一小段窗口期
+      // （慢网下能有好几秒）按钮是亮的，管理员点进表单填完再保存才被打回 403 ——
+      // 表现就是「明明能编辑，一保存就报错」。默认只读、读到 read_only=false 再放开，
+      // 宁可闪一下灰按钮，也不给人白填一遍。
+      modelReadOnly: true,
       modelReadOnlyReason: '',
+      // 「本班自选 / 不同步」两档：可写但改动只在本机生效（迁移 033）。
+      // 与 modelReadOnly 互斥，各自一条提示。
+      modelLocalOnly: false,
+      modelLocalOnlyHint: '',
       modelWritesToSchool: false,
       // 下发范围汇总（迁移 032）：{ models, synced_models, sources, synced_sources,
       // nodes_total, nodes_following }。为 null 表示还没读到，别渲染占位数字。
@@ -1364,6 +1445,16 @@ export default {
     //   能改的机器上，哪怕暂时没有班接入，也要能提前把范围配好。
     showSyncColumn: function() {
       return !this.modelReadOnly;
+    },
+    // 「本班改过」的条目总数（模型 + 源）。给「全部恢复跟随中枢」按钮用 ——
+    // 0 时这个按钮根本不该出现，否则它看起来像个随时可点的正常操作。
+    localChangeTotal: function() {
+      var n = 0;
+      var list = this.models || [];
+      for (var i = 0; i < list.length; i++) n += Number(list[i].local_change_count || 0) ? 1 : 0;
+      var sl = this.sources || [];
+      for (var j = 0; j < sl.length; j++) n += Number(sl[j].local_change_count || 0) ? 1 : 0;
+      return n;
     },
     // 当前登录的学号：账号绑定面板要显示「这台电脑上的我是谁」。
     // 直接读本地存储，和 store/auth 保持同一份来源，但不去动那个模块
@@ -1549,9 +1640,12 @@ export default {
       return isFinite(t) ? (Date.now() - t) : null;
     },
 
-    // 离线阈值 3 分钟：节点每 60 秒轮询一次，连丢三轮才标红 ——
-    // 一次抖动就标红会让管理员去查一个根本没坏的东西。
+    // 离线与否由服务端判定 —— `online` 是 /mesh/status 一并算好的。
+    // 之前这里自己掐表（3 分钟），接口那边又有另一个阈值（10 分钟），
+    // 同一时刻同一节点在接口里算在线、在页面上算离线，对不了账。
+    // seenMsAgo 那段本地计算留作兜底：老版本服务端还没这个字段时不至于全判离线。
     nodeOnline: function(n) {
+      if (n && typeof n.online === 'boolean') return n.online;
       var ms = this.seenMsAgo(n);
       return ms !== null && ms < 3 * 60 * 1000;
     },
@@ -1582,36 +1676,80 @@ export default {
       });
     },
 
-    // 切换某个班「是否跟随中枢的模型选择」。
-    // 关掉之后该班保留自己的渠道/Key/单价，额度与名单照常跟随 ——
-    // 比让它整台断开组网要好。
+    // 节点卡上的「模型同步档位」文案。三档不是「开/关」的粗细版本，
+    // 它们的差别在**改不动得动**与**改动去哪了**，所以文案必须短而互斥。
+    nodeModelSyncLabel: function(v) {
+      var n = Number(v);
+      if (n === 2) return '模型本班自选（可改·不回传）';
+      if (n === 0) return '模型不同步';
+      return '模型跟随中枢';
+    },
+
+    // 切换某个班的模型同步档位（迁移 033 三态）：
+    //   1 跟随中枢     —— 全量替换下发，该班只读
+    //   2 本班自选     —— 合并下发，该班可改，改动不回传
+    //   0 完全不同步   —— 不拉也不推
     //
     // 确认走全局自定义弹窗而不是 window.confirm：原生弹窗在 Android WebView 里
-    // 是一块与界面无关的系统灰底，既打断玻璃拟态，也没法标出危险等级
-    // （这里的「关闭跟随」会让那个班从此不再收到中枢的模型）。
-    toggleNodeModelSync: function(node) {
+    // 是一块与界面无关的系统灰底，既打断玻璃拟态，也没法标出危险等级。
+    //
+    // 下拉而不是按钮循环：三档循环要连点两次才能到中间那档，
+    // 而且用户看不到「还有哪些档」。列表里一眼可选完才对。
+    onNodeModelSyncChange: function(node, ev) {
       var self = this;
-      var next = (node.model_sync === 0) ? 1 : 0;
-      this.$store.dispatch('confirm', {
-        title: next === 0 ? '让这个班自己选模型？' : '让这个班跟随中枢模型？',
-        message: next === 0
-          ? ('关闭后 ' + node.instance_id + ' 会保留自己现有的模型配置，不再收到中枢的任何模型；'
-            + '额度与名单照常同步。')
-          : ('开启后 ' + node.instance_id + ' 下一轮同步会拉取中枢的模型配置，'
-            + '覆盖它自己的（只含勾了「下发」的模型与源）。'),
-        confirmText: next === 0 ? '改为自选' : '跟随中枢',
-        danger: next === 0
-      }).then(function(ok) {
-        if (!ok) return;
+      var current = Number(node.model_sync === undefined ? 1 : node.model_sync);
+      var target = Number(ev.target.value);
+      var inst = node.instance_id;
+
+      // 取消时把下拉摆回原值：:value 绑定只在重渲染时生效，
+      // 用户点了别的档再取消，DOM 会停在那个档上，看起来像已经改了。
+      var reset = function() {
+        try { if (ev.target) ev.target.value = String(current); } catch (e) { /* 元素已销毁 */ }
+      };
+      if (target === current) return;
+
+      var conf = {
+        1: {
+          title: '让这个班跟随中枢模型？',
+          message: '开启后 ' + inst + ' 下一轮同步会拉取中枢的模型配置，并全量替换它自己的'
+            + '（只含勾了「下发」的模型与源）；该班的模型页会变回只读。',
+          confirmText: '跟随中枢',
+          danger: false
+        },
+        2: {
+          title: '让这个班可以自己改模型？',
+          message: '中枢新配的模型仍会下发给 ' + inst + '，本班自己建的模型与源会一直保留，'
+            + '班管可以直接增删改；改动只在本机生效，不会同步回管理员班。'
+            + '同一条模型逐字段跟随：班管改过的字段保留本班的值，没改过的（含单价、倍率、'
+            + '峰谷、Key）继续跟中枢更新走。',
+          confirmText: '改为本班自选',
+          danger: false
+        },
+        0: {
+          title: '停止给这个班下发模型？',
+          message: '断开后 ' + inst + ' 保留自己现有的模型配置，中枢既不下发也不覆盖；'
+            + '班管可以自由增删改，改动不回传。额度与名单照常同步。',
+          confirmText: '停止下发',
+          danger: true
+        }
+      }[target];
+
+      if (!conf) { reset(); return; }
+
+      this.$store.dispatch('confirm', conf).then(function(ok) {
+        if (!ok) { reset(); return; }
         self.$http.post('/admin/mesh/node-model-sync', {
-          instance_id: node.instance_id,
-          enabled: next
+          instance_id: inst,
+          mode: target
         }).then(function(r) {
           if (r.data.code === 200) {
             self.$store.commit('SHOW_TOAST', { message: r.data.message, type: 'success' });
             self.loadMeshStatus();
+          } else {
+            reset();
           }
         }).catch(function(e) {
+          reset();
           var msg = (e && e.response && e.response.data && e.response.data.message) || '操作失败';
           self.$store.commit('SHOW_TOAST', { message: msg, type: 'error' });
         });
@@ -1692,6 +1830,104 @@ export default {
     },
 
     sourceLabel: function(s) { return SOURCE_LABELS[s] || s || '对话'; },
+
+    // ---------- 恢复跟随中枢（迁移 034 的字段级合并）----------
+    //
+    // 为什么需要：字段级合并下，本班改过的**那个字段**会一直保留本班的值
+    // （有意的 —— 管理员在本机改的价不该被一次轮询抹掉）。但改错过一次就
+    // 再也收不到中枢对这个字段的调整，所以必须有出口。
+    //
+    // 列名 → 中文：徽标 tooltip 要能说清「哪几项偏离」，只说「3 项」等于没说。
+    localFieldNames: function(row) {
+      var LABELS = {
+        label: '显示名', api_url: 'API 地址', api_key: 'API Key', model_name: '模型名',
+        api_style: '协议风格', supports_thinking: '深度思考', supports_stream: '流式',
+        supports_vision: '视觉', vision_max_images: '图片上限',
+        price_in: '输入单价', price_out: '输出单价', price_cache_hit: '缓存单价',
+        price_multiplier_bp: '倍率', free_until: '限免截止', is_free: '免费',
+        enabled: '启用', is_default: '默认', sort_order: '排序',
+        source_id: '所挂源', has_offpeak: '峰谷', offpeak_peak_windows: '峰时段',
+        offpeak_discount_bp: '谷时折扣', sync_enabled: '下发范围'
+      };
+      var fields = (row && row.local_fields) || [];
+      var out = [];
+      for (var i = 0; i < fields.length; i++) out.push(LABELS[fields[i]] || fields[i]);
+      return out.join('、');
+    },
+
+    followHubModel: function(m) {
+      var self = this;
+      this.$store.dispatch('confirm', {
+        title: '恢复跟随中枢？',
+        message: '「' + (m.label || m.id) + '」将整行按中枢当前版本刷新：'
+          + '本班改过的 ' + (m.local_change_count || 0) + ' 项（' + this.localFieldNames(m) + '）会被中枢的值覆盖。'
+          + '如果只是想让某一项回到中枢，可以先手工改回去。',
+        confirmText: '恢复跟随',
+        danger: true
+      }).then(function(ok) {
+        if (!ok) return;
+        self.$http.post('/admin/models/' + m.id + '/follow', {})
+          .then(function(r) {
+            if (r.data.code !== 200) throw new Error(r.data.message || '操作失败');
+            self.$store.commit('SHOW_TOAST', { message: r.data.message, type: 'success' });
+            self.loadModels();
+          })
+          .catch(function(e) {
+            var msg = (e && e.response && e.response.data && e.response.data.message)
+              || (e && e.message) || '操作失败';
+            self.$store.commit('SHOW_TOAST', { message: msg, type: 'error' });
+          });
+      });
+    },
+
+    followHubSource: function(s) {
+      var self = this;
+      this.$store.dispatch('confirm', {
+        title: '恢复跟随中枢？',
+        message: '源「' + (s.label || s.id) + '」将整行按中枢当前版本刷新：'
+          + '本班改过的 ' + (s.local_change_count || 0) + ' 项（' + this.localFieldNames(s) + '）会被中枢的值覆盖，'
+          + '包括地址与 Key。',
+        confirmText: '恢复跟随',
+        danger: true
+      }).then(function(ok) {
+        if (!ok) return;
+        self.$http.post('/admin/sources/' + s.id + '/follow', {})
+          .then(function(r) {
+            if (r.data.code !== 200) throw new Error(r.data.message || '操作失败');
+            self.$store.commit('SHOW_TOAST', { message: r.data.message, type: 'success' });
+            self.loadModels();
+          })
+          .catch(function(e) {
+            var msg = (e && e.response && e.response.data && e.response.data.message)
+              || (e && e.message) || '操作失败';
+            self.$store.commit('SHOW_TOAST', { message: msg, type: 'error' });
+          });
+      });
+    },
+
+    followHubAll: function() {
+      var self = this;
+      this.$store.dispatch('confirm', {
+        title: '全部恢复跟随中枢？',
+        message: '本班改过的 ' + this.localChangeTotal + ' 条（模型与模型源）会整行恢复成中枢版本，'
+          + '本班自建的条目不受影响。这个操作会覆盖你在本机的所有修改。',
+        confirmText: '全部恢复',
+        danger: true
+      }).then(function(ok) {
+        if (!ok) return;
+        self.$http.post('/admin/model-config/follow-all', {})
+          .then(function(r) {
+            if (r.data.code !== 200) throw new Error(r.data.message || '操作失败');
+            self.$store.commit('SHOW_TOAST', { message: r.data.message, type: 'success' });
+            self.loadModels();
+          })
+          .catch(function(e) {
+            var msg = (e && e.response && e.response.data && e.response.data.message)
+              || (e && e.message) || '操作失败';
+            self.$store.commit('SHOW_TOAST', { message: msg, type: 'error' });
+          });
+      });
+    },
 
     formatTokens: function(n) {
       var v = Number(n || 0);
@@ -1976,6 +2212,8 @@ export default {
           self.baseModel = r.data.data.base_model || null;
           self.modelReadOnly = !!r.data.data.read_only;
           self.modelReadOnlyReason = r.data.data.read_only_reason || '';
+          self.modelLocalOnly = !!r.data.data.local_only;
+          self.modelLocalOnlyHint = r.data.data.local_only_hint || '';
           self.modelWritesToSchool = !!r.data.data.writes_to_school;
           self.syncScope = r.data.data.sync_scope || null;
         }
@@ -2929,6 +3167,10 @@ html.no-flex-gap .filters > * + * {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  /* Chrome 80 基线：这里没有 align-items，徽标会被 flex 拉伸成整列宽的色条
+     （「中枢下发」「本班改过 1 项」都会变成一条横贯单元格的底纹，看着像表格
+     出错）。徽标必须按内容宽度左对齐。 */
+  align-items: flex-start;
 }
 html.no-flex-gap .model-cell > * + * {
   margin-top: 1px;
@@ -3472,5 +3714,19 @@ html.no-flex-gap .anomaly-grid > * + * {
 /* 同上：不用 gap，旧内核不认 flex gap，按钮会粘成一串 */
 .mesh-node-actions .btn {
   margin: 0 8px 4px 0;
+}
+
+/* 模型档位下拉：与 btn-sm 等高，宽度随内容（三档文案长短差别大，
+   固定宽度会把「本班自选（可改·不回传）」截掉）。旧内核不认 flex gap，
+   靠 margin 与左侧按钮留出间距。 */
+.mesh-node-select {
+  width: auto;
+  min-width: 168px;
+  height: 32px;
+  padding: 0 8px;
+  margin: 0 8px 4px 0;
+  font-size: 12px;
+  line-height: 30px;
+  border-radius: var(--radius-sm);
 }
 </style>

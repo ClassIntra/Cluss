@@ -240,11 +240,50 @@ function status(yy, classNo) {
   };
 }
 
-// 从「班管自己的学号」推出本班
+// 本机用户里出现最多的「届」（学号前两位）。库里还没有学生时返回 null。
+// 用途：实例号只带班号（class-08），不带届别，届别得从数据里看出来。
+function dominantYear() {
+  var row = db.prepare(
+    "SELECT substr(user_id, 1, 2) AS yy, COUNT(*) AS n FROM users " +
+    "WHERE length(user_id) = 6 AND user_id GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]' " +
+    "GROUP BY yy ORDER BY n DESC LIMIT 1"
+  ).get();
+  return (row && row.yy) ? String(row.yy) : null;
+}
+
+// 从「班管自己的学号」推出本班 —— 这是**破坏性操作（清理非本班账号）与自动收名册
+// 的唯一基准**，所以判据和 classOf 不一样：
+//
+//   1. **班号以本机实例号为准**（instance_id = class-08 → 就是 08 班）。
+//      为什么不信"登录者的学号"：2026-10-22 真实事故 —— 18 班管理员登进 8 班，
+//      8 班按他自己的学号 2518xx 认成了 18 班，把 18 班整份名册（50 人）收进本机
+//      users。"谁登录了"是变化量，"这台机器是哪个班"是常量，归属必须取常量。
+//
+//   2. **届别取本机用户里最多的那一届**；库里还没有学生（全新部署）时退回账号自己
+//      的届别 —— 否则首次同步会因为"算不出届别"而被拒，永远拉不到第一名册。
+//
+//   3. 单机部署（instance_id 不是 class-NN，如 cluss-local）没有实例班号可比，
+//      退回只看学号，保持老行为。
+//
+//   4. 开发账号（999999）在 class-NN 实例上会被解析成「本机这个班」—— 这是刻意的：
+//      实例号是配置、不可被访客影响，所以不会误判；而 99 届 99 班那种胡来会被
+//      下面的班号范围检查拦掉（旧代码正是拿 999999 解出 99/99，一点"清理非本班"
+//      就把全校学生判成外班删掉）。
 function classOfAdmin(userId) {
-  var c = classOf(userId);
-  if (!c) return null;
-  return { yy: c.yy, classNo: c.classNo };
+  var uid = String(userId || '');
+  var adminClass = classOf(uid);
+
+  var m = /^class-(\d{2})$/.exec(String(config.instanceId || ''));
+  var classNo = m ? m[1] : (adminClass ? adminClass.classNo : null);
+  if (!classNo) return null;
+
+  var n = parseInt(classNo, 10);
+  if (!(n >= 1 && n <= 30)) return null;
+
+  var yy = dominantYear() || (adminClass ? adminClass.yy : null);
+  if (!yy) return null;
+
+  return { yy: yy, classNo: classNo };
 }
 
 // 同步本班：拉名册 → 纳入；opts.prune=true 时顺带清理非本班

@@ -155,15 +155,22 @@ function nodeInstanceId(req) {
 // GET /sync/version
 // ============================================================
 router.get('/version', function(req, res) {
-  // 「是否跟随中枢的模型选择」是**按节点**的开关（迁移 031）：
+  // 「模型同步档位」是**按节点**的开关（迁移 031 两态 → 迁移 033 三态）：
+  //   1 跟随中枢   —— 全量替换下发，本班只读
+  //   2 本班自选   —— 下发按来源合并，本班可改、改动不回传
+  //   0 完全不同步 —— 不拉也不推
   // 有的班想用自己的 Key / 更便宜的模型，或者本地网络连不上中枢选的那家。
-  // 关掉之后额度与名单照常跟随，只保留自己的模型配置 —— 比整台断开组网好得多。
+  // 中间那档是为「既想继续收到中枢新配的模型、又想自己能改」准备的：
+  // 只给开关不给编辑权，等于逼他们在「全跟」和「全断」之间二选一。
   var inst = nodeInstanceId(req);
   var modelSync = 1;
   if (inst) {
     try {
       var nodeRow = db.prepare('SELECT model_sync FROM cluss_nodes WHERE instance_id = ?').get(inst);
-      if (nodeRow && Number(nodeRow.model_sync) === 0) modelSync = 0;
+      if (nodeRow) {
+        var raw = Number(nodeRow.model_sync);
+        if (raw === 0 || raw === 2) modelSync = raw;
+      }
     } catch (e) { /* 老 schema：按跟随处理 */ }
   }
 

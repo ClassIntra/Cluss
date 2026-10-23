@@ -66,6 +66,36 @@ module.exports = {
         // 显式清空，避免这层污染顺着 PM2 传到服务进程里。
         NODE_OPTIONS: ''
       }
+    },
+    {
+      // ---- 组网反向隧道（中枢 → 8 班）----
+      //
+      // 写进这里而不是靠手工 pm2 start 的唯一理由：**它必须活过重启**。
+      // 2026-10-22 深夜这个进程就是手工起的，一次 pm2 resurrect 之后凭空消失，
+      // 8 班的模型/额度同步静默断了 13 小时（节点侧只看到 ECONNREFUSED，管理台
+      // 上什么都看不出来）。不在 dump.pm2 里 = 下次开机不复存在。
+      //
+      // 为什么是 .js 而不是 .bat：见 scripts/mesh-tunnel-8i.js 头注 ——
+      // PM2 的 --interpreter cmd 只会开一个空 cmd，不加 interpreter 又让 Node
+      // 去 require 批处理直接报错。Node 包装 ssh 子进程才是它能托管的形式。
+      name: 'cluss-mesh-tunnel-8i',
+      script: path.resolve(__dirname, 'scripts', 'mesh-tunnel-8i.js'),
+      cwd: __dirname,
+      exec_mode: 'fork',
+      exec_interpreter: nodeInterpreter,
+      autorestart: true,
+      max_restarts: 0,            // ssh 断开是常态（网络抖动），不设上限
+      restart_delay: 5000,        // 别把 ssh 连成洪水
+      min_uptime: '10s',
+      watch: false,
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
+      error_file: path.join(serverDir, 'logs', 'tunnel-error.log'),
+      out_file: path.join(serverDir, 'logs', 'tunnel-out.log'),
+      merge_logs: true,
+      env: {
+        NODE_OPTIONS: '',
+        NODE_PATH: path.join(serverDir, 'node_modules')
+      }
     }
   ]
 };
