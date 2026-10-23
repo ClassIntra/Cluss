@@ -6,10 +6,15 @@ name: Release
 #   server/src   —— 服务端全是源码，原生模块（better-sqlite3 / sharp）必须由部署方
 #                   在自己机器上 npm ci 编译，所以只发源码，不发 node_modules。
 #   client/dist  —— vite 构建产物，服务端直接静态托管，开箱即用。
-# 部署方拿到的用法：
-#   tar -xzf cluss-server-src-vX.Y.Z.tar.gz        # 覆盖到 <repo>/server/src
-#   tar -xzf cluss-client-dist-vX.Y.Z.tar.gz       # 覆盖到 <repo>/client/dist
+# 部署方拿到的用法（在仓库根目录执行）：
+#   tar -xzf cluss-server-src-vX.Y.Z.tar.gz        # 覆盖 <repo>/server/src 与 <repo>/shared
+#   tar -xzf cluss-client-dist-vX.Y.Z.tar.gz       # 覆盖 <repo>/client/dist
 #   cd server && npm ci && npm start               # 或 PM2 托管
+#
+# 为什么服务端包要连 shared/ 一起打：prompt-registry.js 硬依赖仓库根的
+# shared/student-prefs.json（档位与科目白名单的唯一真源）。它曾被 .gitignore
+# 整条忽略，2026-10-23 才入库——在那之前的检出里这个文件不存在，只更新
+# server/src 会让服务端启动即 MODULE_NOT_FOUND。包内自带，旧检出也能直接升级。
 on:
   push:
     tags:
@@ -53,9 +58,27 @@ jobs:
         run: |
           set -e
           VER="${GITHUB_REF_NAME}"
-          tar -czf "cluss-server-src-${VER}.tar.gz" -C server src
+          # 包内路径相对仓库根：server/src + shared，解包到 <repo> 即就位。
+          # 不带 node_modules（原生模块须由部署方本机编译），也不含
+          # server/package.json（部署方工作树上已有，npm ci 靠它）。
+          tar -czf "cluss-server-src-${VER}.tar.gz" server/src shared
           tar -czf "cluss-client-dist-${VER}.tar.gz" -C client/dist .
           ls -lh cluss-*.tar.gz
+
+      # 「包里少文件」这个故障形态咬过两次（shared/ 未入库、dist 指纹过期），
+      # 都是部署后白屏/启动即崩才发现。发出去之前先断言关键文件在包里。
+      - name: 校验包内容
+        shell: bash
+        run: |
+          set -e
+          VER="${GITHUB_REF_NAME}"
+          tar -tzf "cluss-server-src-${VER}.tar.gz" | grep -q '^shared/student-prefs.json$' \
+            || { echo "::error::服务端包缺少 shared/student-prefs.json"; exit 1; }
+          tar -tzf "cluss-server-src-${VER}.tar.gz" | grep -q '^server/src/index.js$' \
+            || { echo "::error::服务端包缺少 server/src/index.js"; exit 1; }
+          tar -tzf "cluss-client-dist-${VER}.tar.gz" | grep -q '^./index.html$' \
+            || { echo "::error::前端包缺少 index.html"; exit 1; }
+          echo "包内容断言通过"
 
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
