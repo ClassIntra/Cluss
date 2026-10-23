@@ -67,16 +67,18 @@ jobs:
 
       # 「包里少文件」这个故障形态咬过两次（shared/ 未入库、dist 指纹过期），
       # 都是部署后白屏/启动即崩才发现。发出去之前先断言关键文件在包里。
+      # 注意：Git Bash 的 tar 是 bsdtar，条目名与 GNU tar 可能有 `./` 前缀差异，
+      # 匹配时刻意不锚定行首。
       - name: 校验包内容
         shell: bash
         run: |
           set -e
           VER="${GITHUB_REF_NAME}"
-          tar -tzf "cluss-server-src-${VER}.tar.gz" | grep -q '^shared/student-prefs.json$' \
+          tar -tzf "cluss-server-src-${VER}.tar.gz" | grep -q 'shared/student-prefs.json$' \
             || { echo "::error::服务端包缺少 shared/student-prefs.json"; exit 1; }
-          tar -tzf "cluss-server-src-${VER}.tar.gz" | grep -q '^server/src/index.js$' \
-            || { echo "::error::服务端包缺少 server/src/index.js"; exit 1; }
-          tar -tzf "cluss-client-dist-${VER}.tar.gz" | grep -q '^./index.html$' \
+          tar -tzf "cluss-server-src-${VER}.tar.gz" | grep -q 'server/src/app.js$' \
+            || { echo "::error::服务端包缺少 server/src/app.js（入口）"; exit 1; }
+          tar -tzf "cluss-client-dist-${VER}.tar.gz" | grep -qE '(^|/)index\.html$' \
             || { echo "::error::前端包缺少 index.html"; exit 1; }
           echo "包内容断言通过"
 

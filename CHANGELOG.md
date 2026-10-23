@@ -157,6 +157,10 @@ WebView 里是一块与界面无关的系统灰底，也无法标出危险等级
 - 新增 `.github/workflows`：推 `v*` 标签自动构建前端、打包
   `cluss-server-src` / `cluss-client-dist` 并发 Release（此前发版全靠人手工打 tag）；
   另有零依赖 CI 门禁（版本号一致性 + 全量语法检查），防三包版本分裂这个历史问题复发。
+- 服务端发布包改为**自带 `shared/`** 并在 workflow 里断言关键文件在包里：
+  `prompt-registry.js` 硬依赖仓库根的 `shared/student-prefs.json`，而它因 `.gitignore`
+  整条忽略从未入库——只更新 `server/src` 会让旧检出上的服务端启动即
+  MODULE_NOT_FOUND。「包里少文件」这个形态本版已经咬过两次，断言钉死防回归。
 
 ### 验证（1.1.0 发布前）
 
