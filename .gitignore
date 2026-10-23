@@ -53,5 +53,7 @@ backups/
 # 随手粘贴的 .txt：极易混进密钥（env 片段、token、连接串），一律不入库
 *.txt
 
-# 运行时共享状态（学生偏好的本地覆盖值，属运行数据不入库）
-shared/
+# shared/ 是源码不是运行数据：student-prefs.json 被前端 import、服务端 require，
+# 是「档位与科目白名单」的单一真源。曾整条忽略过，结果从 git 检出部署的人
+# 前端构建直接失败、服务端 MODULE_NOT_FOUND 起不来（本机 tgz 部署发现不了）。
+# 没有任何代码写这个目录，全部入库。
