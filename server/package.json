@@ -1,6 +1,6 @@
 {
   "name": "cluss-server",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "Cluss 服务端（Express + SQLite + JWT）",
   "scripts": {
