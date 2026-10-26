@@ -339,9 +339,19 @@
                 <span class="badge" :class="n.model_sync === 1 ? '' : 'badge-accent'">
                   {{ nodeModelSyncLabel(n.model_sync) }}
                 </span>
+                <!-- 额度写入权被中枢收走的班（迁移 035）：一眼能看出「他不能再自己充钱」
+                     是有意为之还是出了岔子。它是钱的闸门，比模型档位更需要摆在明面上。 -->
+                <span v-if="Number(n.quota_lock) === 1" class="badge badge-danger">额度已接管</span>
               </div>
               <div class="mesh-node-actions">
                 <button v-if="meshStatus.seat_instance !== n.instance_id" class="btn btn-sm btn-ghost" @click="setSeat(n.instance_id)">设为管理员班</button>
+                <button
+                  class="btn btn-sm"
+                  :class="Number(n.quota_lock) === 1 ? 'btn-ghost' : 'btn-ghost quota-takeover'"
+                  @click="toggleNodeQuotaLock(n)"
+                >
+                  {{ Number(n.quota_lock) === 1 ? '交还额度写入权' : '接管额度' }}
+                </button>
                 <select
                   class="input mesh-node-select"
                   :value="String(n.model_sync)"
@@ -370,10 +380,22 @@
             <div class="panel-actions">
               <button class="btn btn-sm btn-ghost" @click="exportSnapshot">导出台账</button>
               <button class="btn btn-sm btn-ghost" @click="loadQuotaTab">刷新</button>
-              <button class="btn btn-sm btn-primary" :disabled="!selected.length" @click="openBatch">
+              <button
+                class="btn btn-sm btn-primary"
+                :disabled="!selected.length || quotaLocked"
+                :title="quotaLocked ? quotaLockHint : ''"
+                @click="openBatch"
+              >
                 批量追加（{{ selected.length }}）
               </button>
             </div>
+          </div>
+
+          <!-- 本班额度已被中枢接管：这是整页唯一需要说明的事，放最上面。
+               写清「谁来自动驾驶」比写「操作被禁止」有用 —— 管理员下一步
+               要去的是中枢那台机器，不是一个待解开的谜。 -->
+          <div v-if="quotaLocked && quotaLockHint" class="alert alert-warning quota-lock-alert">
+            {{ quotaLockHint }}
           </div>
 
           <div class="filters-row">
@@ -432,10 +454,19 @@
                   <td class="num" :class="{ 'text-danger': Number(u.remaining_yuan) <= 0 }">¥{{ u.remaining_yuan }}</td>
                   <td class="num">{{ u.calls }}</td>
                   <td class="col-op">
-                    <button class="btn btn-sm btn-primary" @click="openSingle(u)">追加</button>
+                    <!-- 被中枢接管时直接灰掉，而不是让人填完金额再被打回：
+                         403 出现在「点完确认之后」比出现在按钮上更让人恼火 -->
+                    <button
+                      class="btn btn-sm btn-primary"
+                      :disabled="quotaLocked"
+                      :title="quotaLocked ? quotaLockHint : ''"
+                      @click="openSingle(u)"
+                    >追加</button>
                     <button
                       v-if="Number(u.allocated_yuan) > 0"
                       class="btn btn-sm btn-ghost op-revoke"
+                      :disabled="quotaLocked"
+                      :title="quotaLocked ? quotaLockHint : ''"
                       @click="revokeQuota(u)"
                     >收回</button>
                   </td>
@@ -1319,6 +1350,14 @@ export default {
       // 要回答「我看到的是不是全校、是什么时候的」
       usersRoster: {},
       selected: [],
+      // 迁移 035：中枢接管了本班的额度写入权。
+      //
+      // 初值取 true（先当被锁）而不是 false，和上面 modelReadOnly 同一个道理：
+      // 权限是要问后端才知道的，默认可写会在慢网的那几秒里把按钮点亮，
+      // 管理员填完金额一点提交才吃 403 —— 那是最招骂的一种挫败。
+      // 宁可先灰着，读到后端说没锁再放开。
+      quotaLocked: true,
+      quotaLockHint: '',
       quotaModal: {
         open: false, mode: 'single', userId: '', targetName: '',
         baseYuan: '0.00', addYuan: '', weeklyYuan: '', reason: '',
@@ -1756,6 +1795,56 @@ export default {
       });
     },
 
+    // ---------- 接管某个班的额度写入权（迁移 035）----------
+    //
+    // 「接管」不是把这个班的钱没收，而是收回**他自己改额度的能力**：已经充进去的
+    // 钱照常能用，之后的每一笔都得从这台机器走 —— 这是全校统一价目与预算的落点。
+    //
+    // 反过来也留了口（交还），因为线下收钱的现实场景里，本班班管常常才是那个
+    // 当场操作的人。锁与不锁是中枢的判断，不该做成一个单向阀门。
+    toggleNodeQuotaLock: function(node) {
+      var self = this;
+      var inst = node.instance_id;
+      var locked = Number(node.quota_lock) === 1;
+
+      if (self.meshStatus && inst === self.meshStatus.instance_id) {
+        self.$store.commit('SHOW_TOAST', {
+          message: '中枢不能被锁定：它自己就是额度的最终决定方', type: 'error'
+        });
+        return;
+      }
+
+      self.$store.dispatch('confirm', locked ? {
+        title: '把额度写入权交还 ' + inst + '？',
+        message: '交还之后，该班的班管又能在自己机器上给本班学生充值、修改与收回额度，'
+          + '并且这些数字会同步到这台机器的账上。在此之前他在本机冲的钱仍然算数。',
+        confirmText: '交还写入权',
+        danger: true
+      } : {
+        title: '接管 ' + inst + ' 的额度？',
+        message: '接管之后，' + inst + ' 的班管不能再在本机充值、修改或收回任何学生的额度'
+          + '（含他自己班的学生），只能接受从这台机器下发的额度。\n\n'
+          + '已经充进去的钱不受影响，学生照常使用；要收回某笔钱请用这里的「收回」。\n\n'
+          + '该班下一轮同步后生效（通常一分钟内）。即便它断网，这个锁定也不会失效。',
+        confirmText: '接管额度',
+        danger: true
+      }).then(function(ok) {
+        if (!ok) return;
+        self.$http.post('/admin/mesh/node-quota-lock', {
+          instance_id: inst,
+          locked: !locked
+        }).then(function(r) {
+          if (r.data.code === 200) {
+            self.$store.commit('SHOW_TOAST', { message: r.data.message, type: 'success' });
+            self.loadMeshStatus();
+          }
+        }).catch(function(e) {
+          var msg = (e && e.response && e.response.data && e.response.data.message) || '操作失败';
+          self.$store.commit('SHOW_TOAST', { message: msg, type: 'error' });
+        });
+      });
+    },
+
     // ---------- 下发范围（迁移 032）----------
     //
     // 别和上面的「启用 / 禁用」混了：enabled 是本机用不用，
@@ -2089,6 +2178,11 @@ export default {
           self.users = r.data.data.users || [];
           self.usersRoster = r.data.data.roster || {};
           self.selected = [];
+          // 中枢可以把本班的额度写入权收走（迁移 035），那时候这里的
+          // 充值/收回按钮全部要灰掉，并把话说清楚。
+          var d = r.data.data || {};
+          self.quotaLocked = d.quota_locked === true;
+          self.quotaLockHint = String(d.quota_lock_hint || '');
         }
       }).catch(function(err) {
         self.error = err.message || '加载失败';
@@ -3440,6 +3534,21 @@ html.no-flex-gap .switch-row > * + * {
 }
 
 /* 叠加充值：当前额度基准条 */
+/* 本班额度被中枢接管：整页顶部一条说明。
+   刻意不用 flex + gap —— Chrome 80 起才支持 gap，这里没必要为一行文字
+   多背一份 no-flex-gap 兜底。 */
+.quota-lock-alert {
+  margin: 0 0 var(--gap-md);
+  line-height: 1.6;
+}
+
+/* 「接管额度」是个会把别班权限关掉的动作，颜色上要跟旁边几个中性按钮
+   拉开距离：误点一次，那边班管就得愣半天不知道自己为什么不能充值了。 */
+.mesh-node-actions .quota-takeover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 .quota-base {
   display: flex;
   align-items: baseline;

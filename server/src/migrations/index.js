@@ -42,5 +42,6 @@ module.exports = [
   require('./031_node_model_sync'),
   require('./032_model_sync_scope'),
   require('./033_local_model_origin'),
-  require('./034_model_hub_base')
+  require('./034_model_hub_base'),
+  require('./035_node_quota_lock')
 ];

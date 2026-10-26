@@ -49,6 +49,12 @@ var status = {
   //   0 = 完全不同步（不拉也不推，纯本地）
   // 由中枢在 /sync/version 里按节点下发；本机只读它，无权自封。
   model_sync: 1,
+  // 本班能不能自己动额度（迁移 035）：
+  //   0 = 可以（默认，本班管理员能在本机给本班学号充值/收回）
+  //   1 = 中枢已锁定，本班任何额度写操作都被拒绝，只能收中枢下发的数
+  // 与 model_sync 一样走「meta 持久化 + 轮询下发」：离线时沿用上次的锁定态，
+  // 否则拔掉网线就能绕过这道锁，它也就形同虚设了。
+  quota_lock: 0,
   reported_total: 0,
   pending_usage: 0,
   // 云端服务器时间与本机时间的差值（毫秒）。教室机常年不校时，
@@ -115,6 +121,36 @@ function modelSyncLabel(mode) {
   if (n === 0) return '不同步（完全本班自管）';
   if (n === 2) return '本班自选（可修改，改动不回传）';
   return '跟随中枢';
+}
+
+// ---- 额度锁（迁移 035）----
+//
+// 两个视角，别混：
+//   isQuotaLocked()            → 节点问自己「我现在被锁了没」。看的是云端下发
+//                                并存进 meta 的值（离线时沿用上次），**不查本地
+//                                cluss_nodes** —— 那张表是中枢用来管别人的，
+//                                节点自己库里那份要么空、要么是过期副本，照它
+//                                判断等于让节点自己说了算。
+//   isNodeQuotaLocked(instId)  → 中枢问「某个班被锁了没」。直接查权威的
+//                                cluss_nodes；查不到一律按未锁，避免一次查询
+//                               异常就把人家的管理能力悄悄关掉。
+
+function isQuotaLocked() {
+  if (config.mode !== config.MODES.NODE) return false;
+  if (!isEnabled()) return false;
+  return status.quota_lock === 1;
+}
+
+function isNodeQuotaLocked(instanceId) {
+  var id = String(instanceId || '').trim();
+  if (!id) return false;
+  try {
+    var row = db.prepare('SELECT quota_lock FROM cluss_nodes WHERE instance_id = ?').get(id);
+    return !!(row && Number(row.quota_lock) === 1);
+  } catch (e) {
+    // 老 schema（迁移 035 还没跑）时没有这一列，按未锁处理
+    return false;
+  }
 }
 
 // 本机是不是「中枢」（mesh 组网中心 / relay 专职中继）
@@ -320,6 +356,14 @@ function doPoll(force) {
     // 这里从 meta 读上一轮记下的档位。
     var bootModelSync = parseModelSyncMode(initDb.getMeta('model_sync', '1'));
     status.model_sync = bootModelSync;
+
+    // 额度锁同理：**重启不能直接解锁**。否则班管只要重启一下服务
+    // （或者趁课间拔个网线），中枢给的锁定就失效了。先从 meta 把上次的
+    // 锁定态读回来，等下面那次轮询用中枢的最新值修正。
+    status.quota_lock = initDb.getMeta('quota_lock', '0') === '1' ? 1 : 0;
+    if (status.quota_lock) {
+      console.log('[Sync] 本班额度已被中枢锁定：本班不能自行充值/收回，等待中枢下发');
+    }
     if (bootModelSync !== 0) {
       boot.push(fetchModelConfig(bootModelSync).catch(function(err) { markError(err); return null; }));
     } else {
@@ -379,6 +423,17 @@ function doPoll(force) {
       if (wasSeat !== status.is_seat_admin) {
         console.log('[Sync] 本班管理员席位状态: %s', status.is_seat_admin ? '已获得（可改全校配置）' : '无（只读）');
       }
+    }
+
+    // 额度锁（迁移 035）：中枢说锁就锁，本机改不了也绕不开。
+    // 落到 meta 是为了跨重启生效 —— 见 force 分支里那段说明。
+    if (remote.quota_lock !== undefined) {
+      var nextLock = Number(remote.quota_lock) === 1 ? 1 : 0;
+      if (status.quota_lock !== nextLock) {
+        status.quota_lock = nextLock;
+        console.log('[Sync] 本班额度写权限: %s', nextLock ? '已被中枢锁定（只能接受中枢下发）' : '正常（本班可自行充值）');
+      }
+      try { initDb.setMeta('quota_lock', String(nextLock)); } catch (e) { /* 库不可写就下轮再补 */ }
     }
 
     var jobs = [];
@@ -578,6 +633,18 @@ function pushModelConfig(classUserId) {
 // 把待推的额度推给云端
 function pushAllocations() {
   if (!pendingAllocItems.length) return Promise.resolve({ pushed: 0 });
+  // 本班额度已被中枢接管：上行通道一并关掉。
+  //
+  // 光拦本机写入不够 —— 若只是「本机写不了、但推得上去」，中枢的账照样
+  // 会被改。这里连队列一起清：它至多是锁定生效前那一瞬进来的残留，
+  // 解锁之后再推反而会把管理员刚刚否掉的决定补上去。
+  if (isQuotaLocked()) {
+    var dropped = pendingAllocItems.length;
+    pendingAllocItems.length = 0;
+    status.last_push_alloc_error = '本班额度已由中枢接管，本机额度改动不会上行';
+    console.log('[Sync] 额度锁生效，丢弃 %d 条待上行额度改动', dropped);
+    return Promise.resolve({ pushed: 0, locked: true });
+  }
   if (!status.is_seat_admin) {
     status.last_push_alloc_error = '本班不是管理员席位，改动只在本机生效';
     return Promise.resolve({ pushed: 0, notSeat: true });
@@ -1015,5 +1082,8 @@ module.exports = {
   getRosterRow: getRosterRow,
   applyRosterAllocation: applyRosterAllocation,
   rosterSummary: rosterSummary,
-  markModelStale: markModelStale
+  markModelStale: markModelStale,
+  // 额度锁（迁移 035）：中枢按班下发，节点据守
+  isQuotaLocked: isQuotaLocked,
+  isNodeQuotaLocked: isNodeQuotaLocked
 };

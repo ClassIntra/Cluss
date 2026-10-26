@@ -30,6 +30,9 @@ var constants = require('../utils/constants');
 var modelConfig = require('../services/model-config');
 var credit = require('../services/credit');
 var initDb = require('../utils/init-db');
+// 额度锁的权威查询在中枢自己的 cluss_nodes 上（服务层负责对
+// 老 schema 的兼容），这里不当另写一套 —— 两套口径必漂移。
+var syncService = require('../services/sync');
 
 function sha256(s) {
   return crypto.createHash('sha256').update(String(s)).digest('hex');
@@ -164,7 +167,16 @@ router.get('/version', function(req, res) {
   // 只给开关不给编辑权，等于逼他们在「全跟」和「全断」之间二选一。
   var inst = nodeInstanceId(req);
   var modelSync = 1;
+  // 「本班能否自己动额度」（迁移 035）。默认 0 = 可以自充（既有行为）；
+  // 中枢把它锁成 1 之后，该节点连本班学号都写不了额度 —— 只能收中枢下发的。
+  // 查询失败（老 schema / 表还没建）一律按「未锁」处理：宁可暂时宽松，
+  // 也不能因为一次查询异常就把某个班的管理能力悄无声息地关掉。
+  var quotaLock = 0;
   if (inst) {
+    try {
+      var qRow = db.prepare('SELECT quota_lock FROM cluss_nodes WHERE instance_id = ?').get(inst);
+      if (qRow) quotaLock = Number(qRow.quota_lock) === 1 ? 1 : 0;
+    } catch (e) { /* 老 schema：按未锁处理 */ }
     try {
       var nodeRow = db.prepare('SELECT model_sync FROM cluss_nodes WHERE instance_id = ?').get(inst);
       if (nodeRow) {
@@ -182,6 +194,9 @@ router.get('/version', function(req, res) {
       assign_version: currentAssignVersion(),
       model_config_version: modelConfig.currentModelVersion(),
       model_sync: modelSync,
+      // 额度锁与席位同批下发：它和 is_seat_admin 一样是「节点判断自己有没有
+      // 写入权的依据」，由云端说了算，节点无权自封也无权自解。
+      quota_lock: quotaLock,
       // 席位随版本轮询一起下发：它就是节点判断自己有没有写入权的唯一依据
       is_seat_admin: isSeatNode(inst),
       seat_instance: seatInstance(),
@@ -484,6 +499,14 @@ router.post('/roster', function(req, res) {
   var nodeAssignVersion = parseInt(req.body.assign_version, 10);
   if (isNaN(nodeAssignVersion)) nodeAssignVersion = -1;
   var quotaWritable = nodeAssignVersion >= currentAssignVersion();
+
+  // 已被中枢锁死的班（迁移 035）：名册照收，额度一律不收。
+  //
+  // 少这一步，节点侧的门禁就是纸糊的 —— 班管只要在本机直接改 SQLite，
+  // 再照常上报名册，中枢照样把他的数字并进来。钱最终花在他自己机器上，
+  // 但中枢这边的账会被他改写，对账就废了。
+  // 锁定态读实时库而不是缓存：中枢改完开关立刻生效，不必等节点轮询。
+  if (quotaWritable) quotaWritable = !syncService.isNodeQuotaLocked(instanceId);
 
   var now = time.nowUtc();
   var upsert = db.prepare([

@@ -251,6 +251,18 @@ router.get('/users', auth.requireAuth, auth.requireAdmin, function(req, res) {
     message: 'ok',
     data: {
       assign_version: currentAssignVersion(),
+      // 迁移 035：中枢接管了本班的额度写入权时，前端要**从入口就禁用**充值
+      // 与收回按钮，而不是让管理员填完金额再吃一个 403 —— 那种"填完了才说
+      // 不行"的体验最招骂。canEditQuotaFor 那道闸门照旧把着，这里是它的
+      // 界面投影，两处口径必须一致（同一个 syncService.isQuotaLocked）。
+      quota_locked: syncService.isQuotaLocked(),
+      quota_lock_hint: syncService.isQuotaLocked()
+        ? (function() {
+            var seat = String((syncService.getStatus() || {}).seat_instance || '').trim();
+            return '本班的额度已由中枢接管，不能在本机充值或调整'
+              + (seat ? '，请到 ' + seat + ' 班的管理台操作' : '，请到中枢管理台操作') + '。';
+          })()
+        : '',
       // 花名册状态（版本 / 拉取时刻 / 人数）：面板要能回答
       // 「我现在看到的是不是全校、是什么时候的」
       roster: syncService.rosterSummary(),
@@ -329,8 +341,34 @@ function isLocalStudent(userId) {
   return cc === mine;
 }
 
+// 额度写入权的中枢闸门（迁移 035）。
+//
+// 放在这里是因为「本班管理员能在本机给自己班充多少钱」这条口子只有这一处：
+// isLocalStudent() 对任何本班学号无条件放行。它本身没错 —— 本班学生确实要
+// 靠本班班管充值才能用；错在没有上限、也不受中枢约束：实测有班管在三天里
+// 给自己充了 1/999/1000/2000/5000 元试参数，最终留下两笔 6666 元，而这个数
+// 还会随名册上报把中枢的账一起改写。
+//
+// 中枢把它锁上之后，本班连本班学号也写不了 —— 钱怎么走由中枢说了算。
+// 注意这只管「写」，不管「读」，也不动已经充好的钱：要收回用中枢的收回接口，
+// 那是另一条明确的下发通道（实测能把节点上的旧值覆盖回来）。
+function quotaLockBlockMessage() {
+  var st = syncService.getStatus();
+  var seat = String((st && st.seat_instance) || '').trim();
+  return {
+    ok: false,
+    code: 'QUOTA_LOCKED',
+    message: '本班的额度已由中枢接管，不能在本机充值或调整'
+      + (seat ? '，请到 ' + seat + ' 班的管理台操作' : '，请到中枢管理台操作')
+      + '。'
+  };
+}
+
 function canEditQuotaFor(userId) {
   if (config.mode !== config.MODES.NODE) return { ok: true };
+
+  // 中枢已锁定：一切额度写操作到此为止，本班学号也不例外。
+  if (syncService.isQuotaLocked()) return quotaLockBlockMessage();
 
   // 本班学号：本班班管天然有权（学生可能还没建档，照样允许 —— 充值会顺带建账本）
   if (isLocalStudent(userId)) return { ok: true };
@@ -856,10 +894,20 @@ router.get('/mesh/status', auth.requireAuth, auth.requireAdmin, function(req, re
 
   var nodes = [];
   var rosterCount = 0;
+  // 迁移是可以比代码晚到的：服务已启动、库还是旧的。用 PRAGMA 现问一句
+  // 「这一列在不在」再决定拼不拼进 SELECT —— 直接写 IFNULL(quota_lock,0)
+  // 是拦不住「列不存在」的，它会让整条 SQL 报错并让整页节点列表空掉。
+  var quotaLockCol = false;
+  try {
+    quotaLockCol = db.prepare('PRAGMA table_info(cluss_nodes)').all()
+      .some(function(c) { return c.name === 'quota_lock'; });
+  } catch (e) { /* 表都没有：按没有这一列处理 */ }
+
   try {
     nodes = db.prepare([
       'SELECT instance_id, status, first_seen_at, last_seen_at, last_report_at,',
       'last_assign_version, last_model_version, node_version, IFNULL(model_sync, 1) AS model_sync',
+      quotaLockCol ? ', IFNULL(quota_lock, 0) AS quota_lock' : ', 0 AS quota_lock',
       'FROM cluss_nodes ORDER BY last_seen_at DESC'
     ].join('\n')).all();
     rosterCount = db.prepare('SELECT COUNT(*) AS n FROM sync_roster').get().n;
@@ -869,7 +917,7 @@ router.get('/mesh/status', auth.requireAuth, auth.requireAdmin, function(req, re
     try {
       nodes = db.prepare([
         'SELECT instance_id, status, first_seen_at, last_seen_at, last_report_at,',
-        'last_assign_version, last_model_version, node_version',
+        'last_assign_version, last_model_version, node_version, 1 AS model_sync, 0 AS quota_lock',
         'FROM cluss_nodes ORDER BY last_seen_at DESC'
       ].join('\n')).all();
     } catch (e2) {
@@ -984,6 +1032,56 @@ router.post('/mesh/node-model-sync', auth.requireAuth, auth.requireAdmin, functi
     code: 200,
     message: msgMap[mode],
     data: { instance_id: inst, model_sync: mode }
+  });
+});
+
+// ============================================================
+// POST /admin/mesh/node-quota-lock —— 按班接管额度写入权（迁移 035）
+// body: { instance_id, locked: true|false }
+// ============================================================
+//
+// 「锁」的含义要窄而清楚：**这个班从此不能再自己动额度**，包括它自己班的
+// 学号。已经充进去的钱一分不动，学生照常用；中枢要收回走回收接口，那是
+// 另一条明确的下发通道。
+//
+// 为什么要由中枢来握这个开关：本班账本在本机、本班管理员天然是它的话事人，
+// 节点侧没有「自我约束」的机制 —— 只要留口子，实测就会被用来给自己充值
+// （三天内 1/999/1000/2000/5000 元试参数，最终留下两笔 6666 元，并顺带把
+// 中枢这边的账改成同样数字）。所以只能由中枢下发、且节点断网也翻不过去。
+router.post('/mesh/node-quota-lock', auth.requireAuth, auth.requireAdmin, function(req, res) {
+  var inst = String((req.body && req.body.instance_id) || '').trim();
+  if (!inst) return res.status(400).json({ code: 400, message: '缺少 instance_id' });
+
+  var locked = req.body && req.body.locked;
+  if (locked === undefined || locked === null) {
+    return res.status(400).json({ code: 400, message: '缺少 locked（true = 接管，false = 交还本班）' });
+  }
+  var on = (locked === true || locked === 'true' || locked === 1 || locked === '1') ? 1 : 0;
+
+  // 不许把中枢自己锁上：管理台跑在这台机器上，锁了自己就再也没人能解，
+  // 只能去改库。宁可让这个请求失败，也不要留一个「管理员把自己关在门外」的坑。
+  if (inst === String(config.instanceId)) {
+    return res.status(400).json({ code: 400, message: '中枢不能被锁定：它自己就是额度的最终决定方' });
+  }
+
+  var row = db.prepare('SELECT instance_id FROM cluss_nodes WHERE instance_id = ?').get(inst);
+  if (!row) return res.status(404).json({ code: 404, message: '该班级节点不存在：' + inst });
+
+  try {
+    db.prepare('UPDATE cluss_nodes SET quota_lock = ? WHERE instance_id = ?').run(on, inst);
+  } catch (e) {
+    // 老库还没跑 035 时缺这一列 —— 说清楚该怎么修，别让管理员对着
+    // 「设置失败：no such column」去猜。
+    return res.status(500).json({ code: 500, message: '设置失败：' + e.message + '（若是缺少 quota_lock 列，请重启服务端以执行迁移 035）' });
+  }
+
+  console.log('[Admin] 节点 %s 额度写入权: %s（操作者 %s）', inst, on ? '已被中枢接管' : '已交还本班', req.user.user_id);
+  res.json({
+    code: 200,
+    message: on
+      ? ('已接管 ' + inst + ' 的额度：该班不能再自行充值或调整，下一轮同步后生效')
+      : ('已交还 ' + inst + ' 的额度写入权：该班可以自行充值'),
+    data: { instance_id: inst, quota_lock: on }
   });
 });
 
